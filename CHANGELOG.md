@@ -4,6 +4,7 @@ sco-core has no releases yet. sc-offline pins a commit; this file lists what eac
 
 ## Unreleased
 
+- **Plugin ABI 1.0-pre**: `include/sco_api.h`, the plain-C header plugins will include ([reference](docs/api-v1.md)). Declarations only; nothing implements or loads it yet. `tests/abi_v1.c` pins every v1 size, offset, enum value and signature; `tools/test.sh` compiles it as C11 and C++20 (CI now passes `CC=clang`).
 - **Docs**: README, [How it works](docs/architecture.md), [Adding a signature](docs/adding-signatures.md), [Checking a game build](docs/sigcheck.md), [API reference](docs/api.md), CONTRIBUTING.md and this changelog.
 
 ## 2026-10-08: first commit (`01d579c`)

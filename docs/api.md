@@ -1,6 +1,6 @@
 # API reference
 
-Everything is in namespace `sco` (game tables in `sco::game`). Version 0: internal to sc-offline and can change in any commit; see [CHANGELOG.md](../CHANGELOG.md).
+Everything is in namespace `sco` (game tables in `sco::game`). Version 0: internal to sc-offline and can change in any commit; see [CHANGELOG.md](../CHANGELOG.md). The plugin ABI, `include/sco_api.h`, is separate and versioned: see [Plugin API v1](api-v1.md).
 
 ## `sco/scan.h`: scanners
 

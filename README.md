@@ -57,6 +57,7 @@ The scanners and the registry are plain C++ with no Windows headers. Only [`src/
 | [Adding a signature](docs/adding-signatures.md) | Moving a feature's addresses into a table, step by step, and the rules rows follow |
 | [Checking a game build](docs/sigcheck.md) | `sco-sigcheck`: reading its output, exit codes, the patch-day routine |
 | [API reference](docs/api.md) | Every function and type in `include/sco/` |
+| [Plugin API v1](docs/api-v1.md) | `include/sco_api.h`, the plain-C plugin ABI (1.0-pre, not hosted yet) |
 | [Contributing](CONTRIBUTING.md) | What fits, tests, and how changes reach sc-offline |
 | [Changelog](CHANGELOG.md) | What changed |
 
