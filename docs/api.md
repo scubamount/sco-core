@@ -84,6 +84,27 @@ Rows today:
 | `void Status(const char* fmt, ...)` | Stores the message (up to 255 characters) and logs `[status] <message>` |
 | `bool GetStatus(char* out, size_t n)` | Copies the latest message into `out` (truncated to fit). False, with `out` empty, until the first `Status()` call; false for `out == nullptr` or `n == 0` |
 
+## `sco/runtime.h`: game-thread runtime
+
+See [The runtime](architecture.md#the-runtime) for the model. Every call returns `Result`: `Ok`, `Unavailable`, `NotFound`, `BadArg`, `Crashed`, `WrongThread`, `TooMany` (`ResultName()` gives `"OK"`, `"TOO_MANY"`, ...).
+
+| Function | Does |
+|---|---|
+| `void SetGameThread()` | Marks the calling thread as the game thread. Call once, from the game's main thread |
+| `bool OnGameThread()` | Whether the caller is the game thread; false until `SetGameThread()` |
+| `Result GameThreadTick(uint32_t nowMs)` | Runs queued tasks, then dispatches `tick` with `data = &nowMs`. `WrongThread` off the game thread |
+| `Result Post(TaskFn fn, void* ctx)` | Queues `fn(ctx)` for the game thread, in order. `TooMany` with 256 waiting, `BadArg` for a null `fn` |
+| `size_t DrainTasks()`, `size_t QueuedTasks()` | Run the tasks queued when the call started (game thread only, else 0); count waiting tasks |
+| `Result Subscribe(const void* owner, const char* event, EventFn fn, void* ctx)` | Adds a subscriber; the name is copied. `BadArg` for a null/empty event, null `fn` or the same (owner, event, fn) twice; `TooMany` at 512 |
+| `Result Unsubscribe(const void* owner, const char* event, EventFn fn)` | Removes it; `NotFound` if absent |
+| `Result Dispatch(const char* event, const void* data, size_t* called)` | Calls the event's subscribers in subscription order; `called` gets the count. Game thread only (`WrongThread`) |
+| `Result RegisterCommand(const char* ownerName, const Command& cmd)` | Adds a command (copied; its strings and `args` must outlive the registry). Names are `<x>.<y>` in lowercase, digits, `_`; with `ownerName` the name must start `<ownerName>.`. `BadArg` for a bad name, duplicate, null `fn` or more than 16 args; `TooMany` at 512 |
+| `size_t ListCommands(const Command** out, size_t max)` | Writes up to `max` pointers in registration order; returns the total. Pointers stay valid |
+| `void SetCapabilityCheck(CapabilityCheck check)` | Answers `Command::capability`. With none installed, commands that name a capability are `Unavailable` |
+| `Result Invoke(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx)` | Runs a command; see below |
+
+`Invoke` on the game thread runs the command at once, calls `done(result, reply, ctx)` (if set) and returns the same result. From another thread it copies the name and arguments, queues the call and returns `Ok`; `done` runs once on the game thread on a later tick. Results: `NotFound` (no such command), `BadArg` (argument count or type differs from the command's `ArgDef`s, or a null string), `Unavailable` (capability check), else what the command returned. `reply` is at most 255 characters and always NUL-terminated.
+
 ## `sco/pe_file.h`: host tools only
 
 ```cpp

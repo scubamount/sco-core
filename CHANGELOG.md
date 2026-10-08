@@ -4,6 +4,9 @@ sco-core has no releases yet. sc-offline pins a commit; this file lists what eac
 
 ## Unreleased
 
+- **Runtime** (`sco/runtime.h`, `src/api/`): game-thread task queue (256, in order, `TooMany` when full), event bus (subscribe/unsubscribe from any thread, changes apply from the next dispatch) and command registry (`RegisterCommand`, `ListCommands`, `Invoke` with argument, capability and owner-prefix checks). `GameThreadTick()` drains the queue then dispatches `tick`. sc-offline doesn't call it yet; wiring `OnMainThreadTick` to it is the next sc-offline change.
+- `tools/test.sh` also builds and runs `tests/test_runtime.cpp` under ASan+UBSan and ThreadSanitizer.
+
 - **Docs**: README, [How it works](docs/architecture.md), [Adding a signature](docs/adding-signatures.md), [Checking a game build](docs/sigcheck.md), [API reference](docs/api.md), CONTRIBUTING.md and this changelog.
 
 ## 2026-10-08: first commit (`01d579c`)

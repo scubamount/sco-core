@@ -16,6 +16,10 @@ jobs:
         with:
           persist-credentials: false
 
+      # ubuntu-24.04 runs 32-bit mmap ASLR, which ThreadSanitizer from clang 18 can't map around.
+      - name: Allow ThreadSanitizer
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
       - name: Host unit tests
         run: CXX=clang++ tools/test.sh
 

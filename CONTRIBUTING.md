@@ -14,7 +14,7 @@ sco-core is the game-facing core of [sc-offline](https://github.com/scubamount/s
 
 1. Open an issue first for anything bigger than a small fix.
 2. Follow [Adding a signature](docs/adding-signatures.md) for new rows; its rules (move without changing, one address per row, unique or nothing) are checked in review.
-3. Run `tools/test.sh`. It must end with `0 failed`. New registry or scanner behavior gets a test in `tests/test_core.cpp`.
+3. Run `tools/test.sh`. It must end with `0 failed`. New registry or scanner behavior gets a test in `tests/test_core.cpp`; runtime behavior (tasks, events, commands) in `tests/test_runtime.cpp`.
 4. Run `tools/sigcheck.sh` against a real `StarCitizen.exe` if you touched a table, and paste the `[core]` lines and the game build into the PR.
 5. Update the docs your change affects (`README.md`, `docs/`, header comments) and add a line to [CHANGELOG.md](CHANGELOG.md).
 6. Open the PR against `main`. CI (`test`) must pass.

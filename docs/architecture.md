@@ -93,6 +93,18 @@ Features tell the player what happened through `sco::Status("Spawning %s...", na
 | `Sig`, `SigReady`, `SigLookup`, `SignatureResult` | Safe from any thread once `ResolveAll` has returned (read-only) |
 | `Status`, `GetStatus` | Safe from any thread (mutex) |
 | `SetLogSink`, `Log` | Safe from any thread (atomic sink); the sink itself must be thread-safe |
+| `Post`, `Subscribe`, `Unsubscribe`, `RegisterCommand`, `ListCommands`, `Invoke` | Safe from any thread. Tasks, event callbacks and commands always run on the game thread |
+| `GameThreadTick`, `DrainTasks`, `Dispatch` | Game thread only (the thread that called `SetGameThread`); elsewhere they run nothing |
+
+## The runtime
+
+[`sco/runtime.h`](../include/sco/runtime.h) is how work reaches the game thread. The host calls `SetGameThread()` once from the game's main thread and `GameThreadTick(nowMs)` on every main-thread tick. Each tick first runs the tasks queued with `Post()`, in order, then dispatches the `tick` event.
+
+- **Task queue.** A fixed ring of 256 tasks; posting never allocates. A full queue refuses with `TooMany` rather than growing or dropping work. Tasks posted while the queue drains wait for the next tick.
+- **Event bus.** Subscribers are keyed by owner, event name and callback. The subscriber list is replaced on every change and a dispatch walks the list it started with, so subscribing or unsubscribing inside a callback applies from the next dispatch and never invalidates the walk.
+- **Commands.** Features register named actions (`spawn.ship`) with typed arguments. `Invoke()` checks the argument count and types and the command's capability before calling it. On the game thread it runs at once; from another thread it copies the name and arguments, queues a task, and reports the result through the `done` callback on the game thread. Registered commands never move, so `ListCommands()` pointers stay valid.
+
+The runtime is C++ and internal (version 0). The planned plain-C `sco_api.h` wraps it one to one; `Result` values already match its `sco_result`.
 
 ## Limits
 
@@ -103,6 +115,11 @@ Features tell the player what happened through `sco::Status("Spawning %s...", na
 | Pattern length | 96 bytes (`kMaxPatternBytes`) | The pattern matches nothing (`MISSING`), never a shortened match |
 | Log line | 511 characters | Truncated |
 | Status message | 255 characters | Truncated |
+| Queued tasks | 256 (`kMaxQueuedTasks`) | `Post` returns `TooMany` |
+| Event subscriptions | 512 (`kMaxSubscriptions`) | `Subscribe` returns `TooMany` |
+| Commands | 512 (`kMaxCommands`) | `RegisterCommand` returns `TooMany` |
+| Arguments per command | 16 (`kMaxCommandArgs`) | `RegisterCommand` / `Invoke` return `BadArg` |
+| Command reply | 255 characters | Truncated |
 
 ## Source map
 
@@ -113,7 +130,11 @@ Features tell the player what happened through `sco::Status("Spawning %s...", na
 | `src/sco_log_status.cpp` | Log sink and status message |
 | `src/sco_image_win.cpp` | `ModuleImage()` for the running game (Windows) |
 | `src/sco_pe_file.cpp` | `FileImage::Load()` for host tools |
+| `src/api/sco_tasks.cpp` | Game-thread identity, task queue, `GameThreadTick` |
+| `src/api/sco_events.cpp` | Event bus |
+| `src/api/sco_commands.cpp` | Command registry and `Invoke` |
 | `src/game/signatures.cpp` | `RegisterGameSignatures()`: the list of game tables |
 | `src/game/<feature>_sigs.cpp` | One feature's rows and its typed accessor |
 | `tests/test_core.cpp` | Unit tests against a synthetic image |
+| `tests/test_runtime.cpp` | Runtime tests (run under ASan+UBSan and ThreadSanitizer) |
 | `tools/sco-sigcheck.cpp` | The offline checker |

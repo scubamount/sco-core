@@ -44,6 +44,7 @@ You need clang or gcc with C++20. Nothing else: no Windows, no game, no other li
 | Game tables | [`sco/game/`](include/sco/game/) | The game's rows, one file per feature area, plus typed accessors such as `TeleportAddresses()` |
 | Log | [`sco/log.h`](include/sco/log.h) | Where sco-core's lines go; the host installs a sink |
 | Status | [`sco/status.h`](include/sco/status.h) | The one-line message features show the player; features call `Status()`, the menu reads `GetStatus()` |
+| Runtime | [`sco/runtime.h`](include/sco/runtime.h) | Game-thread task queue, event bus (`tick`, `game.ready`, ...) and the command registry with `Invoke()` |
 | PE file loader | [`sco/pe_file.h`](include/sco/pe_file.h) | Host tools only: lays out `StarCitizen.exe` from disk the way Windows would |
 | sco-sigcheck | [`tools/sco-sigcheck.cpp`](tools/sco-sigcheck.cpp) | Runs every table against a `StarCitizen.exe` file |
 
