@@ -19,6 +19,15 @@ clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_v1.c"
 echo "abi_v1: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
+# SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
+# header change that breaks them fails here. The full build from the packaged zip, with MSVC on
+# Windows and the plugin checks, is sdk/test-zip.sh (CI: .github/workflows/sdk.yml).
+for f in "$ROOT/sdk/template/plugin.c" "$ROOT/sdk/examples/hello/hello.c"; do
+  "$CC" -std=c11 "${ABI[@]}" "$f"
+done
+"$CC" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -I "$ROOT/include" -fsyntax-only "$ROOT/sdk/tools/sco-plugin-check.c"
+echo "sdk: template, hello and sco-plugin-check compile against sco_api.h"
+
 FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include")
 RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined \
