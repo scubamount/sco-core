@@ -1,0 +1,6 @@
+# Extra places for the Travel tab, from the travel_pack example.
+#   system | name shown | entity name | radius in metres (0 = unknown)
+# Same format as sc-offline's data/locations.txt. Entity names must match the game's exactly.
+
+Stanton | Hurston (pack)  | OOC_Stanton_1_Hurston   | 1000000
+Stanton | microTech (pack)| OOC_Stanton_4_Microtech | 1000000
