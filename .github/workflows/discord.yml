@@ -1,0 +1,163 @@
+name: discord
+
+# Posts sco-core activity to the sc-offline Discord channel (same feed as sc-offline):
+# releases, merged PRs, issues opened or closed, and pushes to main.
+#
+# The webhook URL lives only in the DISCORD_WEBHOOK_URL Actions secret. Untrusted text
+# (titles, labels, bodies) reaches the payload only through env vars and `jq --arg`, never
+# through `${{ }}` inside a shell script, and `allowed_mentions` is empty so nothing pings.
+# PRs from forks get no secrets on `pull_request`, so they don't post; there is deliberately
+# no `pull_request_target` here.
+
+on:
+  release:
+    types: [published]
+  pull_request:
+    types: [closed]
+  issues:
+    types: [opened, closed]
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  post:
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    permissions:
+      contents: read   # checkout, for the release's CHANGELOG section
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'release'
+        with:
+          persist-credentials: false
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
+      - name: Build the embed
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          REPO: ${{ github.repository }}
+          REL_TAG: ${{ github.event.release.tag_name }}
+          REL_URL: ${{ github.event.release.html_url }}
+          REL_PRE: ${{ github.event.release.prerelease }}
+          REL_AT: ${{ github.event.release.published_at }}
+          REL_USER: ${{ github.event.release.author.login }}
+          REL_AVATAR: ${{ github.event.release.author.avatar_url }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_NUM: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_USER: ${{ github.event.pull_request.user.login }}
+          PR_AVATAR: ${{ github.event.pull_request.user.avatar_url }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_ADD: ${{ github.event.pull_request.additions }}
+          PR_DEL: ${{ github.event.pull_request.deletions }}
+          PR_FILES: ${{ github.event.pull_request.changed_files }}
+          PR_COMMITS: ${{ github.event.pull_request.commits }}
+          PR_MERGER: ${{ github.event.pull_request.merged_by.login }}
+          PR_AT: ${{ github.event.pull_request.merged_at }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ', ') }}
+          IS_TITLE: ${{ github.event.issue.title }}
+          IS_NUM: ${{ github.event.issue.number }}
+          IS_URL: ${{ github.event.issue.html_url }}
+          IS_USER: ${{ github.event.issue.user.login }}
+          IS_AVATAR: ${{ github.event.issue.user.avatar_url }}
+          IS_BODY: ${{ github.event.issue.body }}
+          IS_COMMENTS: ${{ github.event.issue.comments }}
+          IS_CLOSER: ${{ github.event.sender.login }}
+          IS_CLOSER_AVATAR: ${{ github.event.sender.avatar_url }}
+          IS_AT: ${{ github.event.issue.updated_at }}
+          IS_REASON: ${{ github.event.issue.state_reason }}
+          IS_LABELS: ${{ join(github.event.issue.labels.*.name, ', ') }}
+          PUSH_COMPARE: ${{ github.event.compare }}
+          PUSH_PUSHER: ${{ github.event.pusher.name }}
+          PUSH_AVATAR: ${{ github.event.sender.avatar_url }}
+          PUSH_AT: ${{ github.event.head_commit.timestamp }}
+          PUSH_COMMITS: ${{ toJSON(github.event.commits) }}
+        run: |
+          set -eu
+          # A body excerpt: HTML comments (PR/issue templates) and blank runs dropped, first 700 chars.
+          excerpt() { printf '%s' "$1" | tr -d '\r' | perl -0pe 's/<!--.*?-->//gs; s/\n{3,}/\n\n/g; s/^\s+|\s+$//g'; }
+          case "$EVENT" in
+            release)
+              ver="${REL_TAG#v}"
+              # The CHANGELOG section for this version: from "## <ver>" to the next "## ".
+              notes=$(awk -v v="$ver" '
+                $0 ~ "^## " { if (on) exit; if (index($0, "## " v " ") == 1 || $0 == "## " v) { on = 1; next } }
+                on { print }' CHANGELOG.md 2>/dev/null || true)
+              [ -n "$notes" ] || notes="See the release page."
+              kind=$([ "$REL_PRE" = "true" ] && echo "Pre-release" || echo "Release")
+              jq -n --arg t "sco-core $REL_TAG" --arg u "$REL_URL" --arg d "$notes" \
+                    --arg k "$kind" --arg at "$REL_AT" --arg a "$REL_USER" --arg av "$REL_AVATAR" '{
+                title: ($t | .[0:256]), url: $u, color: 3066993, timestamp: $at,
+                author: {name: ($k + " published by " + $a), icon_url: $av},
+                description: ($d | if length > 3500 then .[0:3500] + "\n…" else . end),
+                fields: [{name: "Channel", value: $k, inline: true}],
+                footer: {text: "sco-core · game core and plugin SDK for sc-offline"}}' > embed.json
+              ;;
+            pull_request)
+              body=$(excerpt "${PR_BODY:-}"); [ -n "$body" ] || body="_No description._"
+              jq -n --arg t "Merged #$PR_NUM: $PR_TITLE" --arg u "$PR_URL" --arg a "$PR_USER" --arg av "$PR_AVATAR" \
+                    --arg d "$body" --arg add "$PR_ADD" --arg del "$PR_DEL" --arg f "$PR_FILES" --arg c "$PR_COMMITS" \
+                    --arg m "$PR_MERGER" --arg at "$PR_AT" --arg l "$PR_LABELS" '{
+                title: ($t | .[0:256]), url: $u, color: 10181046, timestamp: $at,
+                author: {name: ("Pull request by " + $a), icon_url: $av},
+                description: ($d | if length > 700 then .[0:700] + "…" else . end),
+                fields: ([
+                  {name: "Changes", value: ("+" + $add + " / −" + $del + " in " + $f + " files"), inline: true},
+                  {name: "Commits", value: $c, inline: true},
+                  {name: "Merged by", value: $m, inline: true}]
+                  + (if $l != "" then [{name: "Labels", value: $l, inline: false}] else [] end)),
+                footer: {text: "sco-core · lands in sc-offline with the next sco-core bump"}}' > embed.json
+              ;;
+            issues)
+              if [ "$ACTION" = "opened" ]; then verb="New issue"; color=15105570; state="Open"
+              elif [ "$IS_REASON" = "not_planned" ]; then verb="Closed (not planned)"; color=9807270; state="Closed: not planned"
+              else verb="Fixed"; color=5763719; state="Closed: fixed"; fi
+              body=$(excerpt "${IS_BODY:-}"); [ -n "$body" ] || body="_No description._"
+              if [ "$ACTION" = "opened" ]; then who="Opened by $IS_USER"; av="$IS_AVATAR"
+              else who="Closed by $IS_CLOSER"; av="$IS_CLOSER_AVATAR"; fi
+              jq -n --arg t "$verb #$IS_NUM: $IS_TITLE" --arg u "$IS_URL" --arg w "$who" --arg av "$av" \
+                    --arg d "$body" --arg l "$IS_LABELS" --arg s "$state" --arg n "$IS_COMMENTS" --arg at "$IS_AT" \
+                    --argjson c "$color" '{
+                title: ($t | .[0:256]), url: $u, color: $c, timestamp: $at,
+                author: {name: $w, icon_url: $av},
+                description: ($d | if length > 700 then .[0:700] + "…" else . end),
+                fields: ([
+                  {name: "Status", value: $s, inline: true},
+                  {name: "Comments", value: $n, inline: true}]
+                  + (if $l != "" then [{name: "Labels", value: $l, inline: true}] else [] end)),
+                footer: {text: "sco-core · game core and plugin SDK for sc-offline"}}' > embed.json
+              ;;
+            push)
+              # One line per commit (first line of the message), newest last, at most 10.
+              list=$(printf '%s' "$PUSH_COMMITS" | jq -r '.[-10:][] | "[`\(.id[0:7])`](\(.url)) \(.message | split("\n")[0] | .[0:120])"')
+              count=$(printf '%s' "$PUSH_COMMITS" | jq 'length')
+              if [ "$count" -eq 0 ]; then echo '{}' > embed.json   # tag or branch delete: nothing to post
+              else jq -n --arg t "$count new commit(s) on main" --arg u "$PUSH_COMPARE" --arg d "$list" \
+                    --arg a "$PUSH_PUSHER" --arg av "$PUSH_AVATAR" --arg at "$PUSH_AT" '{
+                title: $t, url: $u, color: 3447003, timestamp: $at,
+                author: {name: ("Pushed by " + $a), icon_url: $av},
+                description: ($d | if length > 3500 then .[0:3500] + "\n…" else . end),
+                footer: {text: "sco-core · game core and plugin SDK for sc-offline"}}' > embed.json
+              fi
+              ;;
+          esac
+          jq '{username: "sco-core", allowed_mentions: {parse: []}, embeds: [.]}' embed.json > payload.json
+          jq -c . payload.json
+
+      - name: Post to Discord
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          set -eu
+          if [ "$(jq -r '.embeds[0] | length' payload.json)" = "0" ]; then echo "nothing to post"; exit 0; fi
+          if [ -z "${DISCORD_WEBHOOK_URL:-}" ]; then
+            echo "::warning::DISCORD_WEBHOOK_URL isn't set; nothing posted"
+            exit 0
+          fi
+          curl -fsS --retry 3 --retry-all-errors --max-time 20 -o /dev/null \
+            -H 'Content-Type: application/json' --data @payload.json "$DISCORD_WEBHOOK_URL"
+          echo "posted"
