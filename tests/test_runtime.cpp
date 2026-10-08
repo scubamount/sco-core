@@ -3,6 +3,7 @@
 //   tools/test.sh
 #include "sco/runtime.h"
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -41,6 +42,16 @@ static void PostAgain(void* ctx) {   // posts a follow-up while the queue drains
     CHECK(sco::Post(Record, Tag(99)) == Result::Ok);
 }
 
+static size_t g_nestedDrain = 99;
+static Result g_nestedTick = Result::Ok;
+static void Nested(void*) {
+    Record(Tag(1));
+    g_nestedDrain = sco::DrainTasks();
+    g_nestedTick = sco::GameThreadTick(1);
+}
+static char kTaskB;
+static void ReleaseB(void*) { sco::Release(&kTaskB); }
+
 static std::atomic<int> g_crossRan{ 0 };
 static void CountCross(void*) { g_crossRan.fetch_add(1); }
 
@@ -76,6 +87,26 @@ static void TestTaskQueue() {
     CHECK(sco::QueuedTasks() == 1);
     CHECK(sco::DrainTasks() == 1 && (g_order == std::vector<int>{ 1, 99 }));
 
+    // A task can't drain or tick from inside the drain (regression: a nested drain used to
+    // underflow the count and run a null task).
+    g_order.clear();
+    CHECK(sco::Post(Nested, nullptr) == Result::Ok);
+    CHECK(sco::Post(Record, Tag(2)) == Result::Ok);
+    CHECK(sco::DrainTasks() == 2 && (g_order == std::vector<int>{ 1, 2 }));
+    CHECK(g_nestedDrain == 0 && g_nestedTick == Result::WrongThread && sco::QueuedTasks() == 0);
+
+    // Release() from inside a task removes that owner's queued tasks; the drain stops cleanly.
+    g_order.clear();
+    CHECK(sco::Post(ReleaseB, nullptr) == Result::Ok);
+    CHECK(sco::Post(Record, Tag(1), &kTaskB) == Result::Ok);
+    CHECK(sco::Post(Record, Tag(2)) == Result::Ok);
+    CHECK(sco::Post(Record, Tag(3), &kTaskB) == Result::Ok);
+    CHECK(sco::DrainTasks() == 2 && (g_order == std::vector<int>{ 2 }) && sco::QueuedTasks() == 0);
+    CHECK(sco::Release(nullptr) == Result::BadArg);
+    Result off = Result::Ok;
+    std::thread([&] { off = sco::Release(&kTaskB); }).join();
+    CHECK(off == Result::WrongThread);
+
     // Posting from several threads at once: count in == count out.
     std::vector<std::thread> posters;
     std::atomic<int> accepted{ 0 };
@@ -107,6 +138,9 @@ static void UnsubscribeSelf(const char* e, const void*, void* ctx) {
     ++*static_cast<int*>(ctx);
     sco::Unsubscribe(&kOwnerB, e, UnsubscribeSelf);
 }
+
+static void CutB(const char*, const void*, void*) { sco::Unsubscribe(&kOwnerB, "cut", OnEvent); }
+static void ReleaseOwnerB(const char*, const void*, void*) { sco::Release(&kOwnerB); }
 
 static void TestEvents() {
     const size_t base = sco::SubscriptionCount();
@@ -165,6 +199,18 @@ static void TestEvents() {
     CHECK(sco::Dispatch("once", nullptr, &called) == Result::Ok && called == 1);
     CHECK(sco::Dispatch("once", nullptr, &called) == Result::Ok && called == 0 && selfCalls == 1);
 
+    // Unsubscribe and Release apply at once: a dispatch already running skips the removed ones.
+    Seen victim;
+    CHECK(sco::Subscribe(&kOwnerA, "cut", CutB, nullptr) == Result::Ok);
+    CHECK(sco::Subscribe(&kOwnerB, "cut", OnEvent, &victim) == Result::Ok);
+    CHECK(sco::Dispatch("cut", nullptr, &called) == Result::Ok && called == 1 && victim.calls == 0);
+    CHECK(sco::Subscribe(&kOwnerA, "cut2", ReleaseOwnerB, nullptr) == Result::Ok);
+    CHECK(sco::Subscribe(&kOwnerB, "cut2", OnEvent, &victim) == Result::Ok);
+    CHECK(sco::Subscribe(&kOwnerB, "cut2", OnEvent2, &victim) == Result::Ok);
+    CHECK(sco::Dispatch("cut2", nullptr, &called) == Result::Ok && called == 1 && victim.calls == 0);
+    sco::Unsubscribe(&kOwnerA, "cut", CutB);
+    sco::Unsubscribe(&kOwnerA, "cut2", ReleaseOwnerB);
+
     // Clean up and check the bound.
     sco::Unsubscribe(&kOwnerA, "game.ready", OnEvent);
     sco::Unsubscribe(&kOwnerB, "tick", OnEvent);
@@ -180,6 +226,7 @@ static void TestEvents() {
     for (size_t i = base; i < sco::kMaxSubscriptions; ++i) ok += sco::Subscribe(&kOwnerA, names[i].c_str(), OnEvent, &a) == Result::Ok;
     CHECK(ok == static_cast<int>(sco::kMaxSubscriptions - base));
     CHECK(sco::Subscribe(&kOwnerA, "one.more", OnEvent, &a) == Result::TooMany);
+    CHECK(sco::Subscribe(&kOwnerA, names[base].c_str(), OnEvent, &a) == Result::BadArg);   // duplicate wins over full
     for (size_t i = base; i < sco::kMaxSubscriptions; ++i) sco::Unsubscribe(&kOwnerA, names[i].c_str(), OnEvent);
     CHECK(sco::SubscriptionCount() == base);
 }
@@ -226,6 +273,8 @@ static sco::Arg F(double f)  { sco::Arg a{}; a.type = sco::ArgType::Float; a.v.f
 static sco::Arg S(const char* s) { sco::Arg a{}; a.type = sco::ArgType::String; a.v.s = s; return a; }
 static sco::Arg B(bool b)    { sco::Arg a{}; a.type = sco::ArgType::Bool; a.v.i = b; return a; }
 
+static char kOwnerH, kBulk;   // plugin owners for "hello" and "bulk"
+
 static void TestCommands() {
     Call spawn, nop;
     const sco::Command cSpawn{ "spawn.ship", "Spawn ship", "Spawns a ship", "spawn.ship", kSpawnArgs, 4, CmdSpawn, &spawn };
@@ -234,33 +283,34 @@ static void TestCommands() {
 
     // Name and shape rules.
     auto named = [](const char* n) { return sco::Command{ n, n, nullptr, nullptr, nullptr, 0, CmdNop, nullptr }; };
-    CHECK(sco::RegisterCommand(nullptr, named(nullptr)) == Result::BadArg);
-    CHECK(sco::RegisterCommand(nullptr, named("")) == Result::BadArg);
-    CHECK(sco::RegisterCommand(nullptr, named("nodot")) == Result::BadArg);
-    CHECK(sco::RegisterCommand(nullptr, named(".lead")) == Result::BadArg);
-    CHECK(sco::RegisterCommand(nullptr, named("trail.")) == Result::BadArg);
-    CHECK(sco::RegisterCommand(nullptr, named("a..b")) == Result::BadArg);
-    CHECK(sco::RegisterCommand(nullptr, named("Spawn.Ship")) == Result::BadArg);
-    CHECK(sco::RegisterCommand(nullptr, named("spawn ship.x")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named(nullptr)) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named("")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named("nodot")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named(".lead")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named("trail.")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named("a..b")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named("Spawn.Ship")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named("spawn ship.x")) == Result::BadArg);
     sco::Command noFn = cHello; noFn.fn = nullptr;
-    CHECK(sco::RegisterCommand(nullptr, noFn) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, noFn) == Result::BadArg);
     sco::Command tooMany = cSpawn; tooMany.nargs = sco::kMaxCommandArgs + 1;
-    CHECK(sco::RegisterCommand(nullptr, tooMany) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, tooMany) == Result::BadArg);
     sco::Command noArgs = cSpawn; noArgs.args = nullptr;
-    CHECK(sco::RegisterCommand(nullptr, noArgs) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, noArgs) == Result::BadArg);
     const sco::ArgDef badDef[] = { { nullptr, sco::ArgType::Int, nullptr } };
     sco::Command badArg = cHello; badArg.args = badDef; badArg.nargs = 1;
-    CHECK(sco::RegisterCommand(nullptr, badArg) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, badArg) == Result::BadArg);
     // Plugin owners may only use their own prefix.
-    CHECK(sco::RegisterCommand("hello", named("spawn.ship")) == Result::BadArg);
-    CHECK(sco::RegisterCommand("hell", cHello) == Result::BadArg);
-    CHECK(sco::RegisterCommand("hello.wave", cHello) == Result::BadArg);
+    CHECK(sco::RegisterCommand(&kOwnerH, "hello", named("spawn.ship")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(&kOwnerH, "hell", cHello) == Result::BadArg);
+    CHECK(sco::RegisterCommand(&kOwnerH, "hello.wave", cHello) == Result::BadArg);
+    CHECK(sco::RegisterCommand(nullptr, "hello", cHello) == Result::BadArg);   // a prefix needs an owner
     CHECK(sco::ListCommands(nullptr, 0) == 0);   // nothing registered by the failures
 
-    CHECK(sco::RegisterCommand(nullptr, cSpawn) == Result::Ok);
-    CHECK(sco::RegisterCommand("hello", cHello) == Result::Ok);
-    CHECK(sco::RegisterCommand(nullptr, cLong) == Result::Ok);
-    CHECK(sco::RegisterCommand(nullptr, cSpawn) == Result::BadArg);   // duplicate
+    CHECK(sco::RegisterCommand(nullptr, nullptr, cSpawn) == Result::Ok);
+    CHECK(sco::RegisterCommand(&kOwnerH, "hello", cHello) == Result::Ok);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, cLong) == Result::Ok);
+    CHECK(sco::RegisterCommand(nullptr, nullptr, cSpawn) == Result::BadArg);   // duplicate
     const sco::Command* list[8] = {};
     CHECK(sco::ListCommands(list, 8) == 3);
     CHECK(strcmp(list[0]->name, "spawn.ship") == 0 && strcmp(list[1]->name, "hello.wave") == 0 && list[0]->nargs == 4);
@@ -322,37 +372,187 @@ static void TestCommands() {
     CHECK(r == Result::TooMany);
     CHECK(sco::DrainTasks() == sco::kMaxQueuedTasks && full.calls == 0);
 
-    // Registering from another thread while the game thread lists.
+    // Bool must be 0 or 1.
+    sco::Arg badBool[] = { A(2), F(1.0), S("x"), B(true) };
+    badBool[3].v.i = 2;
+    CHECK(sco::Invoke("spawn.ship", badBool, 4, OnDone, &d) == Result::BadArg && spawn.calls == 2);
+
+    // The registry copies every string and the arg defs.
+    char nm[] = "copy.me", ti[] = "Copy me", an[] = "count";
+    sco::ArgDef defs[] = { { an, sco::ArgType::Int, nullptr } };
+    const sco::Command cCopy{ nm, ti, nullptr, nullptr, defs, 1, CmdNop, nullptr };
+    CHECK(sco::RegisterCommand(nullptr, nullptr, cCopy) == Result::Ok);
+    strcpy(nm, "xxxx.xx"); strcpy(ti, "garbage"); strcpy(an, "zzzzz"); defs[0].type = sco::ArgType::String;
+    const sco::Arg one1[] = { A(1) };
+    CHECK(sco::Invoke("copy.me", one1, 1, nullptr, nullptr) == Result::Ok);
+    const sco::Command* cl[16] = {};
+    const size_t nl = sco::ListCommands(cl, 16);
+    bool foundCopy = false;
+    for (size_t i = 0; i < nl && i < 16; ++i)
+        if (strcmp(cl[i]->name, "copy.me") == 0)
+            foundCopy = strcmp(cl[i]->title, "Copy me") == 0 && strcmp(cl[i]->args[0].name, "count") == 0 &&
+                        cl[i]->args[0].type == sco::ArgType::Int && cl[i]->args != defs;
+    CHECK(foundCopy);
+    std::string longName = "too." + std::string(sco::kMaxNameLen, 'a');
+    CHECK(sco::RegisterCommand(nullptr, nullptr, named(longName.c_str())) == Result::BadArg);
+
+    // Reserved prefixes, and a prefix already in use by another owner.
+    static char kOther;
+    CHECK(sco::RegisterCommand(&kOther, "menu", named("menu.open")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(&kOther, "sco", named("sco.x")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(&kOther, "spawn", named("spawn.other")) == Result::BadArg);   // host owns spawn.*
+    CHECK(sco::RegisterCommand(&kOther, "hello", named("hello.other")) == Result::BadArg);   // kOwnerH owns hello.*
+    CHECK(sco::RegisterCommand(&kOwnerH, "hello", named("hello.again")) == Result::Ok);       // same owner: fine
+
+    // Release: commands gone, the name is free again, a queued off-thread invoke is dropped
+    // without running or calling done, and nothing leaks (ASan).
+    Done dropped;
+    std::thread([&] { r = sco::Invoke("hello.wave", nullptr, 0, OnDone, &dropped, &kOwnerH); }).join();
+    CHECK(r == Result::Ok && sco::QueuedTasks() == 1);
+    const size_t before = sco::ListCommands(nullptr, 0);
+    size_t removed = 0;
+    CHECK(sco::Release(&kOwnerH, &removed) == Result::Ok && removed == 3);   // 2 commands + 1 task
+    CHECK(sco::ListCommands(nullptr, 0) == before - 2 && sco::QueuedTasks() == 0);
+    CHECK(sco::DrainTasks() == 0 && dropped.calls == 0 && nop.calls == 1);
+    CHECK(sco::Invoke("hello.wave", nullptr, 0, OnDone, &d) == Result::NotFound);
+    CHECK(sco::RegisterCommand(&kOther, "hello", cHello) == Result::Ok);   // prefix free again
+    CHECK(sco::Invoke("hello.wave", nullptr, 0, nullptr, nullptr) == Result::Ok && nop.calls == 2);
+    CHECK(sco::Release(&kOther) == Result::Ok);
+
+    // Registering from another thread while the game thread lists. 23 slots are used so far
+    // (TestOverlap's 17 and 6 here; released ones count too: slots never move).
+    constexpr size_t kUsed = 23;
+    const size_t liveBefore = sco::ListCommands(nullptr, 0);   // spawn.ship, test.long, copy.me
     std::vector<std::string> names;
     for (size_t i = 0; i < sco::kMaxCommands; ++i) names.push_back("bulk.c" + std::to_string(i));
     std::atomic<int> ok{ 0 };
     std::thread reg([&] {
-        for (size_t i = 3; i < sco::kMaxCommands; ++i)
-            ok += sco::RegisterCommand("bulk", named(names[i].c_str())) == Result::Ok;
+        for (size_t i = kUsed; i < sco::kMaxCommands; ++i)
+            ok += sco::RegisterCommand(&kBulk, "bulk", named(names[i].c_str())) == Result::Ok;
     });
+    const size_t want = liveBefore + sco::kMaxCommands - kUsed;
     size_t seen = 0;
     bool monotonic = true;
-    while (seen < sco::kMaxCommands) {
+    while (seen < want) {
         const size_t n = sco::ListCommands(nullptr, 0);
         monotonic = monotonic && n >= seen;
         seen = n;
-        if (n == sco::kMaxCommands) break;
         std::this_thread::yield();
     }
     reg.join();
-    CHECK(monotonic);
-    CHECK(ok == static_cast<int>(sco::kMaxCommands - 3));
-    CHECK(sco::RegisterCommand("bulk", named("bulk.over")) == Result::TooMany);
+    CHECK(liveBefore == 3 && monotonic);
+    CHECK(ok == static_cast<int>(sco::kMaxCommands - kUsed));
+    CHECK(sco::RegisterCommand(&kBulk, "bulk", named("bulk.over")) == Result::TooMany);
     std::vector<const sco::Command*> all(sco::kMaxCommands);
-    CHECK(sco::ListCommands(all.data(), all.size()) == sco::kMaxCommands);
-    CHECK(strcmp(all.back()->name, names.back().c_str()) == 0);
+    CHECK(sco::ListCommands(all.data(), all.size()) == want);
+    CHECK(strcmp(all[want - 1]->name, names.back().c_str()) == 0);
     CHECK(sco::Invoke("bulk.c100", nullptr, 0, nullptr, nullptr) == Result::Ok);
+    CHECK(sco::Release(&kBulk) == Result::Ok && sco::ListCommands(nullptr, 0) == liveBefore);
+}
+
+
+// ---- real overlap (meant for the ThreadSanitizer build) -------------------------------------
+
+constexpr uint32_t kMagic = 0x5C0FFEE;
+struct Box { std::atomic<uint32_t> magic{ kMagic }; std::atomic<int> calls{ 0 }; };
+static std::atomic<int> g_badBox{ 0 };
+static void UseBox(const char*, const void*, void* ctx) {
+    Box* b = static_cast<Box*>(ctx);
+    if (b->magic.load() != kMagic) g_badBox.fetch_add(1);
+    std::this_thread::yield();   // widen the window in which ctx is in use
+    if (b->magic.load() != kMagic) g_badBox.fetch_add(1);
+    b->calls.fetch_add(1);
+}
+static void FreeBox(void* ctx) {
+    Box* b = static_cast<Box*>(ctx);
+    b->magic.store(0);
+    delete b;
+}
+static std::atomic<int> g_concRan{ 0 };
+static void CountConc(void*) { g_concRan.fetch_add(1); }
+static Result CmdCount(const sco::Arg*, uint32_t, void*, char* reply, uint32_t size) {
+    snprintf(reply, size, "ok");
+    return Result::Ok;
+}
+static std::atomic<int> g_concDone{ 0 };
+static void ConcDone(Result r, const char*, void*) { if (r == Result::Ok) g_concDone.fetch_add(1); }
+
+static void TestOverlap() {
+    using namespace std::chrono_literals;
+    static char kConc;
+    const sco::Command cmd{ "conc.count", "Count", nullptr, nullptr, nullptr, 0, CmdCount, nullptr };
+    CHECK(sco::RegisterCommand(&kConc, "conc", cmd) == Result::Ok);
+
+    // A producer posts tasks and invokes while the game thread ticks; a second thread
+    // subscribes, unsubscribes and frees ctx through the documented safe point.
+    std::atomic<bool> stop{ false }, producerDone{ false }, churnDone{ false };
+    std::atomic<int> posted{ 0 }, invoked{ 0 };
+    std::thread producer([&] {
+        for (int i = 0; i < 2000; ++i) {
+            if (sco::Post(CountConc, nullptr) == Result::Ok) posted.fetch_add(1);
+            if (sco::Invoke("conc.count", nullptr, 0, ConcDone, nullptr) == Result::Ok) invoked.fetch_add(1);
+            if (i % 64 == 0) std::this_thread::yield();
+        }
+        producerDone.store(true);
+    });
+    static char kChurn;
+    std::atomic<int> boxes{ 0 };
+    std::thread churn([&] {
+        for (int i = 0; i < 300; ++i) {
+            Box* b = new Box;
+            if (sco::Subscribe(&kChurn, "tick", UseBox, b) != Result::Ok) { delete b; continue; }
+            std::this_thread::sleep_for(50us);
+            sco::Unsubscribe(&kChurn, "tick", UseBox);
+            while (sco::Post(FreeBox, b) != Result::Ok) std::this_thread::yield();   // the safe point
+            boxes.fetch_add(1);
+        }
+        churnDone.store(true);
+    });
+    // A reader lists commands with a real buffer and reads their strings while a writer registers.
+    static char kLate;
+    std::atomic<int> readBad{ 0 };
+    std::thread reader([&] {
+        const sco::Command* out[64];
+        while (!stop.load()) {
+            const size_t n = sco::ListCommands(out, 64);
+            for (size_t i = 0; i < n && i < 64; ++i)
+                if (!out[i]->name || !strchr(out[i]->name, '.') || !out[i]->title) readBad.fetch_add(1);
+        }
+    });
+    std::thread writer([&] {
+        char name[32];
+        for (int i = 0; i < 16; ++i) {
+            snprintf(name, sizeof name, "late.c%d", i);
+            const sco::Command c{ name, name, nullptr, nullptr, nullptr, 0, CmdCount, nullptr };
+            sco::RegisterCommand(&kLate, "late", c);
+            std::this_thread::yield();
+        }
+    });
+    // The game thread keeps ticking until both workers finish (or 4 s pass), then drains.
+    uint32_t now = 0;
+    const auto until = std::chrono::steady_clock::now() + 4s;
+    while ((!producerDone.load() || !churnDone.load()) && std::chrono::steady_clock::now() < until)
+        sco::GameThreadTick(++now);
+    producer.join();
+    churn.join();
+    stop.store(true);
+    reader.join();
+    writer.join();
+    while (sco::QueuedTasks()) sco::GameThreadTick(++now);
+    CHECK(g_concRan.load() == posted.load() && posted.load() > 0);
+    CHECK(g_concDone.load() == invoked.load() && invoked.load() > 0);
+    CHECK(boxes.load() == 300 && g_badBox.load() == 0);
+    CHECK(readBad.load() == 0);
+    size_t removed = 0;
+    CHECK(sco::Release(&kLate, &removed) == Result::Ok && removed == 16);
+    CHECK(sco::Release(&kConc) == Result::Ok);
 }
 
 int main() {
     TestBeforeGameThread();   // first: checks the "no game thread yet" state
     TestTaskQueue();
     TestEvents();
+    TestOverlap();    // before TestCommands, which fills every command slot
     TestCommands();
     std::printf("sco-core runtime tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

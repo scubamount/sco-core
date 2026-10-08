@@ -94,17 +94,18 @@ Features tell the player what happened through `sco::Status("Spawning %s...", na
 | `Status`, `GetStatus` | Safe from any thread (mutex) |
 | `SetLogSink`, `Log` | Safe from any thread (atomic sink); the sink itself must be thread-safe |
 | `Post`, `Subscribe`, `Unsubscribe`, `RegisterCommand`, `ListCommands`, `Invoke` | Safe from any thread. Tasks, event callbacks and commands always run on the game thread |
-| `GameThreadTick`, `DrainTasks`, `Dispatch` | Game thread only (the thread that called `SetGameThread`); elsewhere they run nothing |
+| `GameThreadTick`, `DrainTasks`, `Dispatch`, `Release` | Game thread only (the thread that called `SetGameThread`); elsewhere they run nothing. `GameThreadTick` and `DrainTasks` also refuse to run inside a task, callback or command |
 
 ## The runtime
 
 [`sco/runtime.h`](../include/sco/runtime.h) is how work reaches the game thread. The host calls `SetGameThread()` once from the game's main thread and `GameThreadTick(nowMs)` on every main-thread tick. Each tick first runs the tasks queued with `Post()`, in order, then dispatches the `tick` event.
 
 - **Task queue.** A fixed ring of 256 tasks; posting never allocates. A full queue refuses with `TooMany` rather than growing or dropping work. Tasks posted while the queue drains wait for the next tick.
-- **Event bus.** Subscribers are keyed by owner, event name and callback. The subscriber list is replaced on every change and a dispatch walks the list it started with, so subscribing or unsubscribing inside a callback applies from the next dispatch and never invalidates the walk.
-- **Commands.** Features register named actions (`spawn.ship`) with typed arguments. `Invoke()` checks the argument count and types and the command's capability before calling it. On the game thread it runs at once; from another thread it copies the name and arguments, queues a task, and reports the result through the `done` callback on the game thread. Registered commands never move, so `ListCommands()` pointers stay valid.
+- **Event bus.** Subscribers are keyed by owner, event name and callback. The subscriber list is replaced on every change and a dispatch walks the list it started with, so changes never invalidate the walk. A new subscriber is called from the next dispatch; a removed one is flagged and skipped at once, even by a dispatch already running. Since tasks never run during a dispatch, a task posted after `Unsubscribe` is the safe place to free `ctx`.
+- **Commands.** Features register named actions (`spawn.ship`) with typed arguments. `Invoke()` checks the argument count and types and the command's capability before calling it. On the game thread it runs at once; from another thread it copies the name and arguments, queues a task, and reports the result through the `done` callback on the game thread. The registry copies each command's strings and arg defs into a slot that never moves, so `ListCommands()` pointers stay readable.
+- **Owners.** Subscriptions, commands, tasks and queued `Invoke` calls carry an owner handle. `Release(owner)` removes them all at once, which is what unloading a plugin needs.
 
-The runtime is C++ and internal (version 0). The planned plain-C `sco_api.h` wraps it one to one; `Result` values already match its `sco_result`.
+The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../include/sco_api.h) is a thin layer over it: `Result` and `ArgType` share their numbers with `sco_result` and `sco_arg_type`, and `Arg` and `ArgDef` share their layout with `sco_arg` and `sco_arg_def` (checked at compile time). `Command` is not `sco_command`: in step 4 the host builds `sco_command` views of registered commands for `list_commands`.
 
 ## Limits
 
@@ -117,7 +118,8 @@ The runtime is C++ and internal (version 0). The planned plain-C `sco_api.h` wra
 | Status message | 255 characters | Truncated |
 | Queued tasks | 256 (`kMaxQueuedTasks`) | `Post` returns `TooMany` |
 | Event subscriptions | 512 (`kMaxSubscriptions`) | `Subscribe` returns `TooMany` |
-| Commands | 512 (`kMaxCommands`) | `RegisterCommand` returns `TooMany` |
+| Commands | 512 registrations (`kMaxCommands`); released ones still use a slot | `RegisterCommand` returns `TooMany` |
+| Command strings | name, title, capability 63; help 255; arg name 31; arg help 127 | `RegisterCommand` returns `BadArg` |
 | Arguments per command | 16 (`kMaxCommandArgs`) | `RegisterCommand` / `Invoke` return `BadArg` |
 | Command reply | 255 characters | Truncated |
 
@@ -130,9 +132,10 @@ The runtime is C++ and internal (version 0). The planned plain-C `sco_api.h` wra
 | `src/sco_log_status.cpp` | Log sink and status message |
 | `src/sco_image_win.cpp` | `ModuleImage()` for the running game (Windows) |
 | `src/sco_pe_file.cpp` | `FileImage::Load()` for host tools |
-| `src/api/sco_tasks.cpp` | Game-thread identity, task queue, `GameThreadTick` |
+| `src/api/sco_tasks.cpp` | Game-thread identity, task queue, `GameThreadTick`, `Release` |
 | `src/api/sco_events.cpp` | Event bus |
 | `src/api/sco_commands.cpp` | Command registry and `Invoke` |
+| `src/api/internal.h` | Callout depth and the per-module halves of `Release`, shared by `src/api/` |
 | `src/game/signatures.cpp` | `RegisterGameSignatures()`: the list of game tables |
 | `src/game/<feature>_sigs.cpp` | One feature's rows and its typed accessor |
 | `tests/test_core.cpp` | Unit tests against a synthetic image |

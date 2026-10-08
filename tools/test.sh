@@ -8,10 +8,16 @@ mkdir -p "$OUT"
 CXX=${CXX:-$(command -v clang++ || command -v g++)}
 CC=${CC:-$(command -v clang || command -v gcc)}
 
-# Plugin ABI pin (tests/abi_v1.c): compile-only, as C and as C++.
-"$CC" -std=c11 -Wall -Wextra -Wpedantic -Werror -I "$ROOT/include" -c "$ROOT/tests/abi_v1.c" -o "$OUT/abi_v1_c.o"
-"$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -I "$ROOT/include" -x c++ -c "$ROOT/tests/abi_v1.c" -o "$OUT/abi_v1_cpp.o"
-echo "abi_v1: layout pinned (C11, C++20)"
+# Plugin ABI pin (tests/abi_v1.c): compile-only. As C and C++ for this host, for x64 Windows
+# (the real target; -ffreestanding so no Windows SDK is needed), and with -fshort-enums to prove
+# the enums keep 4 bytes whatever the compiler's enum setting.
+ABI=(-Wall -Wextra -Wpedantic -Werror -I "$ROOT/include" -fsyntax-only)
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_v1.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_v1.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_v1.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_v1.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_v1.c"
+echo "abi_v1: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
 FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include")
 RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp")

@@ -6,7 +6,8 @@
  * file is append-only: new fields and functions get new lines at the end
  * of their struct's block; existing lines never change.
  *
- * tools/test.sh compiles it as C11 and as C++20.
+ * tools/test.sh compiles it as C11 and C++20 for the host, with
+ * -fshort-enums, and for x86_64-pc-windows-msvc.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -39,12 +40,14 @@ PIN(SCO_BAD_ARG == 3);
 PIN(SCO_CRASHED == 4);
 PIN(SCO_WRONG_THREAD == 5);
 PIN(SCO_TOO_MANY == 6);
+PIN(SCO_RESULT_FORCE32 == 0x7fffffff);
 
 /* ---- sco_log_level ---- */
 SIZE(sco_log_level, 4);
 PIN(SCO_LOG_INFO == 0);
 PIN(SCO_LOG_WARN == 1);
 PIN(SCO_LOG_ERROR == 2);
+PIN(SCO_LOG_FORCE32 == 0x7fffffff);
 
 /* ---- sco_arg_type ---- */
 SIZE(sco_arg_type, 4);
@@ -52,6 +55,7 @@ PIN(SCO_ARG_INT == 0);
 PIN(SCO_ARG_FLOAT == 1);
 PIN(SCO_ARG_STRING == 2);
 PIN(SCO_ARG_BOOL == 3);
+PIN(SCO_ARG_FORCE32 == 0x7fffffff);
 
 /* ---- sco_arg ---- */
 SIZE(sco_arg, 16);
@@ -79,7 +83,7 @@ AT(sco_command, help, 24);
 AT(sco_command, capability, 32);
 AT(sco_command, args, 40);
 AT(sco_command, nargs, 48);
-AT(sco_command, _pad1, 52);
+AT(sco_command, arg_def_size, 52);
 AT(sco_command, fn, 56);
 AT(sco_command, ctx, 64);
 

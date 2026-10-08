@@ -23,7 +23,9 @@ Plugins are native DLLs and run with the game's full rights. Only install plugin
 ## Rules
 
 - Plain C with `extern "C"`. No C++ types, no exceptions and no varargs cross the boundary; each side formats its own strings.
-- Every struct one side hands the other by pointer starts with `uint32_t size`, set to `sizeof` of the struct as that side was built. The host reads only the fields the plugin's `size` covers; a plugin calls only the functions the host's `size` covers.
+- `sco_api`, `sco_command` and `sco_plugin_info` start with `uint32_t size`, set to `sizeof` of the struct as that side was built. The host reads only the fields the plugin's `size` covers; a plugin calls only the functions the host's `size` covers.
+- `sco_arg_def` arrays are read with the stride in `sco_command.arg_def_size`, so `sco_arg_def` can grow in a later minor. `sco_arg` is frozen for major 1: its 8-byte union already holds every argument type.
+- Every enum is 4 bytes. Each has a `_FORCE32` member that pins the size; never pass it.
 - Pointers handed to a plugin are valid for the duration of the call unless this page says otherwise.
 - Strings are UTF-8 and NUL-terminated.
 - Calls that can fail return `sco_result`. Nothing throws. A fault in game code reached from a call comes back as `SCO_CRASHED`.
@@ -146,12 +148,12 @@ typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
 | `has(capability)` | Any | 1 if the capability is available on this game build, else 0 (unknown names too). See [Capabilities](#capabilities) |
 | `run_on_game_thread(self, fn, ctx)` | Any | Queues `fn(ctx)` to run on the game thread at the next tick, in the order queued. The queue holds 256 tasks; beyond that, `SCO_TOO_MANY` |
 | `subscribe(self, event, fn, ctx)` | Any | Calls `fn(event, data, ctx)` for each dispatch of `event`. Applies from the next dispatch |
-| `unsubscribe(self, event, fn)` | Any | Removes the subscription for that `event` and `fn`; `SCO_NOT_FOUND` if there is none. Applies from the next dispatch |
+| `unsubscribe(self, event, fn)` | Any | Removes the subscription for that `event` and `fn`; `SCO_NOT_FOUND` if there is none. Applies at once: a dispatch in progress won't call `fn` again. See [Freeing ctx](#freeing-ctx) |
 | `status(self, message)` | Any | Shows `hello: message` on the status line |
 | `log(self, level, message)` | Any | Writes `[hello] message` to `mod.log` |
 | `register_command(self, cmd)` | Any | Adds a command; see [Commands](#commands) |
 | `invoke(self, name, args, nargs, done, ctx)` | Any | Runs a command; see [Commands](#commands) |
-| `list_commands(out, max)` | Any | Writes up to `max` command pointers to `out` and returns the total number registered. Call with `max = 0` to get the count. The pointers stay valid until their owner unloads |
+| `list_commands(out, max)` | Any | Writes up to `max` command pointers to `out` and returns the number of live commands. Call with `max = 0` to get the count. The pointers stay valid until their owner unloads |
 
 ## Commands
 
@@ -177,12 +179,12 @@ typedef struct sco_command {
     const char* title;
     const char* help;
     const char* capability;
-    const sco_arg_def* args; uint32_t nargs; uint32_t _pad1;
+    const sco_arg_def* args; uint32_t nargs; uint32_t arg_def_size;
     sco_command_fn fn; void* ctx;
 } sco_command;
 ```
 
-`sco_arg.type` and `sco_arg_def.type` hold a `sco_arg_type`. Read the union member that matches: `i` for `SCO_ARG_INT` and `SCO_ARG_BOOL` (0 or 1), `f` for `SCO_ARG_FLOAT`, `s` for `SCO_ARG_STRING`. Set `_pad` fields to 0.
+`sco_arg.type` and `sco_arg_def.type` hold a `sco_arg_type`. Read the union member that matches: `i` for `SCO_ARG_INT` and `SCO_ARG_BOOL` (0 or 1; anything else is `SCO_BAD_ARG`), `f` for `SCO_ARG_FLOAT`, `s` for `SCO_ARG_STRING`. Set `_pad` fields to 0.
 
 | `sco_command` field | Set to |
 |---|---|
@@ -191,13 +193,15 @@ typedef struct sco_command {
 | `title` | The menu label, `"Spawn ship"` |
 | `help` | One line of help, or NULL |
 | `capability` | The `has()` name this command needs, or NULL for always available |
-| `args`, `nargs` | The argument definitions, in order |
+| `args`, `nargs` | The argument definitions, in order (at most 16) |
+| `arg_def_size` | `sizeof(sco_arg_def)` |
 | `fn`, `ctx` | Called as `fn(args, nargs, ctx, reply, reply_size)` |
 
 Behavior:
 
-- `register_command` copies `name`, `title`, `help` and `capability`. `args`, `fn` and `ctx` must stay valid until the plugin unloads. A duplicate name returns `SCO_BAD_ARG`, as does a name outside the plugin's prefix.
-- Commands run on the game thread. `invoke` from the game thread runs the command at once and calls `done` before returning. From any other thread it queues the command, and `done` runs on the game thread later.
+- `register_command` copies `name` (63 bytes at most), `title` (63), `help` (255), `capability` (63) and the arg defs with their `name` (31) and `help` (127). Only `fn` and `ctx` must stay valid until the plugin unloads. `SCO_BAD_ARG` for a longer string, a duplicate name, a name outside the plugin's prefix, a reserved prefix (`sco`, `host`, `menu`, `game`) or a prefix another owner already uses.
+- Commands run on the game thread. `invoke` from the game thread runs the command at once, calls `done` once before returning and returns the same result.
+- From any other thread `invoke` copies the name and arguments, queues the call and returns `SCO_OK`; `done` then runs exactly once, on the game thread. Any other return (`SCO_BAD_ARG`, or `SCO_TOO_MANY` when the queue is full or memory runs out) means nothing was queued and `done` is never called. A call still queued when the calling plugin unloads is dropped, and `done` isn't called.
 - Before calling `fn` the host checks the argument count and types (`SCO_BAD_ARG`) and the capability (`SCO_UNAVAILABLE`); `done` receives that result and `fn` isn't called.
 - `fn` writes a short human message into `reply`, at most `reply_size` bytes including the NUL: `"Spawned Cutlass Black"`. The menu shows it on the status line. `done` gets it as `reply`, valid only during the call.
 - `done` may be NULL when the caller doesn't need the result.
@@ -214,6 +218,13 @@ Not settled for 1.0: how the menu reads lists it shows today (ship classes, book
 
 `data` is valid only during the callback.
 
+### Freeing ctx
+
+After `unsubscribe` the host never calls `fn(…, ctx)` again, but a call may already be running:
+
+- On the game thread (in a tick callback, a task or a command, or inside `fn` itself), nothing else is running. Free `ctx` as soon as `unsubscribe` returns.
+- On another thread, the game thread may be inside `fn(ctx)` right now. Call `run_on_game_thread` after `unsubscribe` returns and free `ctx` in that task. Tasks never run while a dispatch is in progress, so by then `fn` has returned.
+
 ## Capabilities
 
 `has()` answers from sco-core's signature registry and sc-offline's feature readiness: one name per feature that logs `[+] ... ready` today, such as `"teleport"`, `"spawn.ship"`, `"console"`, `"outfits"` and `"contracts"`. Unknown names return 0. In v1 plugins reach features only through commands; `has()` lets a plugin grey out its own UI and say why.
@@ -222,7 +233,8 @@ Not settled for 1.0: how the menu reads lists it shows today (ship classes, book
 
 - `tick` callbacks, `run_on_game_thread` tasks and commands run on the game's main thread, from sc-offline's `WH_GETMESSAGE` hook.
 - `run_on_game_thread`, `subscribe`, `unsubscribe`, `status`, `log`, `register_command`, `invoke` and `list_commands` may be called from any thread.
-- A plugin that faults inside a callback is disabled: its subscriptions are dropped, one `[plugin] hello crashed in tick (0xC0000005) and was disabled` line is logged, and the game keeps running. This limits damage; it is not a sandbox, and a fault that corrupts the stack may not be caught.
+- When a plugin unloads, fails to load or is disabled, the host removes everything it registered: subscriptions, commands, queued tasks and queued `invoke` calls.
+- A plugin that faults inside a callback is disabled: everything it registered is removed, one `[plugin] hello crashed in tick (0xC0000005) and was disabled` line is logged, and the game keeps running. This limits damage; it is not a sandbox, and a fault that corrupts the stack may not be caught.
 
 ## Compatibility
 
@@ -236,9 +248,9 @@ Within major version 1:
   if (api->size > offsetof(sco_api, some_1_1_function) && api->some_1_1_function) { ... }
   ```
 
-- The host reads only the fields the plugin's `size` covers in `sco_plugin_info` and `sco_command`.
+- The host reads only the fields the plugin's `size` covers in `sco_plugin_info` and `sco_command`, and reads `sco_arg_def` arrays with the plugin's `arg_def_size`.
 
-[`tests/abi_v1.c`](../tests/abi_v1.c) enforces this. It pins, with static asserts, every struct's size and field offsets, every enum value, both version numbers, and the parameter types of every function and callback. `tools/test.sh` compiles it as C11 and as C++20 with `-Werror`, so CI fails on any change. After `sdk-v1.0.0` the file is append-only: an addition gets new lines, and an existing line never changes.
+[`tests/abi_v1.c`](../tests/abi_v1.c) enforces this. It pins, with static asserts, every struct's size and field offsets, every enum value and size, both version numbers, and the parameter types of every function and callback. `tools/test.sh` compiles it with `-Werror` as C11 and C++20 for the host, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc`, so CI fails on any change. After `sdk-v1.0.0` the file is append-only: an addition gets new lines, and an existing line never changes.
 
 ## Layout
 
@@ -249,6 +261,6 @@ On x64 (all sizes in bytes). `tests/abi_v1.c` is the source of truth.
 | `sco_result`, `sco_log_level`, `sco_arg_type` | 4 | |
 | `sco_arg` | 16 | `type` 0, `_pad` 4, `v` 8 |
 | `sco_arg_def` | 24 | `name` 0, `type` 8, `_pad` 12, `help` 16 |
-| `sco_command` | 72 | `size` 0, `_pad0` 4, `name` 8, `title` 16, `help` 24, `capability` 32, `args` 40, `nargs` 48, `_pad1` 52, `fn` 56, `ctx` 64 |
+| `sco_command` | 72 | `size` 0, `_pad0` 4, `name` 8, `title` 16, `help` 24, `capability` 32, `args` 40, `nargs` 48, `arg_def_size` 52, `fn` 56, `ctx` 64 |
 | `sco_api` | 88 | `size` 0, `major` 4, `minor` 6, `host_version` 8, `has` 16, `run_on_game_thread` 24, `subscribe` 32, `unsubscribe` 40, `status` 48, `log` 56, `register_command` 64, `invoke` 72, `list_commands` 80 |
 | `sco_plugin_info` | 32 | `size` 0, `api_major` 4, `api_minor` 6, `name` 8, `version` 16, `author` 24 |
