@@ -30,3 +30,10 @@ RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src
 "$OUT/test_runtime"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "$ROOT/tests/test_runtime.cpp" "${RUNTIME[@]}" -o "$OUT/test_runtime_tsan"
 "$OUT/test_runtime_tsan"
+# Capabilities and the host's sco_api table, over the same runtime, under both sanitizer sets.
+HOST=("$ROOT/tests/test_host.cpp" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "${RUNTIME[@]}"
+      "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_log_status.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${HOST[@]}" -o "$OUT/test_host"
+"$OUT/test_host"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${HOST[@]}" -o "$OUT/test_host_tsan"
+"$OUT/test_host_tsan"

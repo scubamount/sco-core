@@ -201,12 +201,19 @@ struct Pending {
     uint32_t nargs;
     InvokeDone done;
     void* ctx;
+    TaskFn dropCtx;                 // frees ctx when Release drops the call; may be null
 };
 
 static void FreePending(void* p) {
     Pending* job = static_cast<Pending*>(p);
     delete[] job->strings;
     delete job;
+}
+
+static void DropPending(void* p) {
+    Pending* job = static_cast<Pending*>(p);
+    if (job->dropCtx) job->dropCtx(job->ctx);
+    FreePending(job);
 }
 
 static void RunPending(void* p) {
@@ -216,6 +223,11 @@ static void RunPending(void* p) {
 }
 
 Result Invoke(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx, const void* owner) {
+    return detail::InvokeOwned(name, args, nargs, done, ctx, owner, nullptr);
+}
+
+Result detail::InvokeOwned(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx,
+                           const void* owner, TaskFn dropCtx) {
     if (!name || nargs > kMaxCommandArgs || (nargs && !args) || detail::Released(owner)) return Result::BadArg;
     if (OnGameThread()) {
         Result r = Result::Ok;
@@ -230,6 +242,7 @@ Result Invoke(const char* name, const Arg* args, uint32_t nargs, InvokeDone done
     job->nargs = nargs;
     job->done = done;
     job->ctx = ctx;
+    job->dropCtx = dropCtx;
     job->strings = nullptr;
     size_t total = 0;
     for (uint32_t i = 0; i < nargs; ++i)
@@ -248,7 +261,7 @@ Result Invoke(const char* name, const Arg* args, uint32_t nargs, InvokeDone done
             at += len;
         }
     }
-    const Result r = detail::PostOwned(RunPending, FreePending, job, owner);
+    const Result r = detail::PostOwned(RunPending, DropPending, job, owner);
     if (r != Result::Ok) FreePending(job);
     return r;
 }
