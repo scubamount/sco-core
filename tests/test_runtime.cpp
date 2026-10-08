@@ -400,6 +400,8 @@ static void TestCommands() {
     static char kOther;
     CHECK(sco::RegisterCommand(&kOther, "menu", named("menu.open")) == Result::BadArg);
     CHECK(sco::RegisterCommand(&kOther, "sco", named("sco.x")) == Result::BadArg);
+    CHECK(sco::RegisterCommand(&kOther, "sco.x", named("sco.x.y")) == Result::BadArg);          // dotted prefix
+    CHECK(sco::RegisterCommand(&kOther, "hello.evil", named("hello.evil.z")) == Result::BadArg);
     CHECK(sco::RegisterCommand(&kOther, "spawn", named("spawn.other")) == Result::BadArg);   // host owns spawn.*
     CHECK(sco::RegisterCommand(&kOther, "hello", named("hello.other")) == Result::BadArg);   // kOwnerH owns hello.*
     CHECK(sco::RegisterCommand(&kOwnerH, "hello", named("hello.again")) == Result::Ok);       // same owner: fine
@@ -419,6 +421,15 @@ static void TestCommands() {
     CHECK(sco::Invoke("hello.wave", nullptr, 0, nullptr, nullptr) == Result::Ok && nop.calls == 2);
     CHECK(sco::Release(&kOther) == Result::Ok);
 
+    // Release is final: the released owner can't add anything back, from any thread.
+    CHECK(sco::Release(&kOwnerH) == Result::BadArg);
+    CHECK(sco::Post(Record, Tag(1), &kOwnerH) == Result::BadArg);
+    CHECK(sco::Subscribe(&kOwnerH, "tick", OnEvent, nullptr) == Result::BadArg);
+    CHECK(sco::RegisterCommand(&kOwnerH, "hello", named("hello.back")) == Result::BadArg);
+    CHECK(sco::Invoke("spawn.ship", good, 4, OnDone, &d, &kOwnerH) == Result::BadArg);
+    std::thread([&] { r = sco::Post(Record, Tag(1), &kOwnerH); }).join();
+    CHECK(r == Result::BadArg && sco::QueuedTasks() == 0);
+
     // Registering from another thread while the game thread lists. 23 slots are used so far
     // (TestOverlap's 17 and 6 here; released ones count too: slots never move).
     constexpr size_t kUsed = 23;
@@ -433,7 +444,8 @@ static void TestCommands() {
     const size_t want = liveBefore + sco::kMaxCommands - kUsed;
     size_t seen = 0;
     bool monotonic = true;
-    while (seen < want) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (seen < want && std::chrono::steady_clock::now() < deadline) {
         const size_t n = sco::ListCommands(nullptr, 0);
         monotonic = monotonic && n >= seen;
         seen = n;
@@ -545,6 +557,30 @@ static void TestOverlap() {
     CHECK(readBad.load() == 0);
     size_t removed = 0;
     CHECK(sco::Release(&kLate, &removed) == Result::Ok && removed == 16);
+
+    // A thread keeps posting and invoking for an owner while the game thread releases it:
+    // nothing of that owner runs after Release returns.
+    static char kDoomed;
+    g_concRan.store(0);
+    g_concDone.store(0);
+    std::atomic<bool> go{ true };
+    std::thread spammer([&] {
+        while (go.load()) {
+            sco::Post(CountConc, nullptr, &kDoomed);
+            sco::Invoke("conc.count", nullptr, 0, ConcDone, nullptr, &kDoomed);
+            std::this_thread::yield();
+        }
+    });
+    for (const auto stopAt = std::chrono::steady_clock::now() + 2s;
+         g_concRan.load() < 50 && std::chrono::steady_clock::now() < stopAt;)
+        sco::GameThreadTick(++now);
+    CHECK(sco::Release(&kDoomed) == Result::Ok);
+    const int ranAtRelease = g_concRan.load(), doneAtRelease = g_concDone.load();
+    for (int i = 0; i < 200; ++i) sco::GameThreadTick(++now);
+    go.store(false);
+    spammer.join();
+    while (sco::QueuedTasks()) sco::GameThreadTick(++now);
+    CHECK(g_concRan.load() == ranAtRelease && g_concDone.load() == doneAtRelease);
     CHECK(sco::Release(&kConc) == Result::Ok);
 }
 

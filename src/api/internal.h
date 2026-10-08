@@ -15,6 +15,10 @@ struct CallScope {
     CallScope& operator=(const CallScope&) = delete;
 };
 
+// True once Release(owner) has started. Checked under each module's own lock, in the same
+// critical section that adds the item, so nothing an owner adds can outlive its Release.
+bool Released(const void* owner);
+
 // Queues fn(ctx); if the task is dropped by Release(owner) instead, drop(ctx) runs so the
 // queued state can be freed. drop must not call back into the runtime.
 Result PostOwned(TaskFn fn, TaskFn drop, void* ctx, const void* owner);

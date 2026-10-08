@@ -33,6 +33,7 @@ Result Subscribe(const void* owner, const char* event, EventFn fn, void* ctx) {
     if (!event || !*event || !fn) return Result::BadArg;
     try {
         std::lock_guard<std::mutex> hold(g_subLock);
+        if (detail::Released(owner)) return Result::BadArg;
         for (const auto& s : *g_subs)
             if (Same(*s, owner, event, fn)) return Result::BadArg;
         if (g_subs->size() >= kMaxSubscriptions) return Result::TooMany;

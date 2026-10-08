@@ -199,7 +199,7 @@ typedef struct sco_command {
 
 Behavior:
 
-- `register_command` copies `name` (63 bytes at most), `title` (63), `help` (255), `capability` (63) and the arg defs with their `name` (31) and `help` (127). Only `fn` and `ctx` must stay valid until the plugin unloads. `SCO_BAD_ARG` for a longer string, a duplicate name, a name outside the plugin's prefix, a reserved prefix (`sco`, `host`, `menu`, `game`) or a prefix another owner already uses.
+- `register_command` copies `name` (63 bytes at most), `title` (63), `help` (255), `capability` (63) and the arg defs with their `name` (31) and `help` (127). Only `fn` and `ctx` must stay valid until the plugin unloads. `SCO_BAD_ARG` for a longer string, a duplicate name, a name outside the plugin's prefix, a reserved prefix (`sco`, `host`, `menu`, `game`) or a prefix another plugin or a host feature already uses. The prefix is the plugin's `name`, which may not contain a dot.
 - Commands run on the game thread. `invoke` from the game thread runs the command at once, calls `done` once before returning and returns the same result.
 - From any other thread `invoke` copies the name and arguments, queues the call and returns `SCO_OK`; `done` then runs exactly once, on the game thread. Any other return (`SCO_BAD_ARG`, or `SCO_TOO_MANY` when the queue is full or memory runs out) means nothing was queued and `done` is never called. A call still queued when the calling plugin unloads is dropped, and `done` isn't called.
 - Before calling `fn` the host checks the argument count and types (`SCO_BAD_ARG`) and the capability (`SCO_UNAVAILABLE`); `done` receives that result and `fn` isn't called.
@@ -233,7 +233,7 @@ After `unsubscribe` the host never calls `fn(…, ctx)` again, but a call may al
 
 - `tick` callbacks, `run_on_game_thread` tasks and commands run on the game's main thread, from sc-offline's `WH_GETMESSAGE` hook.
 - `run_on_game_thread`, `subscribe`, `unsubscribe`, `status`, `log`, `register_command`, `invoke` and `list_commands` may be called from any thread.
-- When a plugin unloads, fails to load or is disabled, the host removes everything it registered: subscriptions, commands, queued tasks and queued `invoke` calls.
+- When a plugin unloads, fails to load or is disabled, the host removes everything it registered: subscriptions, commands, queued tasks and queued `invoke` calls. From then on every `sco_api` call with its `self` returns `SCO_BAD_ARG`, so a plugin thread still running can't add anything back.
 - A plugin that faults inside a callback is disabled: everything it registered is removed, one `[plugin] hello crashed in tick (0xC0000005) and was disabled` line is logged, and the game keeps running. This limits damage; it is not a sandbox, and a fault that corrupts the stack may not be caught.
 
 ## Compatibility

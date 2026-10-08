@@ -103,7 +103,7 @@ Features tell the player what happened through `sco::Status("Spawning %s...", na
 - **Task queue.** A fixed ring of 256 tasks; posting never allocates. A full queue refuses with `TooMany` rather than growing or dropping work. Tasks posted while the queue drains wait for the next tick.
 - **Event bus.** Subscribers are keyed by owner, event name and callback. The subscriber list is replaced on every change and a dispatch walks the list it started with, so changes never invalidate the walk. A new subscriber is called from the next dispatch; a removed one is flagged and skipped at once, even by a dispatch already running. Since tasks never run during a dispatch, a task posted after `Unsubscribe` is the safe place to free `ctx`.
 - **Commands.** Features register named actions (`spawn.ship`) with typed arguments. `Invoke()` checks the argument count and types and the command's capability before calling it. On the game thread it runs at once; from another thread it copies the name and arguments, queues a task, and reports the result through the `done` callback on the game thread. The registry copies each command's strings and arg defs into a slot that never moves, so `ListCommands()` pointers stay readable.
-- **Owners.** Subscriptions, commands, tasks and queued `Invoke` calls carry an owner handle. `Release(owner)` removes them all at once, which is what unloading a plugin needs.
+- **Owners.** Subscriptions, commands, tasks and queued `Invoke` calls carry an owner handle. `Release(owner)` removes them all at once and is final: later calls naming that owner are refused, so nothing it adds can outlive it. That is what unloading or disabling a plugin needs.
 
 The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../include/sco_api.h) is a thin layer over it: `Result` and `ArgType` share their numbers with `sco_result` and `sco_arg_type`, and `Arg` and `ArgDef` share their layout with `sco_arg` and `sco_arg_def` (checked at compile time). `Command` is not `sco_command`: in step 4 the host builds `sco_command` views of registered commands for `list_commands`.
 
@@ -119,6 +119,7 @@ The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../includ
 | Queued tasks | 256 (`kMaxQueuedTasks`) | `Post` returns `TooMany` |
 | Event subscriptions | 512 (`kMaxSubscriptions`) | `Subscribe` returns `TooMany` |
 | Commands | 512 registrations (`kMaxCommands`); released ones still use a slot | `RegisterCommand` returns `TooMany` |
+| Released owners | 64 (`kMaxReleasedOwners`) | `Release` returns `TooMany` |
 | Command strings | name, title, capability 63; help 255; arg name 31; arg help 127 | `RegisterCommand` returns `BadArg` |
 | Arguments per command | 16 (`kMaxCommandArgs`) | `RegisterCommand` / `Invoke` return `BadArg` |
 | Command reply | 255 characters | Truncated |

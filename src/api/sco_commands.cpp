@@ -96,7 +96,8 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
     size_t prefixLen = 0;
     if (prefix) {
         prefixLen = strlen(prefix);
-        if (!owner || prefixLen == 0 || !HasPrefix(cmd.name, prefix, prefixLen)) return Result::BadArg;
+        if (!owner || prefixLen == 0 || strchr(prefix, '.') || !HasPrefix(cmd.name, prefix, prefixLen))
+            return Result::BadArg;
         for (const char* r : kReservedPrefixes)
             if (strcmp(prefix, r) == 0) return Result::BadArg;
     }
@@ -108,7 +109,7 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
     }
 
     std::lock_guard<std::mutex> hold(g_regLock);
-    if (FindLive(cmd.name)) return Result::BadArg;
+    if (detail::Released(owner) || FindLive(cmd.name)) return Result::BadArg;
     if (prefix && PrefixTaken(owner, prefix, prefixLen)) return Result::BadArg;
     const size_t n = g_slotCount.load(std::memory_order_relaxed);
     if (n == kMaxCommands) return Result::TooMany;
@@ -215,7 +216,7 @@ static void RunPending(void* p) {
 }
 
 Result Invoke(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx, const void* owner) {
-    if (!name || nargs > kMaxCommandArgs || (nargs && !args)) return Result::BadArg;
+    if (!name || nargs > kMaxCommandArgs || (nargs && !args) || detail::Released(owner)) return Result::BadArg;
     if (OnGameThread()) {
         Result r = Result::Ok;
         RunAndReport(name, args, nargs, done, ctx, &r);
