@@ -581,6 +581,19 @@ static void TestOverlap() {
     spammer.join();
     while (sco::QueuedTasks()) sco::GameThreadTick(++now);
     CHECK(g_concRan.load() == ranAtRelease && g_concDone.load() == doneAtRelease);
+
+    // No cap on released owners: the 200th release still removes its owner's subscription.
+    static char kMany[200];
+    int manyOk = 0;
+    Box* box = new Box;
+    for (int i = 0; i < 200; ++i) {
+        sco::Subscribe(&kMany[i], "tick", UseBox, box);
+        manyOk += sco::Release(&kMany[i]) == Result::Ok;
+    }
+    const int boxCalls = box->calls.load();
+    sco::GameThreadTick(++now);
+    CHECK(manyOk == 200 && box->calls.load() == boxCalls);
+    delete box;
     CHECK(sco::Release(&kConc) == Result::Ok);
 }
 

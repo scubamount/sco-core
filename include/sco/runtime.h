@@ -45,9 +45,8 @@ Result GameThreadTick(uint32_t nowMs);
 // pointers again. The owner handle stays released for the life of the process; don't reuse
 // its address (the host keeps plugin handles alive).
 // Game thread only (WrongThread otherwise). BadArg for nullptr or an owner already released;
-// TooMany when kMaxReleasedOwners have been released, or out of memory (nothing removed).
+// TooMany when out of memory (nothing removed; retry). The released-owner list has no limit.
 // `removed` (optional) gets the number of items removed.
-constexpr size_t kMaxReleasedOwners = 64;
 Result Release(const void* owner, size_t* removed = nullptr);
 
 // ---- task queue -----------------------------------------------------------------------------

@@ -4,6 +4,7 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace sco {
 
@@ -36,17 +37,16 @@ CallScope::CallScope() { ++g_callDepth; }
 CallScope::~CallScope() { --g_callDepth; }
 }  // namespace detail
 
-// Owners that Release() has started on. Append-only, published by count; lock order is
-// module lock -> g_ownerLock (Release takes g_ownerLock alone).
-static std::mutex  g_ownerLock;
-static const void* g_released[kMaxReleasedOwners];
-static size_t      g_releasedCount = 0;
+// Owners that Release() has started on; grows for the life of the process (one pointer per
+// released plugin). Lock order is module lock -> g_ownerLock; Release takes g_ownerLock alone.
+static std::mutex               g_ownerLock;
+static std::vector<const void*> g_released;
 
 bool detail::Released(const void* owner) {
     if (!owner) return false;
     std::lock_guard<std::mutex> hold(g_ownerLock);
-    for (size_t i = 0; i < g_releasedCount; ++i)
-        if (g_released[i] == owner) return true;
+    for (const void* r : g_released)
+        if (r == owner) return true;
     return false;
 }
 
@@ -128,17 +128,20 @@ Result Release(const void* owner, size_t* removed) {
         // Mark first: an add that hasn't taken its module lock yet will see the mark; one that
         // already has finishes before the removal below takes the same lock, and is removed.
         std::lock_guard<std::mutex> hold(g_ownerLock);
-        for (size_t i = 0; i < g_releasedCount; ++i)
-            if (g_released[i] == owner) return Result::BadArg;
-        if (g_releasedCount == kMaxReleasedOwners) return Result::TooMany;
-        g_released[g_releasedCount++] = owner;
+        for (const void* r : g_released)
+            if (r == owner) return Result::BadArg;
+        try {
+            g_released.push_back(owner);
+        } catch (...) {   // out of memory: nothing marked, nothing removed
+            return Result::TooMany;
+        }
     }
     // Subscriptions first: they are the only part a running dispatch can still reach. Out of
     // memory here leaves them in place, so undo the mark and let the caller retry.
     const long subs = detail::ReleaseSubscriptions(owner);
     if (subs < 0) {
         std::lock_guard<std::mutex> hold(g_ownerLock);
-        --g_releasedCount;
+        g_released.pop_back();   // only the game thread appends, so the last entry is ours
         return Result::TooMany;
     }
     const long cmds = detail::ReleaseCommands(owner);

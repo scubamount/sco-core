@@ -119,7 +119,6 @@ The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../includ
 | Queued tasks | 256 (`kMaxQueuedTasks`) | `Post` returns `TooMany` |
 | Event subscriptions | 512 (`kMaxSubscriptions`) | `Subscribe` returns `TooMany` |
 | Commands | 512 registrations (`kMaxCommands`); released ones still use a slot | `RegisterCommand` returns `TooMany` |
-| Released owners | 64 (`kMaxReleasedOwners`) | `Release` returns `TooMany` |
 | Command strings | name, title, capability 63; help 255; arg name 31; arg help 127 | `RegisterCommand` returns `BadArg` |
 | Arguments per command | 16 (`kMaxCommandArgs`) | `RegisterCommand` / `Invoke` return `BadArg` |
 | Command reply | 255 characters | Truncated |
