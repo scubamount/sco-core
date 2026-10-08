@@ -1,0 +1,27 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Host unit tests
+        run: CXX=clang++ tools/test.sh
+
+      - name: sco-sigcheck builds
+        run: |
+          set +e
+          CXX=clang++ tools/sigcheck.sh /dev/null
+          code=$?
+          [ $code -eq 2 ] || { echo "expected exit 2 (not a PE file), got $code"; exit 1; }

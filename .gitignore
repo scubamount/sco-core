@@ -1,0 +1,7 @@
+/tests/out/
+.vs/
+x64/
+*.obj
+*.pdb
+*.user
+.DS_Store
