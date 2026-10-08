@@ -56,7 +56,7 @@ typedef enum sco_log_level { SCO_LOG_INFO = 0, SCO_LOG_WARN = 1, SCO_LOG_ERROR =
 | `SCO_BAD_ARG` | A NULL where a value is needed, a bad name, or arguments that don't match the command's definition |
 | `SCO_CRASHED` | The call faulted inside game or plugin code; the host survived |
 | `SCO_WRONG_THREAD` | Called from a thread the function doesn't allow |
-| `SCO_TOO_MANY` | A queue or table is full, or the name is already registered |
+| `SCO_TOO_MANY` | A queue or table is full |
 
 ## The plugin's exports
 
@@ -196,7 +196,7 @@ typedef struct sco_command {
 
 Behavior:
 
-- `register_command` copies `name`, `title`, `help` and `capability`. `args`, `fn` and `ctx` must stay valid until the plugin unloads. A duplicate name returns `SCO_TOO_MANY`; a name outside the plugin's prefix returns `SCO_BAD_ARG`.
+- `register_command` copies `name`, `title`, `help` and `capability`. `args`, `fn` and `ctx` must stay valid until the plugin unloads. A duplicate name returns `SCO_BAD_ARG`, as does a name outside the plugin's prefix.
 - Commands run on the game thread. `invoke` from the game thread runs the command at once and calls `done` before returning. From any other thread it queues the command, and `done` runs on the game thread later.
 - Before calling `fn` the host checks the argument count and types (`SCO_BAD_ARG`) and the capability (`SCO_UNAVAILABLE`); `done` receives that result and `fn` isn't called.
 - `fn` writes a short human message into `reply`, at most `reply_size` bytes including the NUL: `"Spawned Cutlass Black"`. The menu shows it on the status line. `done` gets it as `reply`, valid only during the call.

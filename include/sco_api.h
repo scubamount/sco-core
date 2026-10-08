@@ -49,10 +49,10 @@ typedef enum sco_result {
     SCO_OK           = 0,
     SCO_UNAVAILABLE  = 1, /* capability missing on this game build */
     SCO_NOT_FOUND    = 2, /* unknown command or subscription */
-    SCO_BAD_ARG      = 3, /* NULL, bad name, wrong argument count or type */
+    SCO_BAD_ARG      = 3, /* NULL, bad or duplicate name, wrong argument count or type */
     SCO_CRASHED      = 4, /* the call faulted inside game or plugin code */
     SCO_WRONG_THREAD = 5, /* called from a thread the function forbids */
-    SCO_TOO_MANY     = 6  /* queue or table full, or a duplicate name */
+    SCO_TOO_MANY     = 6  /* queue or table full */
 } sco_result;
 
 typedef enum sco_log_level {
