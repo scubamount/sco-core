@@ -106,6 +106,27 @@ See [The runtime](architecture.md#the-runtime) for the model. Every call returns
 
 `Invoke(name, args, nargs, done, ctx, owner)` on the game thread runs the command at once, calls `done(result, reply, ctx)` (if set) and returns the same result. From another thread it copies the name and arguments, queues the call as a task of `owner` and returns `Ok`; `done` runs exactly once on the game thread on a later tick, unless `Release(owner)` drops the call first. Any other return (`BadArg`, or `TooMany` for a full queue or no memory) means `done` is never called. Results: `NotFound` (no such live command), `BadArg` (argument count or type differs from the command's `ArgDef`s, a null string, or a `Bool` that isn't 0 or 1), `Unavailable` (capability check), else what the command returned. `reply` is at most 255 characters and always NUL-terminated.
 
+## `sco/caps.h`: capabilities
+
+Named yes/no answers to "does this feature work on this game build?". `sco_api.has()` and the command capability check answer from here once `sco::host::BuildApi` has run. Every function is safe from any thread.
+
+| Function | Does |
+|---|---|
+| `Result caps::Set(const char* name, bool ready, const char* reason)` | Sets or updates a capability. Names are lowercase dotted segments (`teleport`, `spawn.ship`), at most 63 characters; `reason` is copied (127 characters, truncated) and says why it isn't ready. Names are never removed. `BadArg` for a bad name; `TooMany` after 256 names |
+| `Result caps::SetFromSignatures(const char* name, const char* const* ids, size_t n)` | Ready when every listed signature row is OK; else not ready with `needs <id> (<STATE>)` or `unknown signature <id>` for the first row that isn't. Call after `ResolveAll` |
+| `bool caps::Has(const char* name)` | True when set ready; unknown names and `nullptr` are false |
+| `size_t caps::List(Entry* out, size_t max)` | Copies up to `max` entries (name, ready, reason) in first-set order; returns the number of names |
+
+## `sco/host.h`: the host's `sco_api` table
+
+| Function | Does |
+|---|---|
+| `const sco_api* host::BuildApi(const HostInfo& info)` | The process's one `sco_api` table, over the runtime, caps, status and log. Wires `SetCapabilityCheck` to `caps::Has`. Calling again updates `host_version` and returns the same table; `nullptr` for a null version |
+| `sco_plugin* host::NewPlugin(const char* id)` | A handle for one plugin load: `[a-z0-9_]`, 1-31 characters, not `sco`/`host`/`menu`/`game`, and not held by a handle that hasn't been released. Never freed or reused; 256 for the life of the process. The handle is the plugin's runtime owner, so `sco::Release(self)` removes everything it added |
+| `const char* host::PluginId(const sco_plugin* p)` | The handle's id; `nullptr` for a pointer `NewPlugin` didn't return |
+
+The table checks `self` on every call (`SCO_BAD_ARG` for a pointer the host didn't hand out or one already released; `status` and `log` are dropped). `register_command` uses the plugin id as the prefix, needs `size >= sizeof(sco_command)` and reads arg defs with `arg_def_size`. `list_commands` returns host-built views of every live command, host features' too; in a view `fn` and `ctx` are `NULL` (run commands with `invoke`). `log` writes `[<id>] message`, with `warning: ` or `error: ` for the higher levels.
+
 ## `sco/pe_file.h`: host tools only
 
 ```cpp

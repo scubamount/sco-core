@@ -1,9 +1,9 @@
 #pragma once
 // Game-thread runtime: the task queue, the event bus and the command registry.
-// C++ and internal. The plain-C sco_api.h (SDK step 4) is a thin layer over it: results share
+// C++ and internal. The plain-C sco_api.h (filled by sco/host.h) is a thin layer over it: results share
 // their numbers with sco_result, and Arg / ArgDef share their layout with sco_arg /
 // sco_arg_def (static_asserts in src/api/sco_commands.cpp). Command is NOT sco_command: the
-// host builds sco_command views of registered commands for list_commands in step 4.
+// host table (sco/host.h) builds sco_command views of registered commands for list_commands.
 //
 // Threading model:
 //   - The host calls SetGameThread() once from the game's main thread, then GameThreadTick()
@@ -140,8 +140,8 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
 // command drops out of later lists.
 size_t ListCommands(const Command** out, size_t max);
 
-// Answers a command's `capability`. Until a check is installed (step 3), every command that
-// names a capability is Unavailable.
+// Answers a command's `capability`. Until a check is installed (sco::host::BuildApi installs
+// sco::caps::Has), every command that names a capability is Unavailable.
 using CapabilityCheck = bool (*)(const char* capability);
 void SetCapabilityCheck(CapabilityCheck check);
 
