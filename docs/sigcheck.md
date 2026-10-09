@@ -21,11 +21,12 @@ The exe usually lives at `StarCitizen\LIVE\Bin64\StarCitizen.exe`. Copy it to th
 
 ```
 image: timestamp 0x6aa945e3, size 0x12a9b000, preferred base 0x140000000
-[core] signatures: 4/4 OK
+[core] signatures: 5/5 OK
 OK       teleport.to_camera                   0x2e20f30
 OK       teleport.client_mgr                  0xa19cf28
 OK       teleport.handle_from_id              0x2d3ce50
 OK       teleport.entity_system               0x9e2e708
+OK       system.quit                          0x7237c60
 ```
 
 - `image:` identifies the build: the PE timestamp and image size change with every game build.
@@ -35,7 +36,7 @@ OK       teleport.entity_system               0x9e2e708
 A broken build looks like this:
 
 ```
-[core] signatures: 0/4 OK
+[core] signatures: 1/5 OK
 [core] FAILED   teleport.to_camera (layout changed at +0x2b0)
 [core] BLOCKED  teleport.client_mgr (needs teleport.to_camera)
 ...
@@ -63,5 +64,5 @@ Scripts can gate on the exit code. CI checks that the tool builds and exits 2 on
 ## What it can't tell you
 
 - Whether the feature works. A row being found means the bytes match; only playing proves the game still behaves the same.
-- Anything about addresses sc-offline still scans for itself (everything except teleport, for now).
+- Anything about addresses sc-offline still scans for itself (everything except teleport and the CSystem::Quit hook, for now).
 - Anything about patches applied by other means (the launcher, data files).
