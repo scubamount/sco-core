@@ -36,6 +36,9 @@ find_package(Threads REQUIRED)
 function(sco_warnings target)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4 /utf-8 $<$<BOOL:${SCO_WERROR}>:/WX>)
+    # C4996 flags every standard fopen/strcpy as "unsafe" in favour of the non-portable _s
+    # variants; the code stays ISO C/C++, so turn off that one CRT deprecation, nothing else.
+    target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
   else()
     target_compile_options(${target} PRIVATE -Wall -Wextra $<$<BOOL:${SCO_WERROR}>:-Werror>)
   endif()
