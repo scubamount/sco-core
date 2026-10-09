@@ -32,7 +32,7 @@ A row finds its address one of two ways:
 
 ### Ids
 
-Ids are `<feature>.<thing>` in lowercase with underscores: `teleport.to_camera`, `teleport.entity_system`. The feature part matches the file under `src/game/` and the header under `include/sco/game/`. Ids are unique across all tables; registering a duplicate fails.
+Ids are `<feature>.<thing>` in lowercase with underscores: `teleport.to_camera`, `teleport.entity_system`, `system.quit`. The feature part matches the file under `src/game/` and the header under `include/sco/game/`. Ids are unique across all tables; registering a duplicate fails.
 
 ## Results
 

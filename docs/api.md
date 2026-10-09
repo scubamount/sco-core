@@ -60,6 +60,7 @@ Helpers for resolvers:
 |---|---|
 | `bool sco::game::RegisterGameSignatures()` | Registers every game table. Runs once; later calls return the first result |
 | `bool sco::game::TeleportAddresses(TeleportAddrs& out)` | Fills `clientMgr`, `entitySystem` and `handleFromId`, or returns false and leaves `out` untouched if any `teleport.*` row isn't OK |
+| `bool sco::game::QuitFunction(QuitHook& out)` (`sco/game/system.h`) | Fills `fn` (CSystem::Quit's entry) and `stolenBytes` (`kQuitStolenBytes`, 15: the whole instructions a 14-byte absolute jmp detour overwrites), or returns false and leaves `out` untouched if `system.quit` isn't OK |
 
 Rows today:
 
@@ -69,6 +70,7 @@ Rows today:
 | `teleport.client_mgr` | The global read at `to_camera+0x24` |
 | `teleport.handle_from_id` | The function called at `to_camera+0x9F` |
 | `teleport.entity_system` | The global read at `to_camera+0x2B0` |
+| `system.quit` | CSystem::Quit: the function whose first `lea r9` to the `CSystem::Quit invoked with - cause=$$, ...` log string is at `+0xA3`, with 9 layout checks (the 15 prologue bytes a detour overwrites among them) and its second reference to the string at `+0x176`. `MISSING` if the string is gone |
 
 ## `sco/log.h`: log
 
