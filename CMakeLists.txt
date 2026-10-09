@@ -94,6 +94,11 @@ target_include_directories(sco_engine PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_engine PUBLIC Threads::Threads)
 sco_project_target(sco_engine)
 
+# The DataCore parser and validation (sco/datacore.h): bytes in, tables out. No engine, no Windows.
+add_library(sco_datacore STATIC src/datacore/datacore.cpp)
+target_include_directories(sco_datacore PUBLIC "${SCO_INCLUDE_DIR}")
+sco_project_target(sco_datacore)
+
 add_library(sco_plugins STATIC
   src/plugins/manifest.cpp src/plugins/discover.cpp src/plugins/loader.cpp src/plugins/content.cpp)
 if(WIN32)
