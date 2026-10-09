@@ -26,11 +26,15 @@ for f in "$ROOT/sdk/template/plugin.c" "$ROOT/sdk/examples/hello/hello.c"; do
   "$CC" -std=c11 "${ABI[@]}" "$f"
 done
 "$CC" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -I "$ROOT/include" -fsyntax-only "$ROOT/sdk/tools/sco-plugin-check.c"
-echo "sdk: template, hello and sco-plugin-check compile against sco_api.h"
+# The C++20 layer (include/scosdk/): the cpp_hello example and each header on its own.
+for f in "$ROOT/sdk/examples/cpp_hello/cpp_hello.cpp" "$ROOT"/include/scosdk/*.hpp; do
+  "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$f"
+done
+echo "sdk: template, hello, cpp_hello, include/scosdk and sco-plugin-check compile against sco_api.h"
 
 FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include")
 RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp"
-         "$ROOT/src/api/sco_services.cpp")
+         "$ROOT/src/api/sco_services.cpp" "$ROOT/src/api/sco_raw.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined \
   "$ROOT/tests/test_core.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_signatures.cpp" \
   "$ROOT/src/sco_log_status.cpp" "$ROOT/src/sco_pe_file.cpp" "$ROOT/src/game/"*.cpp -o "$OUT/test_core"
@@ -56,6 +60,12 @@ SPATIAL=("$ROOT/tests/test_spatial.cpp" "$ROOT/src/engine/zone.cpp")
 "$OUT/test_spatial"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${SPATIAL[@]}" -o "$OUT/test_spatial_tsan"
 "$OUT/test_spatial_tsan"
+# The C++20 SDK layer: two SDK plugins over the same host table, under both sanitizer sets.
+SDKT=("$ROOT/tests/test_sdk.cpp" "${HOST[@]:1}")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${SDKT[@]}" -o "$OUT/test_sdk"
+"$OUT/test_sdk"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${SDKT[@]}" -o "$OUT/test_sdk_tsan"
+"$OUT/test_sdk_tsan"
 
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load
 # real shared libraries built from tests/fixtures/plugins/native/fake_plugin.c, one per behavior

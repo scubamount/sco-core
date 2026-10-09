@@ -170,7 +170,8 @@ Result Release(const void* owner, size_t* removed) {
     const long cmds = detail::ReleaseCommands(owner);
     const long tasks = detail::ReleaseTasks(owner);
     const long services = detail::ReleaseServices(owner);
-    if (removed) *removed = static_cast<size_t>(subs + cmds + tasks + services);
+    const long raw = detail::ReleaseRaw(owner);
+    if (removed) *removed = static_cast<size_t>(subs + cmds + tasks + services + raw);
     return Result::Ok;
 }
 

@@ -134,13 +134,12 @@ typedef struct sco_command {
 
 /* ---- the host's function table ----------------------------------------- */
 
-/* 1.1. A function table one plugin publishes for others (provide_service). */
-typedef struct sco_service_def {
-    uint32_t    size;           /* sizeof(sco_service_def) */
-    const char* name;           /* "<plugin id>" or "<plugin id>.<name>", [a-z0-9_.], 1-63 chars */
-    uint32_t    version;        /* (major << 16) | minor */
-    const void* vtable;         /* the provider's table; start it with a uint32_t size */
-} sco_service_def;
+/* 1.1. A raw handler (register_raw): bytes in, bytes out, on the game thread.
+ * *inout_out_size holds out's capacity on entry; set it to the bytes written,
+ * or to the bytes needed and return SCO_TOO_MANY. The layout of the bytes is
+ * the handler's contract. */
+typedef sco_result (*sco_raw_fn)(const void* in, uint32_t in_size, void* out,
+                                 uint32_t* inout_out_size, void* ctx);
 
 typedef struct sco_api {
     uint32_t size; /* sizeof(sco_api) as the host built it */
@@ -184,19 +183,40 @@ typedef struct sco_api {
      * commands. The pointers stay valid until their owning plugin unloads. */
     uint32_t (*list_commands)(const sco_command** out, uint32_t max);
 
-    /* ---- 1.1: check size > offsetof(sco_api, provide_service) first ---- */
+    /* ---- 1.1: check size > offsetof(sco_api, <function>) first ---------- */
 
-    /* Any thread. Publishes service->vtable under service->name (copied).
-     * SCO_BAD_ARG: a bad or taken name, or a name outside this plugin's id.
-     * The host withdraws it when this plugin unloads or crashes. */
-    sco_result (*provide_service)(sco_plugin* self, const sco_service_def* service);
+    /* Any thread. Publishes vtable under name ("<plugin id>" or "<plugin id>.<name>",
+     * [a-z0-9_.], 1-63 chars) with version (major << 16) | minor. SCO_BAD_ARG: a
+     * bad or taken name, or a name outside this plugin's id. Withdrawn when this
+     * plugin unloads or crashes, or by release_service. Start the table with a
+     * uint32_t size so it can grow. */
+    sco_result (*provide_service)(sco_plugin* self, const char* name, uint32_t version,
+                                  const void* vtable);
 
     /* Any thread. SCO_OK: *out_vtable = the table of the service with this
      * name, same major as min_version and at least as new. SCO_UNAVAILABLE:
      * another major, or older. SCO_NOT_FOUND: none. *out_vtable is NULL unless
      * SCO_OK. A plugin's table goes away when it unloads: query when needed. */
-    sco_result (*query_service)(sco_plugin* self, const char* name, uint32_t min_version,
-                                const void** out_vtable);
+    sco_result (*query_service)(const char* name, uint32_t min_version, const void** out_vtable);
+
+    /* Any thread. Withdraws one of this plugin's services. SCO_NOT_FOUND: it
+     * publishes nothing by that name. */
+    sco_result (*release_service)(sco_plugin* self, const char* name);
+
+    /* Game thread. Calls the raw handler registered under name, now: in_size
+     * bytes in, up to *inout_out_size bytes out (on return: bytes written, or
+     * needed with SCO_TOO_MANY). in may be NULL with in_size 0; out may be NULL
+     * with *inout_out_size 0 (asks the size), and inout_out_size NULL when no
+     * output is wanted. SCO_NOT_FOUND, SCO_UNAVAILABLE (capability missing),
+     * SCO_WRONG_THREAD (other threads), SCO_CRASHED (the handler faulted). */
+    sco_result (*invoke_raw)(sco_plugin* self, const char* name, const void* in_bytes,
+                             uint32_t in_size, void* out_bytes, uint32_t* inout_out_size);
+
+    /* Any thread. Registers fn under name ("<plugin id>.<name>", the command
+     * name rule), gated on capability (NULL: none). Only fn and ctx are
+     * borrowed, until this plugin unloads. SCO_BAD_ARG: a bad or taken name. */
+    sco_result (*register_raw)(sco_plugin* self, const char* name, const char* capability,
+                               sco_raw_fn fn, void* ctx);
 } sco_api;
 
 /* ---- what a plugin exports --------------------------------------------- */

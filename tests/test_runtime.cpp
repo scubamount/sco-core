@@ -763,6 +763,92 @@ static void TestServices() {
     CHECK(sco::QueryService("b.svc", 0x00020000, &out) == Result::NotFound);
 }
 
+// ---- raw handlers ---------------------------------------------------------------------------
+
+static bool OnlyRawCap(const char* cap) { return std::strcmp(cap, "raw.ok") == 0; }
+static bool FaultFor(const void* owner, const char*, sco::TaskFn thunk, void* ctx);
+static const void* g_faultOwner = nullptr;
+static bool FaultFor(const void* owner, const char*, sco::TaskFn thunk, void* ctx) {
+    if (owner == g_faultOwner) return false;   // as if the callout faulted
+    thunk(ctx);
+    return true;
+}
+
+static Result Double(const void* in, uint32_t inSize, void* out, uint32_t* outSize, void*) {
+    if (inSize != 4) return Result::BadArg;
+    if (*outSize < 4) { *outSize = 4; return Result::TooMany; }
+    int32_t v;
+    std::memcpy(&v, in, 4);
+    v *= 2;
+    std::memcpy(out, &v, 4);
+    *outSize = 4;
+    return Result::Ok;
+}
+static Result Overstate(const void*, uint32_t, void*, uint32_t* outSize, void*) { *outSize += 8; return Result::Ok; }
+
+static void TestRaw() {
+    static int a, b, caller;
+    sco::SetCapabilityCheck(OnlyRawCap);
+    CHECK(sco::RegisterRaw(&a, "ra", "ra.double", nullptr, Double, nullptr) == Result::Ok);
+    CHECK(sco::RegisterRaw(&a, "ra", "ra.gated", "raw.ok", Double, nullptr) == Result::Ok);
+    CHECK(sco::RegisterRaw(&a, "ra", "ra.locked", "raw.no", Double, nullptr) == Result::Ok);
+    CHECK(sco::RegisterRaw(&a, "ra", "ra.over", nullptr, Overstate, nullptr) == Result::Ok);
+    CHECK(sco::RegisterRaw(&b, "rb", "ra.steal", nullptr, Double, nullptr) == Result::BadArg);    // another's prefix
+    CHECK(sco::RegisterRaw(&b, nullptr, "ra.double", nullptr, Double, nullptr) == Result::BadArg); // taken
+    for (const char* bad : { "", "nodot", ".x", "x.", "x..y", "X.y" })
+        CHECK(sco::RegisterRaw(&b, nullptr, bad, nullptr, Double, nullptr) == Result::BadArg);
+    CHECK(sco::RegisterRaw(&b, nullptr, "rb.x", "Bad Cap", Double, nullptr) == Result::BadArg);
+    CHECK(sco::RegisterRaw(&b, nullptr, "rb.x", nullptr, nullptr, nullptr) == Result::BadArg);
+    CHECK(sco::RegisterRaw(&b, "sco", "sco.x", nullptr, Double, nullptr) == Result::BadArg);      // reserved
+
+    const int32_t in = 21;
+    int32_t out = 0;
+    uint32_t size = sizeof(out);
+    CHECK(sco::InvokeRaw(&caller, "ra.double", &in, 4, &out, &size) == Result::Ok && out == 42 && size == 4);
+    size = 2;
+    CHECK(sco::InvokeRaw(&caller, "ra.double", &in, 4, &out, &size) == Result::TooMany && size == 4);
+    size = 0;
+    CHECK(sco::InvokeRaw(&caller, "ra.double", &in, 4, nullptr, &size) == Result::TooMany && size == 4);
+    size = sizeof(out);
+    CHECK(sco::InvokeRaw(&caller, "ra.gated", &in, 4, &out, &size) == Result::Ok);
+    CHECK(sco::InvokeRaw(&caller, "ra.locked", &in, 4, &out, &size) == Result::Unavailable && size == 0);
+    size = 4;
+    CHECK(sco::InvokeRaw(&caller, "ra.over", nullptr, 0, &out, &size) == Result::TooMany && size == 12);
+    CHECK(sco::InvokeRaw(&caller, "ra.none", nullptr, 0, nullptr, nullptr) == Result::NotFound);
+    CHECK(sco::InvokeRaw(&caller, nullptr, nullptr, 0, nullptr, nullptr) == Result::BadArg);
+    CHECK(sco::InvokeRaw(&caller, "ra.double", nullptr, 4, nullptr, nullptr) == Result::BadArg);   // in null, size 4
+    size = 4;
+    CHECK(sco::InvokeRaw(&caller, "ra.double", &in, 4, nullptr, &size) == Result::BadArg);        // out null, room claimed
+    Result off = Result::Ok;
+    std::thread([&] { off = sco::InvokeRaw(&caller, "ra.double", &in, 4, nullptr, nullptr); }).join();
+    CHECK(off == Result::WrongThread);
+
+    // A faulting handler is Crashed, with no output.
+    g_faultOwner = &a;
+    sco::SetCalloutGuard(FaultFor);
+    size = sizeof(out);
+    CHECK(sco::InvokeRaw(&caller, "ra.double", &in, 4, &out, &size) == Result::Crashed && size == 0);
+    sco::SetCalloutGuard(nullptr);
+    g_faultOwner = nullptr;
+
+    // Release removes the owner's handlers; a released caller is refused.
+    size_t removed = 0;
+    CHECK(sco::Release(&a, &removed) == Result::Ok && removed == 4);
+    CHECK(sco::InvokeRaw(&caller, "ra.double", &in, 4, nullptr, nullptr) == Result::NotFound);
+    CHECK(sco::RegisterRaw(&a, "ra", "ra.again", nullptr, Double, nullptr) == Result::BadArg);
+    CHECK(sco::Release(&caller) == Result::Ok);
+    CHECK(sco::InvokeRaw(&caller, "ra.none", nullptr, 0, nullptr, nullptr) == Result::BadArg);
+    sco::SetCapabilityCheck(nullptr);
+
+    // ReleaseService: one service at a time, only the owner's.
+    static int s;
+    static const int tbl = 1;
+    CHECK(sco::ProvideService(&s, "sv", "sv.one", 0x00010000, &tbl) == Result::Ok);
+    CHECK(sco::ReleaseService(&b, "sv.one") == Result::NotFound);
+    CHECK(sco::ReleaseService(&s, "sv.one") == Result::Ok && sco::ReleaseService(&s, "sv.one") == Result::NotFound);
+    CHECK(sco::ReleaseService(nullptr, "sv.one") == Result::BadArg && sco::ReleaseService(&s, nullptr) == Result::BadArg);
+}
+
 int main() {
     TestBeforeGameThread();   // first: checks the "no game thread yet" state
     TestTaskQueue();
@@ -772,6 +858,7 @@ int main() {
     TestDoneAfterRelease();
     TestServices();
     TestCommands();
+    TestRaw();
     std::printf("sco-core runtime tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

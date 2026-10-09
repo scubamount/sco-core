@@ -184,19 +184,51 @@ uint32_t ListCommandsC(const sco_command** out, uint32_t max) {
     return static_cast<uint32_t>(n);
 }
 
-// ---- services (1.1) ------------------------------------------------------------------------
+// ---- services and raw handlers (1.1) ----------------------------------------------------------
 
-// Reads the caller's sco_service_def only up to its size (1.1 needs all of it). The name must be
-// the plugin's id or start with "<id>.".
-sco_result ProvideServiceC(sco_plugin* self, const sco_service_def* def) {
-    if (!Valid(self) || !def || def->size < sizeof(sco_service_def)) return SCO_BAD_ARG;
-    return C(ProvideService(self, self->id, def->name, def->version, def->vtable));
+// A plugin publishes and registers under its own id.
+sco_result ProvideServiceC(sco_plugin* self, const char* name, uint32_t version, const void* vtable) {
+    if (!Valid(self)) return SCO_BAD_ARG;
+    return C(ProvideService(self, self->id, name, version, vtable));
 }
 
-sco_result QueryServiceC(sco_plugin* self, const char* name, uint32_t minVersion, const void** out) {
-    if (out) *out = nullptr;
-    if (!Valid(self)) return SCO_BAD_ARG;
+sco_result QueryServiceC(const char* name, uint32_t minVersion, const void** out) {
     return C(QueryService(name, minVersion, out));
+}
+
+sco_result ReleaseServiceC(sco_plugin* self, const char* name) {
+    if (!Valid(self)) return SCO_BAD_ARG;
+    return C(ReleaseService(self, name));
+}
+
+// What a plugin's raw handler runs through, like CmdRecord for commands: one per successful
+// registration, kept for the life of the process.
+struct RawRecord { sco_raw_fn fn; void* ctx; };
+constexpr size_t kMaxRawRecords = 1024;
+std::mutex g_rawLock;
+RawRecord  g_rawRecords[kMaxRawRecords];
+size_t     g_rawRecordCount = 0;
+
+Result RawTrampoline(const void* in, uint32_t inSize, void* out, uint32_t* outSize, void* ctx) {
+    const RawRecord* rec = static_cast<const RawRecord*>(ctx);
+    return static_cast<Result>(static_cast<uint32_t>(rec->fn(in, inSize, out, outSize, rec->ctx)));
+}
+
+sco_result RegisterRawC(sco_plugin* self, const char* name, const char* capability, sco_raw_fn fn, void* ctx) {
+    if (!Valid(self) || !fn) return SCO_BAD_ARG;
+    std::lock_guard<std::mutex> hold(g_rawLock);
+    if (g_rawRecordCount == kMaxRawRecords) return SCO_TOO_MANY;
+    RawRecord& rec = g_rawRecords[g_rawRecordCount];
+    rec = { fn, ctx };
+    const Result r = RegisterRaw(self, self->id, name, capability, RawTrampoline, &rec);
+    if (r == Result::Ok) ++g_rawRecordCount;   // a failed registration leaves the record free
+    return C(r);
+}
+
+sco_result InvokeRawC(sco_plugin* self, const char* name, const void* in, uint32_t inSize, void* out,
+                      uint32_t* outSize) {
+    if (!Valid(self)) { if (outSize) *outSize = 0; return SCO_BAD_ARG; }
+    return C(InvokeRaw(self, name, in, inSize, out, outSize));
 }
 
 }  // namespace
@@ -220,6 +252,9 @@ const sco_api* BuildApi(const HostInfo& info) {
         g_api.list_commands = ListCommandsC;
         g_api.provide_service = ProvideServiceC;
         g_api.query_service = QueryServiceC;
+        g_api.release_service = ReleaseServiceC;
+        g_api.invoke_raw = InvokeRawC;
+        g_api.register_raw = RegisterRawC;
         SetCapabilityCheck(caps::Has);
     });
     return &g_api;

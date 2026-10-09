@@ -1,7 +1,9 @@
 # sco-plugin.cmake: build helpers for sco plugins. Part of the sco SDK.
 #
 #   include(<sdk>/cmake/sco-plugin.cmake)
-#   sco_add_plugin(<id> SOURCES plugin.c [more.c ...] INI plugin.ini)   # native DLL plugin
+#   sco_add_plugin(<id> SOURCES plugin.c [more.c ...] INI plugin.ini)   # native DLL plugin (C11)
+#   sco_add_plugin(<id> SOURCES plugin.cpp INI plugin.ini)              # native DLL plugin (C++20,
+#                                                                       # include/scosdk/; enable CXX)
 #   sco_add_pack(<id> DIR <folder>)                                     # data pack or Lua plugin
 #
 # `cmake --install <build> --prefix <out>` then lays every plugin out the way the game reads
@@ -72,6 +74,12 @@ function(sco_add_plugin id)
     C_STANDARD_REQUIRED ON
     C_EXTENSIONS OFF
     C_VISIBILITY_PRESET hidden
+    # C++ sources (the scosdk/ headers): C++20, and only the three sco_plugin_* exports visible.
+    CXX_STANDARD 20
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
     # Static C runtime, like sc-offline's dinput8.dll: players need no VC++ redistributable.
     MSVC_RUNTIME_LIBRARY "MultiThreaded")
   if(MSVC)

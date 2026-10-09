@@ -9,7 +9,7 @@ sco-core has two equivalent builds: the shell scripts in `tools/` (the reference
 | `tools/test.sh` | bash, clang or gcc with C11 and C++20, and the sanitizer runtimes (ASan, UBSan, TSan). `clang` must be on `PATH` for the `x86_64-pc-windows-msvc` ABI pin |
 | CMake | CMake 3.20 or newer and a 64-bit C/C++20 toolchain: clang, gcc, or Visual Studio 2019 or newer (MSVC x64) |
 | `tools/test-win.sh` | `x86_64-w64-mingw32-g++`, clang with the `x86_64-w64-mingw32` target, and Wine |
-| The SDK zip | Python 3, CMake, a C compiler; Lua 5.4 for the Lua example check |
+| The SDK zip | Python 3, CMake, a C and C++20 compiler; Lua 5.4 for the Lua example check |
 
 Nothing needs the game, and only the Windows build needs Windows.
 
@@ -23,8 +23,8 @@ CC=clang CXX=clang++ tools/test.sh     # what CI runs
 In order, it:
 
 1. compiles the ABI pin `tests/abi_v1.c` with `-Werror` as C11 and C++20, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc` (compile-only),
-2. compiles the SDK template, the `hello` example and `sco-plugin-check` against `sco_api.h`,
-3. builds and runs `test_core` and `test_hook` (ASan+UBSan), `test_runtime`, `test_host` and `test_spatial` (each under ASan+UBSan and again under ThreadSanitizer),
+2. compiles the SDK template, the `hello` and `cpp_hello` examples, each `include/scosdk/` header and `sco-plugin-check` against `sco_api.h`,
+3. builds and runs `test_core` and `test_hook` (ASan+UBSan), `test_runtime`, `test_host`, `test_spatial` and `test_sdk` (each under ASan+UBSan and again under ThreadSanitizer),
 4. builds the fake plugins from `tests/fixtures/plugins/native/fake_plugin.c` into `tests/out/plugins/` and runs `test_plugins` (ASan+UBSan),
 5. builds Lua and sco-lua and runs `test_lua` (ASan+UBSan), which also loads `sdk/examples/greeter` through the real loader,
 6. runs `test_app` (ASan+UBSan): the host kit with built-in plugins, two fake plugins, `greeter` and `travel_pack`,
@@ -108,6 +108,7 @@ add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
 | `test_host` | Capabilities and the `sco_api` table |
 | `test_hook` | Detours over small functions written into executable memory |
 | `test_spatial` | Vector, quaternion and transform math; the zone tree (chains, round trips at 1e11 m, failures, readers beside a writer) |
+| `test_sdk` | The C++20 SDK layer (`include/scosdk/`): two SDK plugins over the real host table |
 | `test_plugins` | `plugin.ini`, discovery, the content index and the native loader against the fake plugins in `<build>/tests/out/plugins/` |
 | `test_lua` | sco-lua through the real loader and host table, including `sdk/examples/greeter` |
 | `test_app` | The host kit (`sco::app`) and built-in plugins: load order, `game.ready`, tick, a faulting built-in contained, `game.exit` before unload, unload order, restart |
