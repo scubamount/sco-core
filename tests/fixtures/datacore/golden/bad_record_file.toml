@@ -1,0 +1,9 @@
+# expect: 9: [[record]]: bad file path "data/ships/shipc.xml": expected libs/foundry/records/....xml
+# file is under libs/foundry/records/ (research R1 rule).
+format = 1
+
+[[record]]
+struct = "Ship"
+name = "ShipC"
+clone = { record = "ShipA" }
+file = "data/ships/shipc.xml"

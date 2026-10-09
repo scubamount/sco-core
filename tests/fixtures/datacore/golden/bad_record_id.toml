@@ -1,0 +1,13 @@
+# expect: 10: [[record]]: id "p" is defined twice
+# Records and instances share the "@id" names of a file.
+format = 1
+
+[[instance]]
+id = "p"
+struct = "Part"
+
+[[record]]
+id = "p"
+struct = "Part"
+name = "PartZ"
+clone = { record = "PartX" }

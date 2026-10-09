@@ -28,7 +28,7 @@ Each feature decides which files it reads and in what format. A list file uses t
 
 ## Game data: `datacore\`
 
-A pack can change the game's own data (`Data\Game2.dcb`, the DataCore database) with `.toml` files in `datacore\`: set a record's field, add an object cloned from another and point a field at it, append to an array. Records and fields are named, not located by byte offset, so a pack keeps working across game patches as long as the records and fields it names still exist. [`examples/quantum_pack`](../examples/quantum_pack/datacore/eos.toml) is a complete example:
+A pack can change the game's own data (`Data\Game2.dcb`, the DataCore database) with `.toml` files in `datacore\`: set a record's field, add an object cloned from another and point a field at it, append to an array, add a new record cloned from an existing one (`[[record]]`). Records and fields are named, not located by byte offset, so a pack keeps working across game patches as long as the records and fields it names still exist. [`examples/quantum_pack`](../examples/quantum_pack/datacore/eos.toml) is a complete example:
 
 ```toml
 format = 1
@@ -40,7 +40,18 @@ field  = "Components[SCItemQuantumDriveParams].params.spoolUpTime"
 value  = 3.5
 ```
 
-The whole format (`[[set]]`, `[[instance]]`, `[[append]]`, value forms, `atomic`) is in sco-core's [DataCore packs reference](../../docs/datacore.md#pack-format). The rules that matter most:
+A new record is cloned from one of the same struct and then named like any other:
+
+```toml
+[[record]]
+struct = "EntityClassDefinition"
+name   = "EntityClassDefinition.QDRV_MyMod_S01_SCItem"
+clone  = { record = "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem" }
+```
+
+Without a `guid`, it gets one derived from your plugin id and the record name, the same at every launch; without a `file`, it lives at `libs/foundry/records/sco/<plugin id>/<name>.xml`.
+
+The whole format (`[[set]]`, `[[instance]]`, `[[append]]`, `[[record]]`, value forms, `atomic`) is in sco-core's [DataCore packs reference](../../docs/datacore.md#pack-format). The rules that matter most:
 
 - **All or nothing per file.** If any override in a file can't be applied (a record or field the game no longer has, a value of the wrong type), none of that file applies, and `mod.log` says why. `atomic = false` lets each override apply on its own, for lists of unrelated tweaks.
 - **Plugin order decides.** When two packs set the same field, the one later in plugin order (folder name order) wins, and `mod.log` names both.

@@ -71,7 +71,8 @@ uint32_t LineOf(const toml::node& n) { return static_cast<uint32_t>(n.source().b
 struct Parser {
     Pack& out;
     std::string& error;
-    std::set<std::string> ids;                          // [[instance]] ids defined so far
+    std::set<std::string> ids;                          // [[instance]] and [[record]] ids defined so far
+    std::map<std::string, uint32_t> newNames, newGuids; // [[record]] names and GUIDs -> line
     std::map<std::string, uint32_t> fieldsSet;          // target + field -> line (a field set twice)
     size_t opCount = 0;
 
@@ -242,18 +243,73 @@ struct Parser {
         return true;
     }
 
+    // A local id (`id = "name"`, used later as "@name"): syntax, and not defined before.
+    bool LocalId(const toml::table& t, std::string& id, const std::string& where) {
+        if (!String(t, "id", id, where, true)) return false;
+        if (id[0] == '@') return Fail(LineOf(*t.get("id")), where + ": id is written without '@' (use it as \"@" + id.substr(1) + "\")");
+        for (const char c : id)
+            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
+                return Fail(LineOf(*t.get("id")), where + ": id " + Q(id) + ": letters, digits, '_' and '-' only");
+        if (ids.count(id)) return Fail(LineOf(*t.get("id")), where + ": id " + Q(id) + " is defined twice");
+        return true;
+    }
+
+    // [[record]]: a new record (design "AddRecord"). What needs no game file is checked here: the
+    // keys, clone present and a record (not a field), GUID syntax, the file path rule (R1), and a
+    // name or GUID added twice by this file. The rest (struct has records, name and GUID new in the
+    // file, clone of the same struct) at ApplyPacks.
+    bool NewRec(const toml::table& t, uint32_t line) {
+        const std::string where = "[[record]]";
+        if (!Keys(t, { "id", "struct", "name", "guid", "clone", "file", "set" }, where)) return false;
+        PackOp op;
+        op.kind = PackOp::Kind::Record;
+        op.line = line;
+        RecordRef r;
+        if (!String(t, "struct", op.type, where, true) || !String(t, "name", r.name, where, true)) return false;
+        if (t.get("id") && !LocalId(t, op.id, where)) return false;
+        if (const toml::node* g = t.get("guid")) {
+            std::string s;
+            if (!String(t, "guid", s, where, true)) return false;
+            Guid id;
+            if (!ParseGuid(s, id)) return Fail(LineOf(*g), where + ": bad guid " + Q(s) + " (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)");
+            if (id == Guid{}) return Fail(LineOf(*g), where + ": the zero guid is a null reference");
+            r.guid = id;
+        }
+        const toml::node* c = t.get("clone");
+        if (!c) return Fail(line, where + ": needs clone = { record = \"...\" } (a record of the same struct; zero-filled records are refused)");
+        if (!Source(*c, op.clone, where + ": clone")) return false;
+        if (!op.clone.field.empty()) return Fail(LineOf(*c), where + ": clone must be a record of the same struct, not a field of one");
+        if (const toml::node* f = t.get("file")) {
+            if (!String(t, "file", op.file, where, true)) return false;
+            if (!PackRecordFileOk(op.file))
+                return Fail(LineOf(*f), where + ": bad file path " + Q(op.file) + ": expected libs/foundry/records/....xml");
+        }
+        if (const auto [it, fresh] = newNames.emplace(r.name, line); !fresh)
+            return Fail(LineOf(*t.get("name")), where + ": record name " + Q(r.name) + " is already added at line " + std::to_string(it->second));
+        if (r.guid)
+            if (const auto [it, fresh] = newGuids.emplace(FormatGuid(*r.guid), line); !fresh)
+                return Fail(LineOf(*t.get("guid")), where + ": guid " + FormatGuid(*r.guid) + " is already added at line " + std::to_string(it->second));
+        if (const toml::node* s = t.get("set")) {
+            if (!s->is_table()) return Fail(LineOf(*s), where + ": set must be a table { \"field\" = value, ... }");
+            if (!Sets(*s->as_table(), {}, op.sets, where)) return false;
+            const std::string key = op.id.empty() ? "record:" + r.name : "@" + op.id;
+            for (const auto& [path, v] : op.sets)
+                if (!Once(key, path, line, where)) return false;
+        }
+        if (!op.id.empty()) ids.insert(op.id);
+        if (!Count(1 + op.sets.size(), line)) return false;
+        op.record = std::move(r);
+        out.ops.push_back(std::move(op));
+        return true;
+    }
+
     bool Instance(const toml::table& t, uint32_t line) {
         const std::string where = "[[instance]]";
         if (!Keys(t, { "id", "struct", "clone", "set" }, where)) return false;
         PackOp op;
         op.kind = PackOp::Kind::Instance;
         op.line = line;
-        if (!String(t, "id", op.id, where, true) || !String(t, "struct", op.type, where, true)) return false;
-        if (op.id[0] == '@') return Fail(LineOf(*t.get("id")), where + ": id is written without '@' (use it as \"@" + op.id.substr(1) + "\")");
-        for (const char c : op.id)
-            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '-')
-                return Fail(LineOf(*t.get("id")), where + ": id " + Q(op.id) + ": letters, digits, '_' and '-' only");
-        if (ids.count(op.id)) return Fail(LineOf(*t.get("id")), where + ": id " + Q(op.id) + " is defined twice");
+        if (!LocalId(t, op.id, where) || !String(t, "struct", op.type, where, true)) return false;
         if (const toml::node* c = t.get("clone"))
             if (!Source(*c, op.clone, where + ": clone")) return false;
         if (const toml::node* s = t.get("set")) {
@@ -346,8 +402,8 @@ struct Parser {
                 const auto* b = v.as_boolean();
                 if (!b) return Fail(line, "atomic must be true or false");
                 out.atomic = b->get();
-            } else if (key == "set" || key == "instance" || key == "append") {
-                const int kind = key == "set" ? 0 : key == "instance" ? 1 : 2;
+            } else if (key == "set" || key == "instance" || key == "append" || key == "record") {
+                const int kind = key == "set" ? 0 : key == "instance" ? 1 : key == "append" ? 2 : 3;
                 const toml::array* a = v.as_array();
                 if (!a) return Fail(line, "write [[" + std::string(key) + "]] (an array of tables), not [" + std::string(key) + "]");
                 for (const toml::node& e : *a) {
@@ -356,13 +412,13 @@ struct Parser {
                     items.push_back({ LineOf(e), kind, et });
                 }
             } else {
-                return Fail(line, "unknown key " + Q(key) + " (format, atomic, [[set]], [[instance]], [[append]])");
+                return Fail(line, "unknown key " + Q(key) + " (format, atomic, [[set]], [[instance]], [[append]], [[record]])");
             }
         }
         if (!haveFormat) return Fail(1, Fmt("missing format = %d", kPackFormat));
         std::stable_sort(items.begin(), items.end(), [](const Item& a, const Item& b) { return a.line < b.line; });
         for (const Item& it : items) {
-            const bool ok = it.kind == 1 ? Instance(*it.t, it.line) : Change(*it.t, it.line, it.kind == 2);
+            const bool ok = it.kind == 1 ? Instance(*it.t, it.line) : it.kind == 3 ? NewRec(*it.t, it.line) : Change(*it.t, it.line, it.kind == 2);
             if (!ok) return false;
         }
         return true;
@@ -376,7 +432,7 @@ bool ParsePack(std::string_view text, Pack& out, std::string& error) {
     p.plugin = out.plugin;
     p.name = out.name;
     error.clear();
-    Parser parser{ p, error, {}, {}, 0 };
+    Parser parser{ p, error, {}, {}, {}, {}, 0 };
     if (!parser.Run(text)) {
         out.ops.clear();
         out.atomic = true;
@@ -384,6 +440,50 @@ bool ParsePack(std::string_view text, Pack& out, std::string& error) {
     }
     out = std::move(p);
     return true;
+}
+
+namespace {
+uint64_t Mix64(uint64_t h) {   // splitmix64's finalizer
+    h ^= h >> 30;
+    h *= 0xbf58476d1ce4e5b9ULL;
+    h ^= h >> 27;
+    h *= 0x94d049bb133111ebULL;
+    return h ^ (h >> 31);
+}
+uint64_t Fnv(uint64_t h, std::initializer_list<std::string_view> parts) {
+    for (const std::string_view s : parts) {
+        for (const char c : s) {
+            h ^= static_cast<unsigned char>(c);
+            h *= 0x100000001b3ULL;
+        }
+        h *= 0x100000001b3ULL;   // a 0 byte between parts
+    }
+    return h;
+}
+}  // namespace
+
+Guid PackRecordGuid(std::string_view plugin, std::string_view name) {
+    const uint64_t a = Mix64(Fnv(0xcbf29ce484222325ULL, { "sco.datacore.record", plugin, name }));
+    const uint64_t b = Mix64(Fnv(0xcbf29ce484222325ULL ^ 0x9e3779b97f4a7c15ULL, { "sco.datacore.record", plugin, name }));
+    Guid g;
+    for (int i = 0; i < 8; ++i) {
+        g.bytes[static_cast<size_t>(i)] = static_cast<uint8_t>(a >> (8 * i));
+        g.bytes[static_cast<size_t>(i) + 8] = static_cast<uint8_t>(b >> (8 * i));
+    }
+    // Version 4 in FormatGuid's string form, as the patcher's own generator writes it.
+    g.bytes[1] = static_cast<uint8_t>((g.bytes[1] & 0x0F) | 0x40);
+    g.bytes[15] = static_cast<uint8_t>((g.bytes[15] & 0x3F) | 0x80);
+    return g;
+}
+
+std::string PackRecordFile(std::string_view plugin, std::string_view name) {
+    return "libs/foundry/records/sco/" + std::string(plugin) + "/" + std::string(name) + ".xml";
+}
+
+bool PackRecordFileOk(std::string_view path) {
+    static constexpr std::string_view kPrefix = "libs/foundry/records/", kExt = ".xml";
+    return path.size() > kPrefix.size() + kExt.size() && path.substr(0, kPrefix.size()) == kPrefix &&
+           path.substr(path.size() - kExt.size()) == kExt && path.find('\0') == std::string_view::npos;
 }
 
 // ---- writing -----------------------------------------------------------------------------------
@@ -432,6 +532,16 @@ std::string WritePack(const Pack& p, std::string_view comment) {
             if (!op.sets.empty()) s += "set = " + SetsText(op.sets) + "\n";
             continue;
         }
+        if (op.kind == PackOp::Kind::Record) {
+            s += "\n[[record]]\n";
+            if (!op.id.empty()) s += "id = " + Q(op.id) + "\n";
+            s += "struct = " + Q(op.type) + "\nname = " + Q(op.record ? op.record->name : std::string()) + "\n";
+            if (op.record && op.record->guid) s += "guid = " + Q(FormatGuid(*op.record->guid)) + "\n";
+            s += "clone = " + SourceText(op.clone) + "\n";
+            if (!op.file.empty()) s += "file = " + Q(op.file) + "\n";
+            if (!op.sets.empty()) s += "set = " + SetsText(op.sets) + "\n";
+            continue;
+        }
         s += op.kind == PackOp::Kind::Set ? "\n[[set]]\n" : "\n[[append]]\n";
         if (!op.instance.empty()) s += "instance = " + Q("@" + op.instance) + "\n";
         else if (op.record) s += RefLines(*op.record);
@@ -472,6 +582,7 @@ struct Exec {
     std::map<std::string, InstanceId>& ids;
     std::vector<PackOpReport>& reports;
     std::vector<std::pair<SlotKey, size_t>>& slots;   // slot -> index into reports
+    const std::string& plugin;                        // [[record]] defaults: GUID and file path
 
     bool Note(const PackOp& op, Status st, const std::string& fallback) {
         const bool ok = st.ok();
@@ -529,6 +640,20 @@ struct Exec {
             InstanceId id;
             const bool ok = NewInstance(op, id);
             ids[op.id] = id;
+            return ok;
+        }
+        case PackOp::Kind::Record: {
+            NewRecord nr;
+            nr.type = op.type;
+            nr.name = op.record->name;
+            nr.filePath = op.file.empty() ? PackRecordFile(plugin, nr.name) : op.file;
+            nr.guid = op.record->guid ? *op.record->guid : PackRecordGuid(plugin, nr.name);
+            nr.clone = op.clone;
+            AddedRecord added;
+            bool ok = Note(op, p.AddRecord(nr, added), {});
+            const InstanceId root = ok ? added.root : InstanceId{};
+            for (const auto& [path, v] : op.sets) ok &= Note(op, p.OverrideField(root, path, v), {});
+            if (!op.id.empty()) ids[op.id] = ok ? root : InstanceId{};
             return ok;
         }
         case PackOp::Kind::Set: {
@@ -605,7 +730,7 @@ PackResult ApplyPacks(const Schema& base, std::span<const Pack> packs) {
         Patch trial = main.Fork();
         if (pack.atomic) {
             std::vector<std::pair<SlotKey, size_t>> slots;
-            Exec ex{ trial, ids, rep.ops, slots };
+            Exec ex{ trial, ids, rep.ops, slots, pack.plugin };
             bool ok = true;
             for (const PackOp& op : pack.ops) ok &= ex.Run(op);
             ok &= checkOwn(slots);
@@ -615,7 +740,7 @@ PackResult ApplyPacks(const Schema& base, std::span<const Pack> packs) {
                 Patch step = trial.Fork();
                 std::vector<std::pair<SlotKey, size_t>> slots;
                 const size_t first = rep.ops.size();
-                Exec ex{ step, ids, rep.ops, slots };
+                Exec ex{ step, ids, rep.ops, slots, pack.plugin };
                 bool ok = ex.Run(op);
                 ok &= checkOwn(slots);
                 if (ok) {
@@ -630,7 +755,7 @@ PackResult ApplyPacks(const Schema& base, std::span<const Pack> packs) {
                     if (rep.ops[k].status)
                         rep.ops[k].status = { Refusal::DependencyFailed,
                                               rep.ops[k].op + ": not applied: another part of the same operation failed" };
-                if (op.kind == PackOp::Kind::Instance) ids[op.id] = {};
+                if ((op.kind == PackOp::Kind::Instance || op.kind == PackOp::Kind::Record) && !op.id.empty()) ids[op.id] = {};
             }
         }
 

@@ -117,6 +117,9 @@ static void TestLaunches() {
     CHECK(svc::Start(o) == sco::Result::BadArg);
     CHECK(g_api->query_service(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_0, reinterpret_cast<const void**>(&g_dc)) == SCO_OK);
     CHECK(g_dc == svc::Table() && g_dc->size == sizeof(sco_datacore_v1));
+    const void* v11 = nullptr;   // 1.1: add_record works; the table is 1.0's
+    CHECK(g_api->query_service(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_1, &v11) == SCO_OK && v11 == g_dc);
+    CHECK(g_api->query_service(SCO_DATACORE_NAME, 0x00010002u, &v11) == SCO_UNAVAILABLE);
     CHECK(g_dc->state() == SCO_DC_OPEN);
 
     sco_plugin* beta = sco::host::NewPlugin("beta");
@@ -223,8 +226,24 @@ static void TestLaunches() {
     badBool.i = 2;
     CHECK(g_dc->set(post, "ShipA", "flag", &badBool) == SCO_BAD_ARG);
     CHECK(g_dc->add_instance(post, "Part", nullptr, "weight", &inst) == SCO_BAD_ARG);
+    // add_record after the load: a [[record]] in the saved patch; "@<id>" and the name address it.
     uint64_t rec = 1;
-    CHECK(g_dc->add_record(post, "Ship", "ShipC", "guid", "ShipA", nullptr, &rec) == SCO_UNAVAILABLE && rec == 0);
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", "guid", "ShipA", nullptr, &rec) == SCO_BAD_ARG && rec == 0);
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", "00000000-0000-0000-0000-000000000000", "ShipA", nullptr, &rec) == SCO_BAD_ARG);
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", nullptr, nullptr, nullptr, &rec) == SCO_BAD_ARG);       // clone required
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", nullptr, at.c_str(), nullptr, &rec) == SCO_BAD_ARG);    // a record, not an instance
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", nullptr, "ShipA", "data/c.xml", &rec) == SCO_BAD_ARG);
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", nullptr, "ShipA", "libs/foundry/records/c.json", &rec) == SCO_BAD_ARG);
+    CHECK(g_dc->add_record(post, "", "ShipC", nullptr, "ShipA", nullptr, &rec) == SCO_BAD_ARG);
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", nullptr, "ShipA", nullptr, nullptr) == SCO_BAD_ARG);
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", nullptr, "ShipA", nullptr, &rec) == SCO_OK && rec != 0);
+    uint64_t again = 0;
+    CHECK(g_dc->add_record(post, "Ship", "ShipC", nullptr, "ShipB", nullptr, &again) == SCO_BAD_ARG && again == 0);   // name added twice
+    const std::string recAt = "@" + std::to_string(rec);
+    const sco_dc_value heavy = F(42.0);
+    CHECK(g_dc->set(post, recAt.c_str(), "mass", &heavy) == SCO_OK);
+    ref.s = "ShipC";
+    CHECK(g_dc->set(post, "ShipA", "maker", &ref) == SCO_OK);
     uint64_t none = 0;
     CHECK(g_dc->begin(beta, 0x8, &none) == SCO_BAD_ARG && g_dc->begin(nullptr, 0, &none) == SCO_BAD_ARG);
     CHECK(g_dc->set(987654321, "ShipA", "speed", &fast) == SCO_NOT_FOUND);
@@ -237,7 +256,9 @@ static void TestLaunches() {
     for (const auto& e : fs::directory_iterator(file.parent_path())) CHECK(e.path().extension() != ".tmp");
     dc::Pack savedPack;
     std::string error;
-    CHECK(dc::ParsePack(Read(file), savedPack, error) && savedPack.ops.size() == 6);
+    CHECK(dc::ParsePack(Read(file), savedPack, error) && savedPack.ops.size() == 9);
+    CHECK(savedPack.ops.size() == 9 && savedPack.ops[6].kind == dc::PackOp::Kind::Record && savedPack.ops[6].record->name == "ShipC" &&
+          !savedPack.ops[6].record->guid && savedPack.ops[6].clone.record->name == "ShipA");
 
     svc::Stop();
     CHECK(!svc::Started() && g_dc->state() == SCO_DC_LOADED);
@@ -257,7 +278,18 @@ static void TestLaunches() {
     CHECK(Val(base, r2, "ShipB", "label") == "\"saved \\\"label\\\"\"");
     CHECK(Val(base, r2, "ShipB", "maker") == "{ ref = \"guid:37363534-3332-3130-3f3e-3d3c3b3a3938\" }");   // BaseOne
     CHECK(r2.conflicts.size() == 1 && r2.conflicts[0].find("alpha (datacore/a.toml:2) overridden by beta (pending:") != std::string::npos);
-    CHECK(sco::GameThreadTick(2) == sco::Result::Ok && g_last.applied == 7 && g_last.refused == 0);
+    // The record the saved patch adds: GUID derived from plugin and name (the same at every launch).
+    const dc::Guid shipC = dc::PackRecordGuid("beta", "ShipC");
+    CHECK(Val(base, r2, "ShipC", "mass") == "42.0" && Val(base, r2, "ShipC", "label") == "\"hello\"");   // cloned from ShipA
+    CHECK(Val(base, r2, "ShipA", "maker") == "{ ref = \"guid:" + dc::FormatGuid(shipC) + "\" }");
+    {
+        Bytes f2;
+        dc::Schema p2;
+        CHECK(dc::ApplySplices(base, r2.splices, f2) && p2.Parse(f2));
+        const dc::Record* c = p2.FindRecordByName("ShipC");
+        CHECK(c && c->id == shipC && p2.ValueString(c->fileName) == "libs/foundry/records/sco/beta/ShipC.xml");
+    }
+    CHECK(sco::GameThreadTick(2) == sco::Result::Ok && g_last.applied == 10 && g_last.refused == 0);
     svc::Stop();
 
     // ---- launch 3: beta uninstalled; its saved patch is skipped, alpha's value is back ----------
@@ -296,7 +328,11 @@ static void TestLaunches() {
         CHECK(p.Set(part.Ref(), "weight", 3.25f) == SCO_OK);
         CHECK(p.Append("ShipA", "parts", part) == SCO_OK && p.Append("ShipA", "parts", nullptr) == SCO_OK);
         CHECK(p.Append("ShipA", "counts", 30) == SCO_OK);
-        CHECK(p.AddRecord("Ship", "ShipC", "x", "ShipA") == SCO_UNAVAILABLE);
+        CHECK(sdk.AddRecordSupported());
+        CHECK(!p.AddRecord("Ship", "ShipD", "ShipB", "x") && p.AddRecord("Ship", "ShipD", "ShipB", "x").Result() == SCO_BAD_ARG);
+        sco::sdk::DataCoreInstance shipD = p.AddRecord("Ship", "ShipD", "ShipB");   // before the load: applied at it
+        CHECK(shipD && shipD.Result() == SCO_OK);
+        CHECK(p.Set(shipD.Ref(), "speed", 55.0) == SCO_OK);
         CHECK(p.Commit() == SCO_OK);
         {
             sco::sdk::DataCorePatch scrap = sdk.Begin();   // discarded by its destructor
@@ -308,8 +344,10 @@ static void TestLaunches() {
         CHECK(Val(base, r4, "ShipA", "i8") == "-5" && Val(base, r4, "ShipA", "u64") == "1099511627776" && Val(base, r4, "ShipA", "label") == "\"sdk\"");
         CHECK(Val(base, r4, "ShipA", "parts[0].weight") == "3.25" && Val(base, r4, "ShipA", "parts[1]") == "null");
         CHECK(Val(base, r4, "ShipA", "counts[0]") == "30" && Val(base, r4, "ShipB", "speed") == "101.0");
+        CHECK(Val(base, r4, "ShipD", "speed") == "55.0" && Val(base, r4, "ShipD", "label") == "\"world\"");   // cloned from ShipB
         const std::vector<sco_dc_report> reps = p.Reports();
-        CHECK(reps.size() == 13 && reps.back().op_index == SCO_DC_OP_PATCH && reps.back().state == SCO_DC_APPLIED);
+        CHECK(reps.size() == 15 && reps.back().op_index == SCO_DC_OP_PATCH && reps.back().state == SCO_DC_APPLIED);
+        CHECK(reps.size() == 15 && reps[12].state == SCO_DC_APPLIED);   // the AddRecord
     }
     sco::GameThreadTick(4);
     svc::Stop();

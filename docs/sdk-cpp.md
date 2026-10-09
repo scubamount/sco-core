@@ -160,12 +160,14 @@ if (dc.Open(*this) == SCO_OK) {
     sco::sdk::DataCoreInstance part = p.AddInstance("Part", "PartX");
     p.Set(part.Ref(), "weight", 3.25);                           // Ref(): "@<id>", the instance's own fields
     p.Append("ShipA", "parts", part);
+    sco::sdk::DataCoreInstance c = p.AddRecord("Ship", "ShipC", "ShipA");  // a new record cloned from ShipA (sco.datacore 1.1)
+    p.Set("ShipB", "maker", sco::sdk::DataCoreRef{ "ShipC" });   // later operations name it; c.Ref() is its root
     if (p.Commit() == SCO_OK) { /* after datacore.applied: p.Reports() */ }
 }
 ```
 
 - `DataCorePatch` is move-only and discards its patch on destruction unless committed. Keep it to read `Reports()` (one `sco_dc_report` per operation, then the patch's).
-- Every call is `noexcept` and answers `sco_result`; `AddInstance` returns a `DataCoreInstance` with its own `Result()`. `AddRecord` answers `SCO_UNAVAILABLE` in 1.0 (saved patches have no record operation yet). `DataCoreRef{ "Record" }` sets a reference field.
+- Every call is `noexcept` and answers `sco_result`; `AddInstance` returns a `DataCoreInstance` with its own `Result()`. `AddRecord(type, name, cloneRecord, guid = "", filePath = "")` returns a `DataCoreInstance` too, the new record's root (empty `guid`: a stable one derived from the plugin id and name; empty `filePath`: `libs/foundry/records/sco/<plugin id>/<name>.xml`); its `Result()` is `SCO_UNAVAILABLE` on a sco.datacore 1.0 host, and `dc.AddRecordSupported()` says beforehand. `DataCoreRef{ "Record" }` sets a reference field.
 - Results arrive with the event `datacore.applied` (`Subscribe`; data: `sco_dc_applied`).
 
 ## UI

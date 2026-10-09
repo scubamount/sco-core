@@ -124,7 +124,7 @@ Components[SCItemQuantumDriveParams] = -> SCItemQuantumDriveParams[6]
   Components[SCItemQuantumDriveParams].params.spoolUpTime = 5.1
 ```
 
-`diff` expects b to be a with values changed and things appended, as the patcher writes them: the same struct and property definitions. It walks every record of b from its root (matched to a by GUID), compares values by path, and prints `[[set]]`, `[[instance]]` and `[[append]]` blocks. New instances are written zero-filled and then fully set; arrays that grew get appends. What it can't express (a new record, a shrunk array, a reference field, an existing instance no record path reaches) is listed as `# not converted:` comments and makes it exit 1. Paths it writes are index-based (`Components[1]`), so edit them to `[Type]` selectors before keeping the pack. The output is checked to parse before it is printed.
+`diff` expects b to be a with values changed and things appended, as the patcher writes them: the same struct and property definitions. It walks every record of b from its root (matched to a by GUID), compares values by path, and prints `[[set]]`, `[[instance]]` and `[[append]]` blocks. New instances are written zero-filled and then fully set; arrays that grew get appends. A record only in b becomes a `[[record]]` (its name, GUID and file as in b) cloned from the record of a, of the same struct, whose values differ least (records in the same file tried first, at most 256), followed by `[[set]]`s for the values that still differ; new records come first in the output, so later operations can point at them. What it can't express (a new record of a struct a has no record of, a shrunk array, a reference field, an existing instance no record path reaches) is listed as `# not converted:` comments and makes it exit 1. Paths it writes are index-based (`Components[1]`), so edit them to `[Type]` selectors before keeping the pack. The output is checked to parse before it is printed.
 
 ## Pack format
 
@@ -157,6 +157,20 @@ field  = "effects"
 value  = { struct = "SEntityEffectSystem_ParticleTagEffect", clone = { record = "...", field = "..." }, set = { ... } }
 # or value = <scalar> for arrays of values, pointer = ... for arrays of pointers,
 #    element = "@id" for an array of structs (the instance is copied in)
+
+[[record]]                 # a new top-level record (design "AddRecord")
+id     = "eos_sco"          # optional: "@eos_sco" is its root instance in later operations
+struct = "EntityClassDefinition"
+name   = "EntityClassDefinition.QDRV_SCO_Example_SCItem"   # unique among records
+guid   = "..."              # optional; default: derived from the plugin id and the name, stable
+clone  = { record = "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem" }   # required: a record of the same struct
+file   = "libs/foundry/records/...xml"   # optional; default libs/foundry/records/sco/<plugin id>/<name>.xml
+set    = { "..." = 1.0 }    # optional: values on the new record's root
+
+[[set]]                    # later operations name it like any record (or use instance = "@eos_sco")
+record = "..."
+field  = "someReference"
+value  = { ref = "EntityClassDefinition.QDRV_SCO_Example_SCItem" }
 ```
 
 | Key | In | Meaning |
@@ -168,16 +182,20 @@ value  = { struct = "SEntityEffectSystem_ParticleTagEffect", clone = { record = 
 | `pointer` | `[[set]]`, `[[append]]` | `"@id"`, `"null"`, or `{ record = ..., field = ... }` naming an existing instance |
 | `element` | `[[append]]` | `"@id"`: an added instance copied into an array of structs |
 | `id`, `struct`, `clone`, `set` | `[[instance]]` | Local name (letters, digits, `_`, `-`; used as `"@id"`), the struct, the instance to copy, and field values (`"path" = value`; an unquoted dotted key is a path too) |
+| `struct`, `name`, `clone` | `[[record]]` | Required: the new record's struct (one that already has records), its name (unique among the file's records and every record added before it), and the record whose root is copied (`{ record = ... }` and/or `guid`, no `field`; the same struct) |
+| `id`, `guid`, `file`, `set` | `[[record]]` | Optional: a local name shared with `[[instance]]` ids (`"@id"` is the record's root: a `pointer`, an `instance` target, an `element`); the GUID (not zero, not in the file; default derived from plugin id and name, so it is the same at every launch and saved games that store it still find it); the file path (`libs/foundry/records/` ... `.xml`; default `libs/foundry/records/sco/<plugin id>/<name>.xml`); values on its root |
+
+**Records.** A `[[record]]` follows the patcher's AddRecord rules ([design](design/vfs-datacore.md#addrecord), research R1): the record is appended at the end of the record table, its root instance is a copy of the clone's root, its name and file path are appended to their pools, and record +8 (the owning team's tag) is taken from the records already in that file, else from the clone. The copy is shallow: strong pointers and arrays in the root still share the clone's sub-objects and array storage, so give the new record its own sub-object with a `pointer` to a new `[[instance]]` rather than setting a field through a shared path (that would change the clone too). Later operations of the same file and of later packs name it by `name` or `guid` like any record, `{ ref = "<name>" }` points a reference field at it, and `"@id"` addresses its root. Refusals at the load: `no struct "..."`, `struct "..." has no records`, `record name "..." already exists`, `guid ... already exists (record "...")`, `clone must be a record of the same struct`, `bad file path`, and R1's `records in file "..." disagree on record +8` / `record +8 of clone "..." is not a name-pool string`.
 
 **Order and priority.** Operations run in file order, whatever their kind. Packs apply in plugin order (folder-name order, built-ins first), a plugin's files in name order. A later pack wins a field an earlier one set; the conflict is logged with both sources (`... alpha (datacore/a.toml:3) overridden by beta (datacore/b.toml:3) (later in plugin order)`). There is no `priority` key (design decision 7). Within one file a field may be set once: the same target and path twice is a lint error, and two paths to the same field are caught when the pack applies (the later operation is refused).
 
 **Atomicity.** By default a file applies whole or not at all: one failing operation (record or field not found, a value that doesn't fit, ...) refuses the file, with that reason, and the other packs still apply. With `atomic = false` each operation applies on its own; an `[[instance]]` with its `set` table is one operation, and anything using an `@id` whose instance failed is refused too. The game reads either its own bytes or a fully re-validated patched file.
 
-**Checked without the game** (`lint`, and `sco-host-sim` for every indexed pack): TOML syntax, `format = 1`, known keys, value shapes, field path and GUID syntax, `@id` defined before use and only once, a field set twice, at most 4 MiB and 65,536 operations per file. Names resolve only against a real file: `check`.
+**Checked without the game** (`lint`, and `sco-host-sim` for every indexed pack): TOML syntax, `format = 1`, known keys, value shapes, field path and GUID syntax, `@id` defined before use and only once, a field set twice, a `[[record]]`'s required keys, its clone being a record (no `field`), its file path rule and a name or GUID it adds twice, at most 4 MiB and 65,536 operations per file. Names resolve only against a real file: `check`.
 
 ## The `sco.datacore` service
 
-Plugins (native C, C++ through `scosdk/datacore.hpp`, Lua through `sco.datacore`) queue the same operations a pack's `.toml` holds, from code: computed overrides, or overrides that depend on settings. Fixed ones belong in a data pack. It is a **host-owned service** (`sco.datacore`, version 1.0, [`sco_datacore.h`](../include/sco_datacore.h), pinned by `tests/abi_datacore.c`), found with `query_service`; `sco_api.h` is unchanged. The host publishes it **only when the product enables it**: `sco::app::Platform::dataCore` with a `dataRoot`. sc-offline turns it on with its CryPak adapter (design plan PR 8); until then `query_service` answers `SCO_NOT_FOUND` and Lua's `sco.datacore` is `nil`.
+Plugins (native C, C++ through `scosdk/datacore.hpp`, Lua through `sco.datacore`) queue the same operations a pack's `.toml` holds, from code: computed overrides, or overrides that depend on settings. Fixed ones belong in a data pack. It is a **host-owned service** (`sco.datacore`, version 1.1, [`sco_datacore.h`](../include/sco_datacore.h), pinned by `tests/abi_datacore.c`), found with `query_service`; `sco_api.h` is unchanged. The host publishes it **only when the product enables it**: `sco::app::Platform::dataCore` with a `dataRoot`. sc-offline turns it on with its CryPak adapter (design plan PR 8); until then `query_service` answers `SCO_NOT_FOUND` and Lua's `sco.datacore` is `nil`.
 
 ```c
 const sco_datacore_v1* dc = NULL;
@@ -206,12 +224,14 @@ if (api->query_service(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_0, (const void*
 | `add_instance(patch, type, clone_record, clone_field, &id)` | A new instance, cloned or zero-filled |
 | `set_pointer(patch, record, field, id)` | A pointer at an added instance |
 | `append(patch, record, field, value)` | One array element: a value, a pointer, or (arrays of structs) an added instance copied in |
-| `add_record(...)` | `SCO_UNAVAILABLE` in 1.0. The patcher has `AddRecord` (and `sco-dcb patch` exercises it), but saved patches use the pack format, which has no record operation yet; a later minor adds both |
+| `add_record(patch, type, name, guid, clone_record, file_path, &id)` | 1.1: a new record, a `[[record]]` in pack terms: cloned from `clone_record` (required), `guid` and `file_path` optional (NULL: the pack defaults, a GUID derived from plugin id and name and `libs/foundry/records/sco/<plugin id>/<name>.xml`). `id` is its root, used like an added instance's; later operations also name the record by name or GUID. A 1.0 host answers `SCO_UNAVAILABLE` |
 | `commit(patch)` | Before the load: queued for it. After it: saved (below). No more operations on it |
 | `discard(patch)` | Drops it (open, or queued before the load) |
 | `report(patch, i, &out)` | One entry per operation in call order, then one for the patch (`op_index` `SCO_DC_OP_PATCH`): `SCO_DC_QUEUED`, `APPLIED`, `SKIPPED` (this operation failed) or `REFUSED` (the patch was refused whole), with the reason |
 
-`record` is a record name, `"guid:xxxxxxxx-..."`, or `"@<id>"` for an instance this patch added (its own fields). `field` is a path as in packs. Values: `SCO_DC_BOOL`, `INT`, `UINT`, `FLOAT`, `STRING` (UTF-8; also enums by option name), `GUID`, `ENUM`, `REF` (a reference field's target record, by name or `guid:...`), `NULL`, `INSTANCE`. Call-time checks need no game file: path and GUID syntax, value shapes, UTF-8, instance ids of the same patch (`SCO_BAD_ARG`; nothing is queued). Names resolve at the load.
+`record` is a record name, `"guid:xxxxxxxx-..."`, or `"@<id>"` for an instance (or record) this patch added (its own fields). `field` is a path as in packs. Values: `SCO_DC_BOOL`, `INT`, `UINT`, `FLOAT`, `STRING` (UTF-8; also enums by option name), `GUID`, `ENUM`, `REF` (a reference field's target record, by name or `guid:...`), `NULL`, `INSTANCE`. Call-time checks need no game file: path and GUID syntax, value shapes, UTF-8, instance ids of the same patch, `add_record`'s file path rule and a record name or GUID the patch adds twice (`SCO_BAD_ARG`; nothing is queued). Names resolve at the load.
+
+**Versions.** 1.1 has the same table as 1.0 and makes `add_record` work (in 1.0 it answered `SCO_UNAVAILABLE`). A caller that needs records queries `SCO_DATACORE_VERSION_1_1`: a 1.0 host then answers `SCO_UNAVAILABLE` at the query instead of at the call; querying `SCO_DATACORE_VERSION_1_0` takes either. The minor is bumped because an existing slot changed behavior in a way callers must be able to detect before relying on it; the layout (`tests/abi_datacore.c`) is unchanged.
 
 **Timing (design decision 9).** In sc-offline the game loads DataCore before plugins load, so in practice a plugin's patch is committed after the load. It is never applied late. `commit` validates it, saves it in the pack format as `<dataRoot>/datacore/pending/<plugin id>.toml` (a temporary file renamed over the old one, so a crash leaves the old one), and reports `SCO_DC_QUEUED` with the reason `applies at the next launch`. At every later launch the load reads it right after that plugin's own data pack, with the same per-patch atomicity and report, until the plugin commits another patch after the load (which replaces it; an empty patch clears it) or the file is deleted. The saved patch of a plugin that is no longer installed, or is disabled, off, refused or crashed, is skipped and logged. Patches committed before a load (a product whose plugins load first) apply at it, after the plugin's saved patch.
 
@@ -233,7 +253,8 @@ if (dc.Open(*this) == SCO_OK) {
     sco::sdk::DataCoreInstance fast = p.AddInstance("SCItemQuantumDriveParams", eos, "Components[SCItemQuantumDriveParams]");
     p.Set(fast.Ref(), "params.driveSpeed", 2.5e8);
     p.SetPointer(beacon, "Components[SCItemQuantumDriveParams]", fast);
-    p.Commit();
+    sco::sdk::DataCoreInstance mine = p.AddRecord("EntityClassDefinition", "EntityClassDefinition.QDRV_SCO_Mine", eos);
+    p.Commit();                                        // mine.Ref() and the name address the new record
 }
 ```
 
@@ -243,6 +264,7 @@ if sco.datacore then                                   -- nil when the product d
   p:set(eos, "Components[SCItemQuantumDriveParams].params.spoolUpTime", 3.5)
   local fast = p:add_instance("SCItemQuantumDriveParams", eos, "Components[SCItemQuantumDriveParams]")
   p:set_pointer(beacon, "Components[SCItemQuantumDriveParams]", fast)
+  p:add_record("EntityClassDefinition", "EntityClassDefinition.QDRV_SCO_Mine", eos)   -- [, guid [, file]]
   p:commit()
 end
 ```

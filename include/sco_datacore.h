@@ -1,5 +1,9 @@
 /*
- * sco_datacore.h: the host service "sco.datacore", version 1.0.
+ * sco_datacore.h: the host service "sco.datacore", version 1.1.
+ *
+ * 1.1 (same table as 1.0) makes add_record work; a 1.0 host answers it SCO_UNAVAILABLE. Query with
+ * SCO_DATACORE_VERSION_1_1 to require it (a 1.0 host then answers SCO_UNAVAILABLE), or with
+ * SCO_DATACORE_VERSION_1_0 to take either.
  *
  * Plugins queue DataCore overrides (the game's Data\Game2.dcb) from code: the operations of a
  * data pack's datacore\*.toml files (docs/datacore.md "Pack format"), built call by call. Plain C;
@@ -52,6 +56,7 @@ extern "C" {
 
 #define SCO_DATACORE_NAME "sco.datacore"
 #define SCO_DATACORE_VERSION_1_0 0x00010000u
+#define SCO_DATACORE_VERSION_1_1 0x00010001u   /* add_record works */
 
 /* state() */
 #define SCO_DC_OPEN   1u   /* before the DataCore load: committed patches apply at it */
@@ -135,8 +140,16 @@ typedef struct sco_datacore_v1 {
     /* Appends one element to an array field: a value, a pointer (SCO_DC_NULL, SCO_DC_INSTANCE), or
      * for an array of structs SCO_DC_INSTANCE, the added instance to copy in. */
     sco_result (*append)(uint64_t patch, const char* record, const char* field, const sco_dc_value* v);
-    /* A new record. SCO_UNAVAILABLE in 1.0: saved patches use the data-pack format, which has no
-     * record operation yet (the patcher's AddRecord is there; sco-dcb patch exercises it). */
+    /* 1.1: a new record of struct type named name (unique among records), its root copied from the
+     * record clone_record (a name or "guid:...", required; a record of the same struct). guid: NULL
+     * or "" derives a stable one from the plugin id and name (the same at every launch); else
+     * "xxxxxxxx-...", not zero. file_path: NULL or "" is libs/foundry/records/sco/<plugin id>/<name>.xml;
+     * else libs/foundry/records/... ending in .xml. out_record: an id like add_instance's (the
+     * record's root: "@<id>" as a record argument, SCO_DC_INSTANCE as a value); later operations
+     * may also name the record by name or GUID, and reference fields take it as SCO_DC_REF.
+     * SCO_BAD_ARG: a bad argument, or a name or GUID this patch already adds. The rest (struct
+     * has records, name and GUID new to the file, clone's struct) is checked at the load.
+     * In the saved .toml it is a [[record]] operation. SCO_UNAVAILABLE on a 1.0 host. */
     sco_result (*add_record)(uint64_t patch, const char* type, const char* name, const char* guid,
                              const char* clone_record, const char* file_path, uint64_t* out_record);
     /* Before the load: queues the patch for it (reports SCO_DC_QUEUED). After it: saves the patch as
