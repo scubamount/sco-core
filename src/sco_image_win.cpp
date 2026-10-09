@@ -13,6 +13,9 @@ Image ModuleImage() {
     img.base      = base;
     img.timestamp = nt->FileHeader.TimeDateStamp;
     img.size      = nt->OptionalHeader.SizeOfImage;
+    const IMAGE_DATA_DIRECTORY& pdata = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (pdata.VirtualAddress && pdata.Size && pdata.VirtualAddress < img.size)
+        img.pdata = { base + pdata.VirtualAddress, pdata.Size };
     IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++sec) {
         const Section s{ base + sec->VirtualAddress, sec->Misc.VirtualSize };

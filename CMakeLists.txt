@@ -58,6 +58,8 @@ set(SCO_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # Pattern scanning, signatures, log/status, PE files and the game signature tables.
 file(GLOB SCO_GAME_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.cpp")
+# The CryPak hooks are their own library (sco_pak): the rows and sco-sigcheck don't need hooks.
+list(FILTER SCO_GAME_SOURCES EXCLUDE REGEX "/pak_hooks\\.cpp$")
 add_library(sco_core STATIC
   src/sco_scan.cpp src/sco_signatures.cpp src/sco_log_status.cpp src/sco_pe_file.cpp
   ${SCO_GAME_SOURCES})
@@ -100,6 +102,12 @@ add_library(sco_vfs STATIC src/vfs/compose.cpp src/vfs/table.cpp)
 target_include_directories(sco_vfs PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_vfs PUBLIC Threads::Threads)
 sco_project_target(sco_vfs)
+
+# The CryPak adapter (sco/game/pak.h): the loader detour and the vtable slot swaps that serve
+# sco::vfs mounts to the engine. Its rows are in sco_core; the vfs.pak capability in sco_host.
+add_library(sco_pak STATIC src/game/pak_hooks.cpp)
+target_link_libraries(sco_pak PUBLIC sco_core sco_hook sco_vfs sco_host)
+sco_project_target(sco_pak)
 
 # The DataCore parser, validation and patcher (sco/datacore.h) and data packs (sco/datacore_pack.h):
 # bytes in, tables and sco::vfs splices out. No engine, no Windows. Vendored toml++
@@ -154,9 +162,15 @@ add_library(sco_storage STATIC src/storage/storage.cpp)
 target_link_libraries(sco_storage PUBLIC sco_host sco_sqlite)
 sco_project_target(sco_storage)
 
+# sco.ui (sco/ui.h, include/sco_ui.h): plugin tabs, overlays and badges and the hotkey table, a
+# host-owned service. No renderer: the product draws what is registered.
+add_library(sco_ui STATIC src/ui/ui.cpp)
+target_link_libraries(sco_ui PUBLIC sco_host)
+sco_project_target(sco_ui)
+
 # The host kit (sco/app.h): Start / Tick / Stop over the host table, caps, signatures and loader.
 add_library(sco_app STATIC src/app/sco_app.cpp)
-target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage)
+target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui)
 sco_project_target(sco_app)
 
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
@@ -261,6 +275,28 @@ if(SCO_BUILD_TESTS)
   add_test(NAME abi_storage
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_storage_targets})
 
+  # The sco.ui table pin (tests/abi_ui.c), the same three ways.
+  set(_abi_ui_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_ui.cpp")
+  file(CONFIGURE OUTPUT "${_abi_ui_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_ui.c\"\n")
+  add_library(sco_abi_ui_c OBJECT tests/abi_ui.c)
+  add_library(sco_abi_ui_cxx OBJECT "${_abi_ui_cxx}")
+  set(_abi_ui_targets sco_abi_ui_c sco_abi_ui_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_ui_short_enums OBJECT tests/abi_ui.c)
+    target_compile_options(sco_abi_ui_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_ui_targets sco_abi_ui_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_ui_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME abi_ui
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_ui_targets})
+
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
   sco_project_target(test_core)
@@ -288,6 +324,12 @@ if(SCO_BUILD_TESTS)
   sco_project_target(test_storage)
   add_test(NAME test_storage COMMAND test_storage "${SCO_TEST_OUT}")
 
+  # sco.ui over the real host table, with built-in plugins under the loader's crash guard.
+  add_executable(test_ui tests/test_ui.cpp)
+  target_link_libraries(test_ui PRIVATE sco_ui sco_plugins)
+  sco_project_target(test_ui)
+  add_test(NAME test_ui COMMAND test_ui)
+
   add_executable(test_hook tests/test_hook.cpp)
   target_link_libraries(test_hook PRIVATE sco_hook)
   add_test(NAME test_hook COMMAND test_hook)
@@ -297,6 +339,13 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_spatial PRIVATE sco_engine)
   sco_project_target(test_spatial)
   add_test(NAME test_spatial COMMAND test_spatial)
+
+  # sco::game::pak over a fake ICryPak (a real vtable) and a fake loader; x86-64 only (the loader
+  # detour), skipped elsewhere.
+  add_executable(test_pak tests/test_pak.cpp)
+  target_link_libraries(test_pak PRIVATE sco_pak)
+  sco_project_target(test_pak)
+  add_test(NAME test_pak COMMAND test_pak)
 
   add_executable(test_vfs tests/test_vfs.cpp)
   target_link_libraries(test_vfs PRIVATE sco_vfs)
@@ -390,7 +439,7 @@ if(SCO_BUILD_TESTS)
            COMMAND test_plugins "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugins" "${SCO_TEST_OUT}")
 
   add_executable(test_lua tests/test_lua.cpp)
-  target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua)
+  target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua sco_ui)
   sco_project_target(test_lua)
   add_test(NAME test_lua COMMAND test_lua "${CMAKE_CURRENT_SOURCE_DIR}/sdk" "${SCO_TEST_OUT}")
 

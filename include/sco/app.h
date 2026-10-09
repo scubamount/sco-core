@@ -24,7 +24,8 @@
 //   1. SetGameThread (the caller's thread)
 //   2. image set: RegisterGameSignatures + ResolveAll(*image)
 //   3. setCapabilities() (after the rows are resolved, so it can use caps::SetFromSignatures)
-//   4. host::BuildApi({ hostVersion }); with dataRoot set, storage::Start (sco.storage)
+//   4. host::BuildApi({ hostVersion }); with dataRoot set, storage::Start (sco.storage);
+//      ui::Start (sco.ui) and ui::ReserveChord for each of reservedChords
 //   5. the list: every built-in (FromBuiltin), then, with pluginsEnabled, Discover(pluginRoot)
 //   6. ContainCallouts(list)
 //   7. LoadBuiltin for each built-in; then, in list order, LoadNative / LoadScript (a lua plugin
@@ -33,8 +34,8 @@
 //   9. Dispatch "game.ready"
 // Startup problems are logged and reported, never fatal: a product with no image, no plugin
 // folder or a refused plugin still starts, and every plugin that can load does.
-// Stop: Dispatch "game.exit", UnloadAll (newest first, built-ins last), storage::Stop and
-// host::WithdrawHostServices (host services outlive every plugin), ContainCallouts(nullptr).
+// Stop: Dispatch "game.exit", UnloadAll (newest first, built-ins last), storage::Stop, ui::Stop
+// and host::WithdrawHostServices (host services outlive every plugin), ContainCallouts(nullptr).
 #include "sco/plugins.h"
 #include "sco/scan.h"
 #include <cstddef>
@@ -57,6 +58,11 @@ struct Platform {
     // The product's data folder (sc-offline: data/). Set, Start publishes the host service
     // sco.storage (sco/storage.h) with databases in <dataRoot>/storage/; empty, no storage.
     std::filesystem::path dataRoot;
+    // Chords the product handles itself ("f6", "ctrl+alt+4"; sco/ui.h ReserveChord): no plugin
+    // can bind them to a command. Reserved when sco.ui starts, before any plugin loads; the
+    // strings must stay valid during Start.
+    const char* const* reservedChords = nullptr;
+    size_t nReservedChords = 0;
 };
 
 // Starts the host kit (see above). Game thread: it becomes the game thread. False, and nothing

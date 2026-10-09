@@ -21,7 +21,7 @@ set(SAMPLE "${ROOT}/sdk/examples/quantum_pack")
 set(EOS "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem")
 
 run(0 "lint: 1 file, 0 failed" lint "${SAMPLE}")
-run(0 "OK +[^\n]*good_all.toml: 12 operations \\(atomic = false\\).*lint: 2 files, 0 failed" lint "${G}/good_all.toml" "${G}/good_minimal.toml")
+run(0 "OK +[^\n]*good_all.toml: 13 operations \\(atomic = false\\).*lint: 2 files, 0 failed" lint "${G}/good_all.toml" "${G}/good_minimal.toml")
 run(1 "FAIL [^\n]*bad_unknown_key.toml:6: \\[\\[set\\]\\]: unknown key \"feild\".*lint: 2 files, 1 failed" lint "${G}/bad_unknown_key.toml" "${G}/good_minimal.toml")
 run(1 "bad_syntax.toml:3: TOML:" lint "${G}/bad_syntax.toml")
 run(2 "no datacore folder" lint "${G}")

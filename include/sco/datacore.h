@@ -3,7 +3,7 @@
 // bytes in memory and validates the layout as docs/design/vfs-datacore.md section 4 describes: every
 // size is derived from the header and must add up to the file size; the version number is never
 // trusted. Patch turns semantic overrides (a record's field, a new instance, a pointer, an array
-// element) into base-offset splices for sco::vfs (section 4, "API"). AddRecord comes in a later PR.
+// element, a new record) into base-offset splices for sco::vfs (section 4, "API" and "AddRecord").
 // Standard library only; no engine, no Windows. A Schema is plain data: concurrent const use is fine.
 #include "sco/vfs.h"
 #include <array>
@@ -66,7 +66,7 @@ struct DataMapping { uint32_t instanceCount, structIndex; };
 struct Record {
     uint32_t name;        // name pool
     uint32_t fileName;    // value pool
-    uint32_t unknown;     // the u32 at +8 of 36-byte records (research R1); 0 for 32-byte records
+    uint32_t unknown;     // record +8 (records over 32 bytes): a name-pool offset, the owning team's tag (R1); 0 for 32-byte records
     uint32_t structIndex;
     Guid     id;
     uint16_t instanceIndex;
@@ -83,7 +83,7 @@ enum class Check {
     Totals,      // rules 1-3: tables + pools + data don't add up to the file size for any record size
     Structure,   // an index or range in the definition tables or records points outside its table
     RecordSize,  // rule 4: a record's structSize differs from its struct's computed size
-    NameOffset,  // rule 5: a name (or record file name) offset isn't a string start in its pool
+    NameOffset,  // rule 5: a name, record file name or record +8 offset isn't a string start in its pool
 };
 const char* CheckName(Check);
 
@@ -141,6 +141,14 @@ private:
     std::unordered_map<std::string, uint32_t> recordByGuid_;
 };
 
+// Capability names (sco/caps.h) for what a parsed file supports. sco-core's pak adapter (plan PR 7)
+// sets them; sco-dcb info prints them. datacore.add_record is on whenever layout validation passes
+// (research R1: record +8 is checked by rule 5, and nothing indexes records by position).
+constexpr const char* kCapPatch = "datacore.patch";
+constexpr const char* kCapAddRecord = "datacore.add_record";
+inline bool PatchSupported(const Schema& s) { return s.failed == Check::None && s.recordSize != 0; }
+inline bool AddRecordSupported(const Schema& s) { return PatchSupported(s); }
+
 // ---- patcher (design section 4) ----------------------------------------------------------------
 
 // Why an operation (or Emit) was refused. Tests and callers act on the category; the message is
@@ -157,7 +165,9 @@ enum class Refusal : uint8_t {
     ValueOutOfRange,    // a number too large for the field
     UnknownEnumOption,  // not an option of the field's enum
     Opaque,             // the struct has a field of unknown type (validation rule 6)
-    Unsupported,        // reference fields (research R1), appending to a struct with no data block
+    Unsupported,        // appending to a struct with no data block; AddRecord: a struct with no records,
+                        // or records in the target file that disagree on record +8
+    Duplicate,          // AddRecord: the record name or GUID already exists
     DependencyFailed,   // uses an instance whose AddInstance failed
     Corrupt,            // the file's data points outside its pools or blocks
     Limit,              // a count or the value-string pool would pass 32 bits
@@ -195,9 +205,25 @@ struct InstanceSource {
     std::string              field;
 };
 
+// A new top-level record (design section 4, "AddRecord"). Appended at the end of the record table;
+// its root instance is a copy of the clone's root, appended to the struct's block; name and file path
+// are appended to the end of their pools (a path already in the file reuses its offset).
+struct NewRecord {
+    std::string         type;       // struct name; it must already have records
+    std::string         name;       // unique among records
+    std::string         filePath;   // libs/foundry/records/...xml; "" = libs/foundry/records/sco/<packId>/<name>.xml
+    std::optional<Guid> guid;       // none: a random version-4 GUID (PatchOptions::guidSeed)
+    InstanceSource      clone;      // required: a record (empty field) of the same struct
+};
+struct AddedRecord {
+    Guid       guid;                // as written (generated or given)
+    InstanceId root;                // its root instance, usable as a pointer value
+    uint32_t   index = 0;           // position in the record table (the old record count, plus earlier adds)
+};
+
 struct Value {
-    enum class Kind : uint8_t { Null, Bool, Int, UInt, Float, String, Guid, Enum, Instance };
-    Kind        kind = Kind::Null;   // Null: a null strong or weak pointer
+    enum class Kind : uint8_t { Null, Bool, Int, UInt, Float, String, Guid, Enum, Instance, Record };
+    Kind        kind = Kind::Null;   // Null: a null strong or weak pointer, or a null reference
     bool        b = false;
     int64_t     i = 0;
     uint64_t    u = 0;
@@ -205,6 +231,7 @@ struct Value {
     std::string s;                   // String; Enum: the option name
     Guid        guid;
     InstanceId  instance;            // Instance: a pointer target, or the element to copy into an array of structs
+    RecordRef   record;              // Record: a reference target (an existing record or one this patch added)
 
     static Value OfBool(bool v) { Value x; x.kind = Kind::Bool; x.b = v; return x; }
     static Value OfInt(int64_t v) { Value x; x.kind = Kind::Int; x.i = v; return x; }
@@ -214,10 +241,13 @@ struct Value {
     static Value OfGuid(const Guid& v) { Value x; x.kind = Kind::Guid; x.guid = v; return x; }
     static Value OfEnum(std::string option) { Value x; x.kind = Kind::Enum; x.s = std::move(option); return x; }
     static Value OfInstance(InstanceId v) { Value x; x.kind = Kind::Instance; x.instance = v; return x; }
+    static Value OfRecord(RecordRef v) { Value x; x.kind = Kind::Record; x.record = std::move(v); return x; }
 };
 
 struct PatchOptions {
     bool atomic = true;   // Emit refuses the whole batch if any operation was refused (design: per pack)
+    std::string packId = "sco";            // AddRecord's default file path: libs/foundry/records/sco/<packId>/<name>.xml
+    std::optional<uint64_t> guidSeed;      // AddRecord's GUID generator (std::mt19937_64); none: std::random_device
 };
 
 // The value an OverrideField or SetPointer wrote, as an opaque identity: two operations with the same
@@ -241,7 +271,7 @@ struct FieldView {
     uint32_t    count = 0;
     // The value in pack syntax: 2.5, 7, true, "text", { enum = "Large" }, { guid = "..." },
     // { uint = "..." } (past int64); pointers "-> Part[3]" or "null"; weak "weak -> Base[0]";
-    // references "ref {guid}"; an array "[2]"; an element of an array of structs "Part[4]".
+    // references { ref = "guid:..." } (or null); an array "[2]"; an element of an array of structs "Part[4]".
     std::string text;
     InstanceId  target;        // strong and weak pointers, struct array elements; invalid for null
     uint32_t    depth = 0;     // pointer hops and array levels from the start (a subtree is deeper)
@@ -257,6 +287,10 @@ bool ParseGuid(std::string_view text, Guid& out);
 // element), `name[Type]` (the first element whose struct is Type or derives from it); inline structs
 // and strong pointers are followed, weak pointers and references are not.
 //
+// References are written as the target record's root instanceIndex (u32) and its GUID, never the
+// record's position (research R1); a null reference is 0xFFFFFFFF and a zero GUID. Records added by
+// AddRecord are addressable by name and GUID in later operations of the same batch.
+//
 // Every operation is checked in full before it changes anything: a refused one leaves the patch as
 // it was and is recorded in Reports(). Nothing existing is renumbered: values are overwritten in
 // place, and instances, array copies and strings are appended to the end of their block or pool.
@@ -268,7 +302,8 @@ public:
     Patch(Patch&&) noexcept;
     Patch& operator=(Patch&&) noexcept;
 
-    // Scalars, strings, enums (by option name), locales, guids and pointers (Instance or Null), in place.
+    // Scalars, strings, enums (by option name), locales, guids, pointers (Instance or Null) and
+    // references (Record or Null), in place.
     Status OverrideField(const RecordRef& rec, std::string_view fieldPath, const Value& v);
     Status OverrideField(InstanceId inst, std::string_view fieldPath, const Value& v);
     // A new instance at the end of struct `type`'s block, copied from `cloneFrom` (an instance of
@@ -282,12 +317,17 @@ public:
     // copy), unless the array already ends there. The old range is left unreferenced.
     Status AppendElement(const RecordRef& rec, std::string_view arrayPath, const Value& v);
     Status AppendElement(InstanceId inst, std::string_view arrayPath, const Value& v);
+    // A new record (design "AddRecord"): checks every rule, then appends the record entry, its root
+    // instance (cloned), its name and (unless the path exists) its file path. Record +8 (records over
+    // 32 bytes) is the value of the records already in that file, else the clone's (research R1).
+    Status AddRecord(const NewRecord& rec, AddedRecord& out);
     // An existing instance (record root, array element or strong pointer target) as a pointer target.
     Status FindInstance(const InstanceSource& source, InstanceId& out) const;
 
     // Turns the accepted operations into base-offset splices (sorted, non-overlapping, each with its
     // expected old bytes; the header rewritten as one 120-byte overwrite when a count changes), then
-    // re-validates: applies them to the base and re-parses the result. Any failure leaves `out` empty.
+    // re-validates: applies them to the base and re-parses the result, and checks every added record
+    // (record count, entry size, root instance struct and size). Any failure leaves `out` empty.
     // With options.atomic, a batch with a refused operation is refused here with that operation's
     // category.
     Status Emit(std::vector<vfs::Splice>& out) const;

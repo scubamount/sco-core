@@ -25,6 +25,13 @@ echo "abi_v1: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_storage.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_storage.c"
 echo "abi_storage: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The sco.ui table (tests/abi_ui.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ui.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ui.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_ui.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ui.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ui.c"
+echo "abi_ui: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
 # SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
 # header change that breaks them fails here. The full build from the packaged zip, with MSVC on
@@ -48,11 +55,14 @@ echo "toml++: 3.4.0, sha256 of toml.hpp and LICENSE match third_party/tomlpluspl
 
 FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include" -isystem "$ROOT/third_party/sqlite"
        -isystem "$ROOT/third_party/tomlplusplus")
+# The game signature tables; the CryPak hooks (pak_hooks.cpp) are built only into test_pak.
+GAME=()
+for f in "$ROOT"/src/game/*.cpp; do [ "$(basename "$f")" = pak_hooks.cpp ] || GAME+=("$f"); done
 RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp"
          "$ROOT/src/api/sco_services.cpp" "$ROOT/src/api/sco_raw.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined \
   "$ROOT/tests/test_core.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_signatures.cpp" \
-  "$ROOT/src/sco_log_status.cpp" "$ROOT/src/sco_pe_file.cpp" "$ROOT/src/game/"*.cpp -o "$OUT/test_core"
+  "$ROOT/src/sco_log_status.cpp" "$ROOT/src/sco_pe_file.cpp" "${GAME[@]}" -o "$OUT/test_core"
 "$OUT/test_core"
 # The runtime is cross-thread: run its tests under ASan+UBSan and again under ThreadSanitizer.
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_runtime.cpp" "${RUNTIME[@]}" -o "$OUT/test_runtime"
@@ -80,6 +90,14 @@ VFS=("$ROOT/tests/test_vfs.cpp" "$ROOT/src/vfs/compose.cpp" "$ROOT/src/vfs/table
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${VFS[@]}" -o "$OUT/test_vfs"
 "$OUT/test_vfs"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${VFS[@]}" -o "$OUT/test_vfs_tsan"
+# sco::game::pak: the CryPak adapter over a fake ICryPak and a fake loader, with a second thread on
+# the engine's functions during the load window, so both sanitizer sets.
+PAK=("$ROOT/tests/test_pak.cpp" "$ROOT/src/game/pak_hooks.cpp" "${GAME[@]}" "$ROOT/src/hook/sco_hook.cpp" "${VFS[@]:1}"
+     "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_log_status.cpp" "${RUNTIME[@]}")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${PAK[@]}" -o "$OUT/test_pak"
+"$OUT/test_pak"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${PAK[@]}" -o "$OUT/test_pak_tsan"
+"$OUT/test_pak_tsan"
 "$OUT/test_vfs_tsan"
 # The C++20 SDK layer: two SDK plugins over the same host table, under both sanitizer sets.
 SDKT=("$ROOT/tests/test_sdk.cpp" "${HOST[@]:1}")
@@ -108,7 +126,7 @@ STORAGE=("$ROOT/tests/test_storage.cpp" "$ROOT/src/storage/storage.cpp" "${HOST[
 
 # The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
 # corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb
-# over the fixtures test_datacore writes (CMake: CTest dcb_tool).
+# over the fixtures test_datacore writes, info, records and patch (CMake: CTest dcb_tool).
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore.cpp" "$ROOT/src/datacore/datacore.cpp" \
   -o "$OUT/test_datacore"
 "$OUT/test_datacore" "$OUT"
@@ -129,8 +147,19 @@ set +e
 "$OUT/sco-dcb" info "$OUT/datacore_missing.dcb" 2> /dev/null; missing=$?
 set -e
 [ $bad -eq 1 ] && [ $missing -eq 2 ] || { echo "sco-dcb: exit codes $bad/$missing, expected 1/2"; exit 1; }
-"$OUT/sco-dcb" records "$OUT/datacore_36.dcb" | grep -q "$(printf '\tShipA\tShip\t0x00001111\t')" || { echo "sco-dcb: records"; exit 1; }
-echo "sco-dcb: info and records over the fixtures, exit codes 0/1/2"
+"$OUT/sco-dcb" records "$OUT/datacore_36.dcb" | grep -q "$(printf '\tShipA\tShip\t0x[0-9a-f]*\t0\t139\tlibs/foundry/records/test/ships.xml\tShips$')" || { echo "sco-dcb: records"; exit 1; }
+# patch: a float override, AddRecord and a reference to the new record; the output re-parses and lists it.
+"$OUT/sco-dcb" patch "$OUT/datacore_36.dcb" "$OUT/datacore_36_patched.dcb" --seed 1 set ShipA speed 2.5 \
+  add-record Ship ShipC ShipA - set ShipB maker record:ShipC | grep -q '^Emit: OK' || { echo "sco-dcb: patch"; exit 1; }
+"$OUT/sco-dcb" info "$OUT/datacore_36_patched.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: patched file not OK"; exit 1; }
+"$OUT/sco-dcb" records "$OUT/datacore_36_patched.dcb" | grep -q "$(printf '^5\t.*\tShipC\tShip\t0x[0-9a-f]*\t2\t139\tlibs/foundry/records/sco/sco-dcb/ShipC.xml\tShips$')" \
+  || { echo "sco-dcb: added record not listed"; exit 1; }
+set +e
+"$OUT/sco-dcb" patch "$OUT/datacore_36.dcb" "$OUT/datacore_36_refused.dcb" set ShipA speedX 1 | grep -q 'REFUSED (field not found)'; refused=$?
+"$OUT/sco-dcb" patch "$OUT/datacore_36.dcb" "$OUT/datacore_36_refused.dcb" set ShipA speedX 1 > /dev/null; refusedRc=$?
+set -e
+[ $refused -eq 0 ] && [ $refusedRc -eq 1 ] && [ ! -e "$OUT/datacore_36_refused.dcb" ] || { echo "sco-dcb: patch refusal"; exit 1; }
+echo "sco-dcb: info, records and patch over the fixtures, exit codes 0/1/2"
 # lint, check, show and diff over the golden files and the sample pack (CMake: CTest dcb_pack).
 cmake -DDCB="$OUT/sco-dcb" -DROOT="$ROOT" -DDIR="$OUT" -P "$ROOT/tests/dcb_pack.cmake" > "$OUT/dcb_pack.log" 2>&1 \
   || { cat "$OUT/dcb_pack.log"; echo "sco-dcb: pack commands failed"; exit 1; }
@@ -160,6 +189,15 @@ PLUGINS=("$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROO
   -ldl -o "$OUT/test_plugins"
 "$OUT/test_plugins" "$ROOT/tests/fixtures/plugins" "$OUT"
 
+# sco.ui (sco/ui.h, sco_ui.h, scosdk/ui.hpp): built-in plugins under the loader's crash guard (a
+# signal-based stand-in here), registration from threads beside a frame, so both sanitizer sets.
+UI=("$ROOT/tests/test_ui.cpp" "$ROOT/src/ui/ui.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp"
+    "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${UI[@]}" -ldl -o "$OUT/test_ui"
+"$OUT/test_ui"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${UI[@]}" -ldl -o "$OUT/test_ui_tsan"
+"$OUT/test_ui_tsan"
+
 # sco-lua (plugins/lua): the sandboxed Lua runtime, loaded through the real loader and host table.
 # Vendored Lua is built as C with its own warnings off; sco_lua.c with -Werror like the rest.
 LUA_SRC=$ROOT/plugins/lua/third_party/lua/src
@@ -173,14 +211,14 @@ for f in "$LUA_SRC"/*.c "$ROOT/plugins/lua/sco_lua.c"; do
 done
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_lua.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
   "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
-  "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
+  "$ROOT/src/ui/ui.cpp" "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
 "$OUT/test_lua" "$ROOT/sdk" "$OUT"
 
 # The host kit (sco/app.h): built-ins, the fake plugins m0 and m11, greeter and travel_pack through
 # sco::app (ASan+UBSan). Then sco-host-sim over the SDK examples, laid out like data/plugins with
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
-     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/game/"*.cpp "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN")
+     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$SQLITE_ASAN")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"
 "$OUT/test_app" "$ROOT/sdk" "$OUT"

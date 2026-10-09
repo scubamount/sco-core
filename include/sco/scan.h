@@ -13,6 +13,7 @@ struct Section { uint8_t* base = nullptr; size_t size = 0; };
 struct Image {
     uint8_t* base      = nullptr;
     Section  text, rdata;
+    Section  pdata;           // the exception directory: RUNTIME_FUNCTION entries (12 bytes each)
     uint32_t timestamp = 0;   // PE header TimeDateStamp
     uint32_t size      = 0;   // SizeOfImage
 };
@@ -27,6 +28,12 @@ uint8_t*       FindRipLea(const Section& text, uint8_t reg0, uint8_t reg1, uint8
 constexpr size_t kMaxPatternBytes = 96;
 int            FindPattern(const Section& text, const char* pattern, uint8_t** out, int max);
 uint8_t*       FindUniquePattern(const Section& text, const char* pattern, int& matches);
+
+// The start of the function containing `at`, from the image's .pdata, as RtlLookupFunctionEntry
+// would find it: the RUNTIME_FUNCTION whose [begin, end) holds at, then its chained unwind info
+// (UNW_FLAG_CHAININFO) followed, up to 8 links, to the primary entry. nullptr when at isn't
+// inside the image, no entry holds it, or an entry or its unwind info points outside the image.
+uint8_t*       FunctionStart(const Image& img, const uint8_t* at);
 
 // Target of a RIP-relative operand: the instruction at `insn`, displacement at `insn + dispOffset`,
 // instruction length `insnSize`.
