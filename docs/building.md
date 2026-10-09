@@ -72,12 +72,29 @@ The build is 64-bit only; configuring for 32 bits stops with an error.
 | `sco-sigcheck` | `tools/sco-sigcheck.cpp` | `sco_core` |
 | `sco-host-sim` | `tools/sco-host-sim.cpp` | `sco_app`, `sco_lua` |
 
-Every library exposes `include/` as a public include directory. To use sco-core from another CMake project:
+Every library exposes `include/` as a public include directory.
+
+### Using sco-core from another CMake project
 
 ```cmake
 add_subdirectory(external/sco-core)            # tests stay off when not top level
 target_link_libraries(my_host PRIVATE sco_app sco_lua)   # sco_app brings sco_host, sco_plugins, sco_core
 ```
+
+What sc-offline does, and why (from its `CMakeLists.txt`):
+
+```cmake
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")   # before add_subdirectory
+set(SCO_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(SCO_WERROR OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
+```
+
+- **Set `CMAKE_MSVC_RUNTIME_LIBRARY` before `add_subdirectory`.** sco-core's targets take the value in effect when they are created, so a static CRT set afterwards doesn't reach them, and a DLL that links them imports the dynamic CRT after all. sc-offline's CI checks that `dinput8.dll` imports no dynamic CRT.
+- **`SCO_BUILD_TESTS OFF`.** It is already off when sco-core isn't the top-level project; forcing it keeps a cached `ON` from an earlier configure out. sco-core's own CI runs the tests.
+- **`SCO_WERROR OFF`.** sco-core's CI builds with `/W4 /WX`; in a product build, a warning that only a newer toolset emits must not break the build. Warnings still show.
+- **`EXCLUDE_FROM_ALL`** builds only the libraries the product links, not `sco-sigcheck` or `sco-host-sim`.
+- The source tree must be checked out: with a submodule, clone with `--recurse-submodules` (CI: `submodules: true`). sc-offline stops at configure with a message when `external/sco-core` is empty.
 
 ### Tests
 
