@@ -1,23 +1,24 @@
 # Contributing to sco-core
 
-sco-core is the game-facing core of [sc-offline](https://github.com/scubamount/sc-offline). Most changes start there: a feature moving its addresses here, or a game patch breaking a row. Read sc-offline's [CONTRIBUTING.md](https://github.com/scubamount/sc-offline/blob/main/CONTRIBUTING.md) first; its rules apply here too.
+sco-core is the game-facing core of [sc-offline](https://github.com/scubamount/sc-offline) and the home of its plugin platform (the `sco_api` ABI, the host, the loader, sco-lua and the SDK). Most changes start in sc-offline: a feature moving its addresses here, a game patch breaking a row, or a feature exposing a command to plugins. Read sc-offline's [CONTRIBUTING.md](https://github.com/scubamount/sc-offline/blob/main/CONTRIBUTING.md) first; its rules apply here too.
 
 ## What fits
 
 - **Offline, single-player only.** Nothing that connects to Star Citizen's servers, changes online play, or helps cheating or anti-cheat bypass. PRs like that are closed.
 - **No game files.** Byte patterns and the names of strings the game references are fine. Don't commit pieces of `StarCitizen.exe`, dumps or anything extracted from the game.
 - **No secrets or personal data** in code, tests or logs you paste.
-- **Portable core.** Only `src/sco_image_win.cpp` may include Windows headers. Everything else must build with clang or gcc on macOS and Linux, so the tests and `sco-sigcheck` keep running without Windows.
+- **Portable core.** Only `src/sco_image_win.cpp` and the `_WIN32` halves of `src/plugins/loader.cpp` and `src/plugins/guard_win.cpp` may include Windows headers. Everything else must build with clang or gcc on macOS and Linux, so the tests and `sco-sigcheck` keep running without Windows, and with MSVC x64, the real target.
+- **The plugin ABI only grows.** `include/sco_api.h` follows the rules in [Plugin API v1 § Compatibility](docs/api-v1.md#compatibility). Any change to it updates `tests/abi_v1.c` and `docs/api-v1.md` in the same PR.
 - **No new dependencies** without discussing it in an issue first.
 
 ## Making a change
 
 1. Open an issue first for anything bigger than a small fix.
 2. Follow [Adding a signature](docs/adding-signatures.md) for new rows; its rules (move without changing, one address per row, unique or nothing) are checked in review.
-3. Run `tools/test.sh`. It must end with `0 failed`. New registry or scanner behavior gets a test in `tests/test_core.cpp`; runtime behavior (tasks, events, commands) in `tests/test_runtime.cpp`.
+3. Run `tools/test.sh` (or the CMake build and `ctest`; see [Building and testing](docs/building.md)). Every test binary must end with `0 failed`. New behavior gets a test next to its neighbors: registry and scanners in `tests/test_core.cpp`; tasks, events and commands in `tests/test_runtime.cpp`; capabilities and the `sco_api` table in `tests/test_host.cpp`; discovery, `plugin.ini`, the loader and the content index in `tests/test_plugins.cpp`; sco-lua in `tests/test_lua.cpp`. A new source file goes into both `tools/test.sh` and `CMakeLists.txt`.
 4. Run `tools/sigcheck.sh` against a real `StarCitizen.exe` if you touched a table, and paste the `[core]` lines and the game build into the PR.
 5. Update the docs your change affects (`README.md`, `docs/`, header comments) and add a line to [CHANGELOG.md](CHANGELOG.md).
-6. Open the PR against `main`. CI (`test`) must pass.
+6. Open the PR against `main`. CI (`test`, `cmake` and `sdk`) must pass.
 
 ## Reaching sc-offline
 

@@ -2,7 +2,7 @@
 
 Version 1.0-pre. This is the plain-C interface a plugin uses to talk to its host (sc-offline). It is the only header a plugin includes; the C++ headers in `include/sco/` are internal and are not part of it.
 
-**Status: pre-release.** The header, this page and [`tests/abi_v1.c`](../tests/abi_v1.c) can still change until the `sdk-v1.0.0` tag. No host implements the table yet: sc-offline builds it in step 4 of the SDK plan and loads plugins from step 6. From the tag on, version 1 only grows (see [Compatibility](#compatibility)).
+**Status: pre-release.** The header, this page and [`tests/abi_v1.c`](../tests/abi_v1.c) can still change until the `sdk-v1.0.0` tag. sco-core implements the table ([`sco::host::BuildApi`](api.md#scohosth-the-hosts-sco_api-table)) and the loader ([Plugins](plugins.md)); sc-offline wires them in, and loads plugins, in a later release. From the tag on, version 1 only grows (see [Compatibility](#compatibility)).
 
 Plugins are native DLLs and run with the game's full rights. Only install plugins you trust. Plugins are GPL-3.0, like sco-core; there is no linking exception.
 
