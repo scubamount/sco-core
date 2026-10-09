@@ -294,7 +294,7 @@ All mounts of a path splice the same base. Higher `priority` wins an overlap, an
 
 ## `sco/datacore.h`: the DataCore file
 
-The game's DataCore database (`Data\Game2.dcb`) in library `sco_datacore` ([design](design/vfs-datacore.md), sections 2 and 4): the parser below, and the patcher that turns semantic overrides into `sco::vfs` splices ([Patching](#patching-datacore)). Standard library only; no engine, no Windows. `AddRecord` comes in a later PR.
+The game's DataCore database (`Data\Game2.dcb`) in library `sco_datacore` ([design](design/vfs-datacore.md), sections 2 and 4): the parser below, and the patcher that turns semantic overrides into `sco::vfs` splices ([Patching](#patching-datacore)). Standard library only; no engine, no Windows.
 
 ```cpp
 sco::datacore::Schema s;
@@ -312,7 +312,7 @@ if (!s.Parse(bytes)) Log("datacore: %s", s.error.c_str());   // bytes: std::span
 | `Properties(i)` | A struct's property indices, inherited first |
 | `FindStruct(name)`, `FindRecord(guid)`, `FindRecordByName(name)` | Lookups; the first entry wins when one repeats |
 
-`Check` is `None`, `File` (smaller than the header), `Totals` (rules 1-3: nothing adds up to the file size), `Structure` (an index or range outside its table), `RecordSize` (rule 4) or `NameOffset` (rule 5). `FormatGuid` prints a `Guid` the way unp4k does. Every count is checked against the file size before anything is read or allocated, so a truncated or corrupted file is refused, never read past. A `Schema` is plain data: concurrent `const` use is safe. The tool on top is [`sco-dcb`](datacore.md). `File()` returns the bytes it parsed.
+`Check` is `None`, `File` (smaller than the header), `Totals` (rules 1-3: nothing adds up to the file size), `Structure` (an index or range outside its table), `RecordSize` (rule 4) or `NameOffset` (rule 5, which also covers record +8: a name-pool offset, the owning team's tag, research R1). `PatchSupported(s)` and `AddRecordSupported(s)` answer the capabilities `kCapPatch` (`datacore.patch`) and `kCapAddRecord` (`datacore.add_record`): both on whenever validation passes. `FormatGuid` prints a `Guid` the way unp4k does. Every count is checked against the file size before anything is read or allocated, so a truncated or corrupted file is refused, never read past. A `Schema` is plain data: concurrent `const` use is safe. The tool on top is [`sco-dcb`](datacore.md). `File()` returns the bytes it parsed.
 
 ### Patching DataCore
 
@@ -325,16 +325,24 @@ p.OverrideField(ship, "Components[SCItemQuantumDriveParams].params.spoolUpTime",
 sco::datacore::InstanceId fresh;
 p.AddInstance("SCItemQuantumDriveParams", { ship, "Components[SCItemQuantumDriveParams].params" }, fresh);
 p.SetPointer(ship, "Components[SCItemQuantumDriveParams].params", fresh);
+sco::datacore::NewRecord drive;                      // a new record, cloned from an existing one
+drive.type = "EntityClassDefinition";
+drive.name = "EntityClassDefinition.MY_Drive";
+drive.clone.record = RecordRef{ std::nullopt, "EntityClassDefinition.QDRV_Example" };
+sco::datacore::AddedRecord added;
+p.AddRecord(drive, added);                           // addressable by name or added.guid from now on
+p.OverrideField(ship, "defaultDrive", Value::OfRecord({ added.guid, "" }));   // a reference field
 std::vector<sco::vfs::Splice> splices;
 if (Status st = p.Emit(splices); !st) Log("datacore: %s: %s", RefusalName(st.category), st.message.c_str());
 ```
 
 | Member | Does |
 |---|---|
-| `OverrideField(rec \| instance, path, Value)` | Writes a bool, integer, float, double, guid, string, locale, enum (by option name) or pointer (`Instance` or null) in place. The value's kind must fit the field's type and range |
+| `OverrideField(rec \| instance, path, Value)` | Writes a bool, integer, float, double, guid, string, locale, enum (by option name), pointer (`Instance` or null) or reference (`Value::OfRecord` or null) in place. The value's kind must fit the field's type and range |
 | `AddInstance(type, cloneFrom, out)` | Appends an instance to the end of the struct's block (the last mapping's), copied from an instance of exactly that struct or zero-filled; `out` is its id |
 | `SetPointer(rec \| instance, path, target)` | Points a strong or weak pointer (field or array element) at an instance of its type or a derived one |
 | `AppendElement(rec \| instance, path, Value)` | Copies the array's elements plus the new one to the end of its pool (or block, for arrays of structs, where `Value` is the instance to copy) and repoints the array; appends in place when the array already ends there |
+| `AddRecord(NewRecord, out)` | A new top-level record ([design "AddRecord"](design/vfs-datacore.md#addrecord)): `type`, `name` (unique), `filePath` (`libs/foundry/records/...xml`; empty: `libs/foundry/records/sco/<packId>/<name>.xml`), `guid` (empty: a random version-4 GUID from `PatchOptions::guidSeed`, else `std::random_device`), `clone` (required: a record of the same struct). The entry goes to the end of the record table, the root instance (a copy of the clone's) to the end of the struct's block, the name and a new path to the end of their pools; a path already in the file reuses its offset. Record +8 is the value of the records already in that file, else the clone's. `out` has the GUID, the root `InstanceId` and the record's index. Later operations find the record by name or GUID |
 | `FindInstance(source, out)` | An existing instance (record root, array element, strong pointer target) as a pointer target |
 | `Emit(out)` | The splices: sorted, non-overlapping, each with its expected `old` bytes, the header rewritten as one 120-byte overwrite when a count or the value-string length changes. Then re-validation: the splices are applied to the base and the result re-parsed. On any failure `out` is empty |
 | `Reports()` | One `{ op, Status }` per operation, in call order |
@@ -342,9 +350,9 @@ if (Status st = p.Emit(splices); !st) Log("datacore: %s: %s", RefusalName(st.cat
 
 **Paths** walk from the record's root instance: `name` (a property, inherited ones included), `name[3]`, `name[Type]` (the first element whose struct is `Type` or derives from it). Inline structs and strong pointers are followed; weak pointers and references are not.
 
-**Refusals are data.** `Status` is `{ Refusal category; std::string message; }`; act on the category, show the message (`record "ShipA" field "speedX": no property "speedX" in Ship`). Categories: `Layout` (the base failed validation), `BadArgument`, `RecordNotFound`, `StructNotFound`, `FieldNotFound` (also null, weak and reference steps), `IndexOutOfRange`, `TypeMismatch`, `ValueOutOfRange`, `UnknownEnumOption`, `Opaque` (validation rule 6), `Unsupported` (reference fields until research R1; structs with no data block), `DependencyFailed` (an instance whose `AddInstance` was refused), `Corrupt` (the file's arrays or pointers point outside their pools), `Limit` (a count past 32 bits) and `Revalidation`.
+**Refusals are data.** `Status` is `{ Refusal category; std::string message; }`; act on the category, show the message (`record "ShipA" field "speedX": no property "speedX" in Ship`). Categories: `Layout` (the base failed validation), `BadArgument`, `RecordNotFound`, `StructNotFound`, `FieldNotFound` (also null, weak and reference steps), `IndexOutOfRange`, `TypeMismatch`, `ValueOutOfRange`, `UnknownEnumOption`, `Opaque` (validation rule 6), `Unsupported` (structs with no data block; `AddRecord` into a struct with no records, or into a file whose records disagree on record +8), `Duplicate` (`AddRecord`: the name or GUID exists, in the file or this batch), `DependencyFailed` (an instance whose `AddInstance` was refused), `Corrupt` (the file's arrays or pointers point outside their pools), `Limit` (a count past 32 bits) and `Revalidation`.
 
-**Atomicity.** An operation is checked in full before it writes, so a refused one changes nothing. With `PatchOptions::atomic` (the default, the design's per-pack rule) `Emit` refuses the whole batch with the first refused operation's category; with `atomic = false` it emits the accepted ones. Nothing existing is renumbered: overwrites are in place, and instances, array copies and strings are appended. Strings reuse the field's current pool offset when it already holds the same text, or one this batch added; the value-string pool is never searched. A null pointer is written as struct and instance `0xFFFFFFFF`, as 4.10.193 stores it.
+**Atomicity.** An operation is checked in full before it writes, so a refused one changes nothing. With `PatchOptions::atomic` (the default, the design's per-pack rule) `Emit` refuses the whole batch with the first refused operation's category; with `atomic = false` it emits the accepted ones. Nothing existing is renumbered: overwrites are in place, and instances, array copies and strings are appended. Strings reuse the field's current pool offset when it already holds the same text, or one this batch added; the value-string pool is never searched. A null pointer is written as struct and instance `0xFFFFFFFF`, as 4.10.193 stores it. A reference is written as the target record's root `instanceIndex` (`u32`) and its GUID, never the record's position (R1); a null reference is `0xFFFFFFFF` and a zero GUID. The reference's target struct isn't checked against the field's.
 
 ## `sco/pe_file.h`: host tools only
 
