@@ -10,11 +10,13 @@
 #include "sco/log.h"
 #include "sco/vfs.h"
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <cstdio>
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -392,6 +394,84 @@ static void TestBigFile() {
     CHECK(r.outcome == pak::Outcome::Applied && r.baseSize == kBig && r.size == kBig);
 }
 
+// Options.onLoad: once per load, after the load (not during it), with the report LastLoad gives
+// and the loader call's duration; called without the adapter's lock (it calls LastLoad and
+// Enabled, which would deadlock otherwise). A throwing (or, on MSVC, faulting) callback leaves the
+// load, the slots and the next load alone.
+static int             g_onLoadCalls = 0;
+static pak::LoadReport g_onLoadReport, g_onLoadLast;
+static bool            g_onLoadEnabled = false;
+static void RecordLoad(const pak::LoadReport& r) {
+    ++g_onLoadCalls;
+    g_onLoadReport = r;
+    g_onLoadLast = pak::LastLoad();
+    g_onLoadEnabled = pak::Enabled();
+}
+static void ThrowOnLoad(const pak::LoadReport&) {
+    ++g_onLoadCalls;
+    throw std::runtime_error("callback failure");
+}
+#if defined(_MSC_VER)
+static void CrashOnLoad(const pak::LoadReport&) {
+    ++g_onLoadCalls;
+    volatile int* volatile p = nullptr;
+    *p = 1;   // an access violation, caught by the adapter's SEH guard
+}
+#endif
+
+static void TestOnLoad() {
+    pak::Disable();
+    Publish({ GameMount(true) });
+    pak::Options o = Opts();
+    o.onLoad = &RecordLoad;
+    CHECK(pak::Enable(o, g_targets) == sco::Result::Ok);
+    g_onLoadCalls = 0;
+    bool during = true;
+    g_scenario = [&] {
+        during = g_onLoadCalls != 0;
+        EClose(EOpen("Data\\Game2.dcb"));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));   // the duration under test
+    };
+    CHECK(CallLoader(g_targets.loader) == 1 && !during);
+    CHECK(g_onLoadCalls == 1);
+    CHECK(g_onLoadReport.outcome == pak::Outcome::Applied && g_onLoadReport.loaderOk && g_onLoadReport.path == "Data\\Game2.dcb");
+    CHECK(g_onLoadReport.baseSize == g_small.size() && g_onLoadReport.size == g_small.size() + 5);
+    CHECK(g_onLoadReport.durationMs >= 30);
+    CHECK(g_onLoadLast.outcome == pak::Outcome::Applied && g_onLoadLast.durationMs == g_onLoadReport.durationMs);
+    CHECK(g_onLoadEnabled);
+
+    g_scenario = [] { EClose(EOpen("data/unmounted.dcb")); };
+    CHECK(CallLoader(g_targets.loader) == 1 && g_onLoadCalls == 2);
+    CHECK(g_onLoadReport.outcome == pak::Outcome::Passed && g_onLoadReport.reason == "not mounted");
+    CHECK(g_onLoadReport.durationMs == pak::LastLoad().durationMs);
+
+    pak::Disable();
+    o.onLoad = &ThrowOnLoad;
+    CHECK(pak::Enable(o, g_targets) == sco::Result::Ok);
+    g_lines.clear();
+    g_scenario = [] { EClose(EOpen("Data\\Game2.dcb")); };
+    CHECK(CallLoader(g_targets.loader) == 1 && g_onLoadCalls == 3);
+    CHECK(SlotsAreEngine() && sco::hook::SlotCount() == 0 && pak::LastLoad().outcome == pak::Outcome::Applied);
+    CHECK(Logged("[pak] Options.onLoad threw (callback failure)"));
+    CHECK(CallLoader(g_targets.loader) == 1 && g_onLoadCalls == 4 && pak::LastLoad().outcome == pak::Outcome::Applied);
+
+#if defined(_MSC_VER)
+    pak::Disable();
+    o.onLoad = &CrashOnLoad;
+    CHECK(pak::Enable(o, g_targets) == sco::Result::Ok);
+    g_lines.clear();
+    CHECK(CallLoader(g_targets.loader) == 1 && g_onLoadCalls == 5);
+    CHECK(SlotsAreEngine() && sco::hook::SlotCount() == 0 && pak::LastLoad().outcome == pak::Outcome::Applied);
+    CHECK(Logged("[pak] Options.onLoad crashed (exception 0xC0000005)"));
+    g_onLoadCalls = 4;
+#endif
+
+    // Disabled: the engine's own load, no window, no callback.
+    pak::Disable();
+    CHECK(CallLoader(g_targets.loader) == 1 && g_onLoadCalls == 4);
+    CHECK(pak::Enable(Opts(), g_targets) == sco::Result::Ok);
+}
+
 // Disable: restores the detour, idempotent; mid-load it leaves the window to close itself.
 static void TestDisable() {
     Publish({ GameMount(true) });
@@ -447,6 +527,7 @@ int main() {
     TestServedLoad();
     TestPassThrough();
     TestBigFile();
+    TestOnLoad();
     TestDisable();
     CHECK(g_opens.load() == g_closes.load());   // every handle the tests opened was closed
     std::printf("sco-core pak tests: %d passed, %d failed\n", g_pass, g_fail);

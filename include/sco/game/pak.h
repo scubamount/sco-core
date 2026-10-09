@@ -55,12 +55,25 @@ bool Resolve(Targets& out);   // false (out untouched) unless all three pak.* ro
 
 enum class Scope { DataCoreLoad, AllFiles };   // AllFiles arrives with persistent hooks (plan PR 10)
 
+struct LoadReport;
+
 struct Options {
     uint32_t size  = sizeof(Options);
     Scope    scope = Scope::DataCoreLoad;
     // The current mount snapshot (sco::vfs::MountTable::Current), read once per tracked open.
     // Required: sco-core's host kit owns no mount table yet.
     std::shared_ptr<const vfs::Table> (*mounts)() = nullptr;
+    // Optional: called once per DataCore load that ran with a load window, with that load's
+    // report (the same one LastLoad returns from then on). Rules:
+    //   - Thread: the loader's thread (the engine's), right after the loader returned and the
+    //     slots went back. The engine's load waits for the callback, so keep it short.
+    //   - Locks: called after the adapter released its lock, so it may call LastLoad, Enabled,
+    //     Disable or any sco::vfs API; `report` is valid only during the call.
+    //   - Faults: an exception escaping it is caught and logged; on MSVC builds a structured
+    //     exception (access violation, ...) is caught too. Either way the load's result goes back
+    //     to the engine unchanged. Stack corruption and fast-fail are not catchable.
+    // Read when the load starts: a load that started before Disable still calls it.
+    void (*onLoad)(const LoadReport& report) = nullptr;
 };
 
 // Installs the loader detour (sco::hook::InstallDetour, stolen bytes counted by StolenLength) and
@@ -93,6 +106,7 @@ struct LoadReport {
     std::string path;                 // the tracked .dcb as the engine named it
     uint64_t    baseSize = 0, size = 0;   // the real file and the virtual one (Applied)
     std::string reason;               // why it passed through, or what failed
+    uint64_t    durationMs = 0;       // the engine's loader call, start to return (steady clock)
 };
 LoadReport LastLoad();
 
