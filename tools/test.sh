@@ -50,6 +50,12 @@ HOST=("$ROOT/tests/test_host.cpp" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/s
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_hook.cpp" "$ROOT/src/hook/sco_hook.cpp" -o "$OUT/test_hook"
 "$OUT/test_hook"
 "$OUT/test_host_tsan"
+# Spatial math and the zone tree: pure math, but readers run beside a writer, so both sanitizer sets.
+SPATIAL=("$ROOT/tests/test_spatial.cpp" "$ROOT/src/engine/zone.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${SPATIAL[@]}" -o "$OUT/test_spatial"
+"$OUT/test_spatial"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${SPATIAL[@]}" -o "$OUT/test_spatial_tsan"
+"$OUT/test_spatial_tsan"
 
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load
 # real shared libraries built from tests/fixtures/plugins/native/fake_plugin.c, one per behavior

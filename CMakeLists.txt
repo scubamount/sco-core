@@ -201,6 +201,11 @@ if(SCO_BUILD_TESTS)
   add_test(NAME test_hook COMMAND test_hook)
   sco_project_target(test_hook)
 
+  add_executable(test_spatial tests/test_spatial.cpp)
+  target_link_libraries(test_spatial PRIVATE sco_engine)
+  sco_project_target(test_spatial)
+  add_test(NAME test_spatial COMMAND test_spatial)
+
   # Fake native plugins for test_plugins, laid out like tools/test.sh (tools/test-win.sh on
   # Windows): <out>/plugins/m<mode>/{plugin.ini,m<mode>.<ext>}, m11 a second clean plugin, and
   # text/ an entry that is not a library.
