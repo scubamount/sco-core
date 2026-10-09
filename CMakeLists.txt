@@ -151,6 +151,11 @@ add_executable(sco-host-sim tools/sco-host-sim.cpp)
 target_link_libraries(sco-host-sim PRIVATE sco_app sco_lua)
 sco_project_target(sco-host-sim)
 
+# DataCore files on disk (docs/datacore.md): info and records.
+add_executable(sco-dcb tools/sco-dcb.cpp)
+target_link_libraries(sco-dcb PRIVATE sco_datacore)
+sco_project_target(sco-dcb)
+
 # ---- tests ------------------------------------------------------------------------------------
 
 if(SCO_BUILD_TESTS)
