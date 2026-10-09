@@ -17,6 +17,7 @@ Plugins are native DLLs and run with the game's full rights. Only install plugin
 - [Events](#events)
 - [Capabilities](#capabilities)
 - [Services (1.1)](#services-11)
+- [Raw handlers (1.1)](#raw-handlers-11)
 - [Threading](#threading)
 - [Compatibility](#compatibility)
 - [Layout](#layout)
@@ -138,17 +139,17 @@ typedef struct sco_api {
                          sco_invoke_done done, void* ctx);
     uint32_t   (*list_commands)(const sco_command** out, uint32_t max);
     /* 1.1 */
-    sco_result (*provide_service)(sco_plugin* self, const sco_service_def* service);
-    sco_result (*query_service)(sco_plugin* self, const char* name, uint32_t min_version,
-                                const void** out_table);
+    sco_result (*provide_service)(sco_plugin* self, const char* name, uint32_t version, const void* vtable);
+    sco_result (*query_service)(const char* name, uint32_t min_version, const void** out_vtable);
+    sco_result (*release_service)(sco_plugin* self, const char* name);
+    sco_result (*invoke_raw)(sco_plugin* self, const char* name, const void* in_bytes, uint32_t in_size,
+                             void* out_bytes, uint32_t* inout_out_size);
+    sco_result (*register_raw)(sco_plugin* self, const char* name, const char* capability,
+                               sco_raw_fn fn, void* ctx);
 } sco_api;
 
-typedef struct sco_service_def {   /* 1.1 */
-    uint32_t    size;      /* sizeof(sco_service_def) */
-    const char* name;      /* "<plugin id>" or "<plugin id>.<name>" */
-    uint32_t    version;   /* (major << 16) | minor */
-    const void* vtable;    /* the provider's function table */
-} sco_service_def;
+typedef sco_result (*sco_raw_fn)(const void* in, uint32_t in_size, void* out,
+                                 uint32_t* inout_out_size, void* ctx);   /* 1.1 */
 
 typedef void (*sco_task_fn)(void* ctx);
 typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
@@ -167,8 +168,11 @@ typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
 | `log(self, level, message)` | Any | Writes `[hello] message` to `mod.log` |
 | `register_command(self, cmd)` | Any | Adds a command; see [Commands](#commands) |
 | `invoke(self, name, args, nargs, done, ctx)` | Any | Runs a command; see [Commands](#commands) |
-| `provide_service(self, service)` | Any | 1.1. Publishes a function table for other plugins; see [Services](#services-11) |
-| `query_service(self, name, min_version, out_table)` | Any | 1.1. Finds a published table; see [Services](#services-11) |
+| `provide_service(self, name, version, vtable)` | Any | 1.1. Publishes a function table for other plugins; see [Services](#services-11) |
+| `query_service(name, min_version, out_vtable)` | Any | 1.1. Finds a published table; see [Services](#services-11) |
+| `release_service(self, name)` | Any | 1.1. Withdraws one of this plugin's services |
+| `register_raw(self, name, capability, fn, ctx)` | Any | 1.1. Registers a raw handler: bytes in, bytes out; see [Raw handlers](#raw-handlers-11) |
+| `invoke_raw(self, name, in, in_size, out, inout_out_size)` | Game | 1.1. Calls a raw handler now; see [Raw handlers](#raw-handlers-11) |
 | `list_commands(out, max)` | Any | Writes up to `max` command pointers to `out` and returns the number of live commands. Call with `max = 0` to get the count. The pointers stay valid until their owner unloads |
 
 ## Commands
@@ -253,19 +257,41 @@ parsing a reply string. The table's layout is the provider's contract; start it 
 
 ```c
 static const my_spatial_v1 kTable = { sizeof(my_spatial_v1), get_position, set_position };
-sco_service_def def = { sizeof(sco_service_def), "nav.spatial", 0x00010000, &kTable };
-api->provide_service(self, &def);
+api->provide_service(self, "nav.spatial", 0x00010000, &kTable);
 
 const my_spatial_v1* s = NULL;   /* in another plugin */
 if (api->size > offsetof(sco_api, query_service) &&
-    api->query_service(self, "nav.spatial", 0x00010000, (const void**)&s) == SCO_OK) { ... }
+    api->query_service("nav.spatial", 0x00010000, (const void**)&s) == SCO_OK) { ... }
 ```
 
 - **Names** are `[a-z0-9_.]`, 1-63 characters, with no leading, trailing or doubled `.`, and must be the plugin's id or start with `<id>.`, like command names. A name already published is `SCO_BAD_ARG`.
-- **Versions** are `(major << 16) | minor`. `query_service` answers `SCO_OK` when the service has the same major as `min_version` and is at least as new; `SCO_UNAVAILABLE` when the major differs or it is older; `SCO_NOT_FOUND` when nothing is published under that name. `out_table` is `NULL` unless `SCO_OK`.
+- **Versions** are `(major << 16) | minor`. `query_service` answers `SCO_OK` when the service has the same major as `min_version` and is at least as new; `SCO_UNAVAILABLE` when the major differs or it is older; `SCO_NOT_FOUND` when nothing is published under that name. `out_vtable` is `NULL` unless `SCO_OK`.
+- **Withdrawing:** `release_service(self, name)` withdraws one of your services (`SCO_NOT_FOUND` if it isn't yours).
 - **Lifetime:** the host keeps the name, version and pointer, never the table's contents, and never calls into it. When the provider unloads or crashes its services are withdrawn. A table from a built-in plugin stays valid for as long as any other plugin is loaded (built-ins unload last); a table from another plugin may go away when that plugin does, so query it when you need it rather than keeping it across ticks.
 - **Faults:** a call into another plugin's table runs under the caller's crash guard, so a fault in the provider's code marks the caller crashed.
 - Threads: both functions work from any thread; what thread the table's own functions may be called from is part of the provider's contract.
+
+## Raw handlers (1.1)
+
+A raw handler is a call that takes and returns bytes: for data that doesn't fit a command's typed arguments and 256-byte reply (a list of entities, a transform, a buffer). The bytes' layout is the handler's contract, as a service table's is; put a size or version field first.
+
+```c
+static sco_result get_pose(const void* in, uint32_t in_size, void* out, uint32_t* out_size, void* ctx) {
+    if (*out_size < sizeof(my_pose)) { *out_size = sizeof(my_pose); return SCO_TOO_MANY; }
+    fill_pose((my_pose*)out);
+    *out_size = sizeof(my_pose);
+    return SCO_OK;
+}
+api->register_raw(self, "nav.pose", "teleport", get_pose, NULL);
+
+my_pose pose; uint32_t size = sizeof(pose);   /* in another plugin, on the game thread */
+if (api->invoke_raw(self, "nav.pose", NULL, 0, &pose, &size) == SCO_OK) { ... }
+```
+
+- **Names** follow the command rule (`<plugin id>.<name>`) in their own namespace; a raw handler and a command may share a name.
+- **Output:** `*inout_out_size` is the buffer's capacity on the way in and the bytes written on the way out. A handler that needs more sets it to the size it needs and answers `SCO_TOO_MANY`; pass `out = NULL` with `*inout_out_size = 0` to ask the size first. Pass `inout_out_size = NULL` when you want no output.
+- **Calls** run now, on the game thread only (`SCO_WRONG_THREAD` elsewhere), after the capability check (`SCO_UNAVAILABLE`), under the handler's crash guard: a fault marks the handler's plugin crashed and the call answers `SCO_CRASHED` with no output.
+- **Lifetime:** a plugin's handlers go when it unloads or crashes. The host keeps fn and ctx, never the bytes.
 
 ## Threading
 
@@ -300,6 +326,5 @@ On x64 (all sizes in bytes). `tests/abi_v1.c` is the source of truth.
 | `sco_arg` | 16 | `type` 0, `_pad` 4, `v` 8 |
 | `sco_arg_def` | 24 | `name` 0, `type` 8, `_pad` 12, `help` 16 |
 | `sco_command` | 72 | `size` 0, `_pad0` 4, `name` 8, `title` 16, `help` 24, `capability` 32, `args` 40, `nargs` 48, `arg_def_size` 52, `fn` 56, `ctx` 64 |
-| `sco_api` | 104 | `size` 0, `major` 4, `minor` 6, `host_version` 8, `has` 16, `run_on_game_thread` 24, `subscribe` 32, `unsubscribe` 40, `status` 48, `log` 56, `register_command` 64, `invoke` 72, `list_commands` 80, `provide_service` 88, `query_service` 96 (1.0 hosts: 88) |
-| `sco_service_def` | 32 | `size` 0, `name` 8, `version` 16, `vtable` 24 |
+| `sco_api` | 128 | `size` 0, `major` 4, `minor` 6, `host_version` 8, `has` 16, `run_on_game_thread` 24, `subscribe` 32, `unsubscribe` 40, `status` 48, `log` 56, `register_command` 64, `invoke` 72, `list_commands` 80, `provide_service` 88, `query_service` 96, `release_service` 104, `invoke_raw` 112, `register_raw` 120 (1.0 hosts: 88) |
 | `sco_plugin_info` | 32 | `size` 0, `api_major` 4, `api_minor` 6, `name` 8, `version` 16, `author` 24 |

@@ -552,18 +552,38 @@ static uint32_t list_commands(const sco_command** out, uint32_t max) {
     return (uint32_t)ncmds;
 }
 
-/* 1.1. The checker loads one plugin, so a service is only listed and nothing can be found. */
-static sco_result provide_service(sco_plugin* self, const sco_service_def* def) {
+/* 1.1. The checker loads one plugin, so services and raw handlers are only listed; nothing
+ * can be found or invoked. */
+static sco_result provide_service(sco_plugin* self, const char* name, uint32_t version, const void* vtable) {
     (void)self;
-    if (!def || def->size < sizeof(sco_service_def) || !def->name || !def->vtable) return SCO_BAD_ARG;
-    printf("  service %s %u.%u\n", def->name, def->version >> 16, def->version & 0xFFFFu);
+    if (!name || !vtable) return SCO_BAD_ARG;
+    printf("  service %s %u.%u\n", name, version >> 16, version & 0xFFFFu);
     return SCO_OK;
 }
 
-static sco_result query_service(sco_plugin* self, const char* name, uint32_t min_version, const void** out) {
-    (void)self; (void)min_version;
+static sco_result query_service(const char* name, uint32_t min_version, const void** out) {
+    (void)min_version;
     if (out) *out = NULL;
     return name && out ? SCO_NOT_FOUND : SCO_BAD_ARG;
+}
+
+static sco_result release_service(sco_plugin* self, const char* name) {
+    (void)self;
+    return name ? SCO_OK : SCO_BAD_ARG;
+}
+
+static sco_result invoke_raw(sco_plugin* self, const char* name, const void* in, uint32_t in_size,
+                             void* out, uint32_t* out_size) {
+    (void)self; (void)in; (void)in_size; (void)out;
+    if (out_size) *out_size = 0;
+    return name ? SCO_NOT_FOUND : SCO_BAD_ARG;
+}
+
+static sco_result register_raw(sco_plugin* self, const char* name, const char* capability, sco_raw_fn fn, void* ctx) {
+    (void)self; (void)ctx;
+    if (!name || !fn) return SCO_BAD_ARG;
+    printf("  raw     %s%s%s\n", name, capability ? " needs " : "", capability ? capability : "");
+    return SCO_OK;
 }
 
 static void dispatch(const char* event, const void* data) {
@@ -688,6 +708,9 @@ static void check_native(const char* dir, const manifest* m, const char* invoke_
     api.list_commands = list_commands;
     api.provide_service = provide_service;
     api.query_service = query_service;
+    api.release_service = release_service;
+    api.invoke_raw = invoke_raw;
+    api.register_raw = register_raw;
 
     r = load(&api, &the_plugin);
     if (r != SCO_OK) { fail("sco_plugin_load returned %s", result_name(r)); unload(); return; }

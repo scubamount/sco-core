@@ -110,7 +110,11 @@ See [The runtime](architecture.md#the-runtime) for the model. Every call returns
 
 ### Services
 
-`ProvideService(owner, prefix, name, version, table)` publishes a function table under a name; `QueryService(name, minVersion, &table)` finds it (same major, at least as new). `Release(owner)` withdraws the owner's services. The host's `provide_service` / `query_service` ([API v1 § Services](api-v1.md#services-11)) call these with the plugin's id as the prefix; a host feature may pass a null prefix. The runtime keeps only the name, version and pointer and never calls the table.
+`ProvideService(owner, prefix, name, version, table)` publishes a function table under a name; `QueryService(name, minVersion, &table)` finds it (same major, at least as new); `ReleaseService(owner, name)` withdraws one. `Release(owner)` withdraws all of the owner's. The host's `provide_service` / `query_service` / `release_service` ([API v1 § Services](api-v1.md#services-11)) pass the plugin's id as the prefix; a host feature may pass a null prefix. The runtime keeps only the name, version and pointer and never calls the table.
+
+### Raw handlers
+
+`RegisterRaw(owner, prefix, name, capability, fn, ctx)` registers a byte-in, byte-out handler under a command-style name; `InvokeRaw(caller, name, in, inSize, out, &outSize)` calls it now on the game thread, after the capability check and as one callout of its owner (a fault is `Crashed`). `*outSize` is the capacity in and the bytes written (or, with `TooMany`, needed) out. `Release(owner)` removes the owner's handlers. The host's `register_raw` / `invoke_raw` ([API v1 § Raw handlers](api-v1.md#raw-handlers-11)) run through a per-registration trampoline, like commands.
 
 ## `sco/caps.h`: capabilities
 

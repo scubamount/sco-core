@@ -41,6 +41,11 @@ static std::atomic<CapabilityCheck> g_capCheck{ nullptr };
 
 void SetCapabilityCheck(CapabilityCheck check) { g_capCheck.store(check); }
 
+bool detail::CapabilityAvailable(const char* cap) {
+    const CapabilityCheck check = g_capCheck.load();
+    return check && cap && check(cap);
+}
+
 // Segments of lowercase letters, digits and '_' joined by '.'; no empty segment. The capability
 // name rule (caps::Set). `dot` is set when there is more than one segment.
 static bool Segments(const char* n, bool* dot) {
