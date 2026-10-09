@@ -60,6 +60,12 @@ SPATIAL=("$ROOT/tests/test_spatial.cpp" "$ROOT/src/engine/zone.cpp")
 "$OUT/test_spatial"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${SPATIAL[@]}" -o "$OUT/test_spatial_tsan"
 "$OUT/test_spatial_tsan"
+# sco::vfs: the read/seek arithmetic and the mount table, with readers beside table swaps, so both sets.
+VFS=("$ROOT/tests/test_vfs.cpp" "$ROOT/src/vfs/compose.cpp" "$ROOT/src/vfs/table.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${VFS[@]}" -o "$OUT/test_vfs"
+"$OUT/test_vfs"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${VFS[@]}" -o "$OUT/test_vfs_tsan"
+"$OUT/test_vfs_tsan"
 # The C++20 SDK layer: two SDK plugins over the same host table, under both sanitizer sets.
 SDKT=("$ROOT/tests/test_sdk.cpp" "${HOST[@]:1}")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${SDKT[@]}" -o "$OUT/test_sdk"
