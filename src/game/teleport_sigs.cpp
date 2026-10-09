@@ -40,6 +40,9 @@ SigResult ResolveToCamera(const Image& img) {
     uint8_t* lea = name ? FindRipLea(img.text, 0x48, 0x8D, 0x15, name) : nullptr;
     if (!lea) return SigFail("CmdTeleportToCamera isn't referenced");
     uint8_t* f = lea - 0x158;
+    // The camera fields at +0x17A..+0x1BD are read from an object whose layout grows between game
+    // builds (all four moved by 8 in 4.10.196: 0x6D3C -> 0x6D44 ...), and nothing here or in
+    // sc-offline reads them: the checks pin the instructions, not the field offsets.
     static const struct { size_t off; const char* bytes; const char* why; } kChecks[] = {
         { 0x000, "40 55",                   "layout changed at +0x000" },
         { 0x024, "48 8B 05 ?? ?? ?? ??",    "layout changed at +0x024" },
@@ -49,10 +52,10 @@ SigResult ResolveToCamera(const Image& img) {
         { 0x136, "FF 90 08 0A 00 00",       "layout changed at +0x136" },
         { 0x13F, "48 8B 51 28",             "layout changed at +0x13f" },
         { 0x151, "48 8B 83 08 02 00 00",    "layout changed at +0x151" },
-        { 0x17A, "C5 FA 10 B0 3C 6D 00 00", "layout changed at +0x17a" },
-        { 0x182, "C5 FA 10 B8 30 6D 00 00", "layout changed at +0x182" },
-        { 0x1AC, "C5 78 10 90 18 6D 00 00", "layout changed at +0x1ac" },
-        { 0x1BD, "C5 7B 10 98 28 6D 00 00", "layout changed at +0x1bd" },
+        { 0x17A, "C5 FA 10 B0 ?? ?? 00 00", "layout changed at +0x17a" },   // vmovss xmm6, [rax+camera field]
+        { 0x182, "C5 FA 10 B8 ?? ?? 00 00", "layout changed at +0x182" },   // vmovss xmm7, [rax+camera field]
+        { 0x1AC, "C5 78 10 90 ?? ?? 00 00", "layout changed at +0x1ac" },   // vmovups xmm10, [rax+camera field]
+        { 0x1BD, "C5 7B 10 98 ?? ?? 00 00", "layout changed at +0x1bd" },   // vmovsd xmm11, [rax+camera field]
         { 0x1FF, "FF 90 D8 06 00 00",       "layout changed at +0x1ff" },
         { 0x2B0, "48 8B 0D ?? ?? ?? ??",    "layout changed at +0x2b0" },
         { 0x2BA, "FF 90 20 01 00 00",       "layout changed at +0x2ba" },
