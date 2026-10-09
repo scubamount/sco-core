@@ -1,6 +1,15 @@
 # Framework plan: sco-core as the heart, sc-offline on the SDK
 
-**Status: proposal for review.** Nothing on this page is built yet unless it says so. It records where sco-core and sc-offline stand, the decisions taken so far, and the order of work that makes sco-core the core of a framework for mods of any kind, with sc-offline as the first product built on it. Each phase lands as its own pull requests; this page changes as decisions are made.
+**Status: Phases 1 to 3 done, Phase 4 in progress.** This page records where sco-core and sc-offline stand, the decisions taken so far, what the finished phases taught ([Lessons](#lessons)), and the order of work that makes sco-core the core of a framework for mods of any kind, with sc-offline as the first product built on it. Each phase lands as its own pull requests; this page changes as decisions are made.
+
+| Phase | State | Landed in |
+|---|---|---|
+| [1. sc-offline builds with CMake](#phase-1-sc-offline-builds-with-cmake) | Done | sc-offline PR #55, merged as `88e7830` |
+| [2. The host kit in sco-core](#phase-2-the-host-kit-in-sco-core) | Done | sco-core PR #8, merged as `94ba952` |
+| [3. sc-offline runs on the host kit](#phase-3-sc-offline-runs-on-the-host-kit) | Done, played in game 2026-10-09 | sc-offline PR #56, merged as `78756af` |
+| [4. Features become built-in plugins](#phase-4-sc-offlines-features-become-built-in-plugins) | In progress | |
+| [5. Services and storage](#phase-5-services-and-storage) | Planned | |
+| [6. The framework grows](#phase-6-the-framework-grows) | Planned | |
 
 ## Goal
 
@@ -10,22 +19,24 @@ The [scope rules](../sdk/docs/plugin-rules.md) don't change: offline and single-
 
 ## Where things stand
 
-**sco-core** (`main` at `addd37f`):
+**sco-core** (`main` at `94ba952`):
 
 - Game core: scanners, the signature registry and its `[core]` report, `teleport.*` rows, `sco-sigcheck`.
 - Runtime: game-thread task queue, event bus, command registry, owners and `Release`, crash containment for every plugin callout (`sco::SetCalloutGuard`, `sco::plugins::ContainCallouts`).
 - Host: capabilities, the `sco_api` table, per-plugin handles.
-- Plugins: discovery and `plugin.ini`, the native loader, sco-lua (sandboxed Lua 5.4.8), the data-pack content index.
+- Plugins: discovery and `plugin.ini`, the native loader, sco-lua (sandboxed Lua 5.4.8), the data-pack content index, built-in plugins.
+- Host kit: `sco::app::Start`/`Tick`/`Stop` and `sco-host-sim` (Phase 2).
 - SDK: template, examples, CMake helper, `sco-plugin-check`, `lua-check.lua`, the packaged zip.
 - Builds: `tools/test.sh` and a root CMake build; CI on Linux (ASan, UBSan, TSan) and Windows MSVC x64.
 
-**sc-offline** (`main` at `fe0a61a`, 0.7.0) doesn't use sco-core yet:
+**sc-offline** (`main` at `78756af`; last release 0.7.0) runs on sco-core:
 
-- No submodule. `src/common.cpp` keeps its own copies of the scanners sco-core took over, and `src/teleport.cpp` still scans for the four addresses that are `teleport.*` rows in sco-core.
+- sco-core is a submodule at `external/sco-core`, pinned at `94ba952`. The scanners, `Log` and the status line come from sco-core; teleport reads the `teleport.*` rows instead of scanning.
+- `StartHostKit` in `src/dllmain.cpp` calls `sco::app::Start` on the game thread from the first main-thread tick, `OnMainThreadTick` calls `sco::app::Tick`. No built-ins yet. `plugins = on|off` in `sc-offline.ini`, off by default.
+- The build is CMake (Phase 1): `dinput8.dll` and `sc-offline.exe`, static CRT, x64; CI checks the binaries (`DirectInput8Create` forwarded at ordinal 1, x64, static CRT, launcher `asInvoker`, SegmentHeap).
 - About a dozen features follow one pattern: `Resolve<Feature>Api(g_text, g_rdata)` scans at startup (`StartOffline` in `src/dllmain.cpp`), `Process<Feature>()` runs from `OnMainThreadTick`, a `WH_GETMESSAGE` hook throttled to 100 ms. Readiness is reported as `[+]`/`[!]` lines in `LogStartup`.
 - The ImGui menu (`src/menu.cpp`, tabs Player, Travel, Vehicles, Crew, NPCs, Build, Squadron 42, Menu) calls about 60 `Menu_*` functions declared in `src/menu.h`.
 - Feature state lives in loose text files under `data/` (`ships.txt`, `outfits.txt`, `wallet.txt`, saved spots).
-- The build is MSBuild: `sc-offline.slnx` with `src/sc-offline-dll.vcxproj` (`dinput8.dll`) and `launcher/sc-offline.vcxproj` (`sc-offline.exe`), v145 toolset, static CRT, C++20, `/W3`, LTCG in Release. CI (`.github/workflows/build.yml`) runs `tools/check.sh` on Linux, then MSBuild on `windows-2025-vs2026`, then the release job on tags.
 
 ## Decisions taken
 
@@ -33,6 +44,8 @@ The [scope rules](../sdk/docs/plugin-rules.md) don't change: offline and single-
 |---|---|
 | How sc-offline builds | Move from MSBuild to **CMake**, consuming sco-core with `add_subdirectory(external/sco-core)` |
 | First deliverable | **This plan**, reviewed before any sc-offline code changes |
+| Host features' command prefixes | **Reserved by built-in plugins**: built-ins load before any discovered plugin and register their commands first, so each owns its id as a command prefix: a plugin folder with the same id gets `SCO_BAD_ARG` from `register_command` for any command under that prefix (and is refused if it fails its load on that). A disabled or refused built-in leaves its prefix free; discovery doesn't yet refuse a folder by id alone |
+| Signal for `game.exit` | **The game's own quit path**, on the game thread, not `WM_QUIT` and never `DLL_PROCESS_DETACH` ([lesson 1](#1-the-game-quits-without-wm_quit)) |
 | Storage engines | **Local and embedded only** (memory, files, SQLite and similar). Network databases (Postgres, MySQL, Redis, ...) are out of scope: sco-core never connects to anything |
 
 ## Architecture
@@ -76,6 +89,8 @@ The [scope rules](../sdk/docs/plugin-rules.md) don't change: offline and single-
 
 ## Phase 1: sc-offline builds with CMake
 
+**Status: done** in sc-offline PR #55, merged as `88e7830`. CI verifies the binaries: `DirectInput8Create` forwarded at ordinal 1, x64, static CRT, the launcher's manifest `asInvoker`, SegmentHeap. The plan below is kept as written.
+
 No behavior change. The DLL and the launcher built by CMake replace the MSBuild ones in the release zip.
 
 Targets:
@@ -104,9 +119,9 @@ Done when: CI's CMake build produces `dinput8.dll` and `sc-offline.exe`, a tagge
 
 ## Phase 2: the host kit in sco-core
 
-**Status: done.** What landed: `sco/app.h` (`sco::app::Start`/`Tick`/`Stop`, `Platform` as sketched above plus `image`, `setCapabilities` and `moduleOps`, the `sco_app` library); built-in plugins in `sco/plugins.h` (`Kind::Builtin`, `Builtin`, `FromBuiltin`, `LoadBuiltin`, unloaded after every other plugin); `sco-host-sim`; `tests/test_app.cpp` and the CTest case `host_sim_examples`, which run on Linux (ASan+UBSan, `tools/test.sh` and CMake) and Windows (MSVC). `Platform` takes `pluginRoot` rather than `dataRoot` until Phase 5 gives the data folder a second use. See [API: sco/app.h](api.md#scoapph-the-host-kit) and [Plugins: built-in plugins](plugins.md#built-in-plugins).
+**Status: done** in sco-core PR #8, merged as `94ba952`. What landed: `sco/app.h` (`sco::app::Start`/`Tick`/`Stop`, `Platform` as sketched above plus `image`, `setCapabilities` and `moduleOps`, the `sco_app` library); built-in plugins in `sco/plugins.h` (`Kind::Builtin`, `Builtin`, `FromBuiltin`, `LoadBuiltin`, unloaded after every other plugin); `sco-host-sim`; `tests/test_app.cpp` and the CTest case `host_sim_examples`, which run on Linux (ASan+UBSan, `tools/test.sh` and CMake) and Windows (MSVC). `Platform` takes `pluginRoot` rather than `dataRoot` until Phase 5 gives the data folder a second use. See [API: sco/app.h](api.md#scoapph-the-host-kit) and [Plugins: built-in plugins](plugins.md#built-in-plugins).
 
-sco-core only; sc-offline doesn't change yet. Runs in parallel with Phase 1.
+Planned as sco-core only, in parallel with Phase 1; sc-offline adopted it in Phase 3.
 
 1. `sco/app.h`: `Start`, `Tick`, `Stop` over the existing runtime, caps, host and loader, in the order above. Startup failures are reported, not fatal: a product with no signatures still loads plugins that need none.
 2. Built-in plugins: `Kind::Builtin` in `sco/plugins.h`, a `Builtin` entry (`id` plus the three functions), loaded through `LoadNative`'s checks without a module, under the same guard. `plugin.ini` isn't needed for a built-in; its manifest comes from `sco_plugin_query`.
@@ -116,6 +131,8 @@ sco-core only; sc-offline doesn't change yet. Runs in parallel with Phase 1.
 Done when: CTest runs `hello`, `greeter`, `travel_pack` and a built-in plugin through `sco::app` and `sco-host-sim` on both CI platforms.
 
 ## Phase 3: sc-offline runs on the host kit
+
+**Status: done** in sc-offline PR #56, merged as `78756af`: the sco-core submodule pinned at `94ba952`, scanners, log and status from sco-core, teleport on sco-core rows, the host kit on the game thread, `plugins = off` by default. Played in game by the maintainer on 2026-10-09 on Star Citizen 4.10.193.11644 (CL 12660092): `[core] signatures: 4/4 OK`, teleport on F7/F8, the menu and contracts unchanged; with `plugins = on`, `greeter` (Lua) and `travel_pack` (data) loaded, `[status] greeter: Greeter ready` and `[greeter] teleport is available`. Two things didn't hold as planned: step 3's "the game window closing calls `sco::app::Stop`" (sc-offline used `WM_QUIT`, which the game never sends on Quit, [lesson 1](#1-the-game-quits-without-wm_quit)), and the host kit started only when teleport resolved ([lesson 2](#2-the-host-kit-starts-whatever-any-feature-does)). Both are fixed in Phase 4. The `sdk-v1.0.0` tag hasn't been made yet.
 
 No feature behavior changes; `mod.log` gains the `[core]` and `[plugin]` blocks.
 
@@ -127,6 +144,8 @@ No feature behavior changes; `mod.log` gains the `[core]` and `[plugin]` blocks.
 Done when: `mod.log` shows `[core] signatures: N/N OK` and `[plugin] N found, ...`; the in-game checklist in sc-offline's `docs/features.md` passes as before; with `plugins = on` the SDK examples load and answer their commands. At this point sco-core tags `sdk-v1.0.0` and the plugin ABI freezes for major 1.
 
 ## Phase 4: sc-offline's features become built-in plugins
+
+**Status: in progress.** First come the two Phase 3 fixes: a `system.quit` signature row for `CSystem::Quit` in sco-core, which sc-offline hooks to call `sco::app::Stop`, and starting the host kit whatever teleport does. Then the features, in the order below.
 
 One feature per pull request, each the same moves:
 
@@ -208,6 +227,40 @@ Each item gets its own design review before code; every ABI change is a 1.x mino
 | Developer reload | Faster plugin development | Unload and reload one plugin from the menu or `sco-host-sim`, behind a developer switch |
 | Mod manager | Players install and switch mods | The launcher lists `data/plugins/`, switches them with the `disabled` file, shows the `LogReport` states, and removes a plugin's data on request |
 
+## Lessons
+
+What the finished phases taught, each with the rule it produced. **Lessons flow back to sco-core:** every product-side workaround that reflects a sco-core gap becomes a sco-core issue or pull request (docs, API, a test or a signature row) in the same cycle, and gets an entry here. How: [CONTRIBUTING § Lessons flow back](../CONTRIBUTING.md#lessons-flow-back).
+
+### 1. The game quits without WM_QUIT
+
+The game's menu Quit calls `CSystem::Quit` (`Quit via console command`), then `System Fast Shutdown (ExitOnQuit enabled)`: the process ends without the message loop ever getting `WM_QUIT`. sc-offline's `WM_QUIT` hook (Phase 3) therefore never ran `sco::app::Stop`, and plugins never saw `game.exit`.
+
+**Rule for hosts:** call `sco::app::Stop` from the game's own quit path, on the game thread. The next step adds a `system.quit` signature row for `CSystem::Quit`, and sc-offline hooks it. Never call `Stop` from `DLL_PROCESS_DETACH`: it runs under the loader lock, at the wrong time. **Rule for plugins:** `game.exit` is best effort; a crash or a killed process never sends it, so a plugin must not rely on it for durability. See [`sco/app.h`](api.md#scoapph-the-host-kit) and [Plugins § Unloading](plugins.md#unloading).
+
+### 2. The host kit starts whatever any feature does
+
+In sc-offline the main-thread hook, and so the host kit and every plugin, only started when teleport resolved its addresses: a game build that broke teleport would also have switched off every plugin.
+
+**Rule for hosts:** start the host kit regardless of any one feature. A feature that fails reports itself unready (a capability), and the plugins that need it are refused or grey out; the others keep running. Phase 4 fixes sc-offline.
+
+### 3. Adopting sco-core's types: aliases don't share names
+
+When a product swaps its own types for sco-core's, an alias is the smallest change (sc-offline's `Section` became `using Section = sco::Section`). But an alias can't share its name with a function the way a struct could: `menu.cpp` had a `Section()` helper beside `struct Section`, and with the alias that no longer compiles.
+
+**Rule for adoption:** before aliasing, look for functions or variables with the type's name and rename them in the same change. This is why sco-core keeps its names in `namespace sco` instead of the global namespace: a product chooses which names to pull in.
+
+### 4. Building sco-core inside a product
+
+sc-offline adds sco-core with `add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)` after setting `CMAKE_MSVC_RUNTIME_LIBRARY`, so the static CRT reaches sco-core's libraries too (CI checks `dinput8.dll` imports no dynamic CRT). It sets `SCO_BUILD_TESTS OFF` (sco-core's own CI runs them) and `SCO_WERROR OFF` (a warning only a newer toolset emits must not break the product build).
+
+**Rule:** the CMake settings a product must make are documented in [Building § Using sco-core from another CMake project](building.md#using-sco-core-from-another-cmake-project).
+
+### 5. Windows shows a dialog for a bad DLL
+
+`LoadLibraryExW` on a file that isn't a valid PE (a broken or wrong-architecture plugin) raised a modal "Bad Image" box over the game. Fixed in `933701a`: the loader calls it under `SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX)`, so the plugin is refused with a reason instead.
+
+**Rule:** plugin loading never shows UI; every failure is a reason in `mod.log` and `status`. See [Plugins § Native plugins](plugins.md#native-plugins).
+
 ## Testing
 
 - sco-core: unit tests and CTest on Linux (sanitizers) and Windows MSVC, the ABI pin, the SDK zip built and checked on both. From Phase 2 on, `sco-host-sim` runs the SDK examples and built-in plugins through the real host in CI. Storage: each backend against the same test suite, plus the SQLite hardening (refused `ATTACH`, `PRAGMA`, oversized statements, quota, cancelled queries).
@@ -215,14 +268,15 @@ Each item gets its own design review before code; every ABI change is a 1.x mino
 
 ## Versions
 
-- sc-offline 0.8.0: Phase 1 and Phase 3.
-- sco-core `sdk-v1.0.0`: when Phase 3 has loaded plugins in game; the SDK zip becomes a release asset. From then on, version 1 only grows; Phase 5 is 1.1.
+- sc-offline 0.8.0: Phase 1 and Phase 3 (both on sc-offline's `main`, not yet in a tagged release).
+- sco-core `sdk-v1.0.0`: when Phase 3 has loaded plugins in game (done 2026-10-09; not tagged yet); the SDK zip becomes a release asset. From then on, version 1 only grows; Phase 5 is 1.1.
 
 ## Open questions
 
+Answered since the plan was written: the `game.exit` signal (the game's quit path, [lesson 1](#1-the-game-quits-without-wm_quit)) and where host features' command prefixes are reserved (by the built-in plugins, which load and register first; see [Decisions taken](#decisions-taken)).
+
 - Release PDBs: keep none (today) or upload `dinput8.pdb` as a separate release asset for crash reports?
-- `game.exit`: which signal sc-offline uses for the game closing (window destroyed, process shutdown hook), so `Stop()` runs on the game thread.
-- Where host features' command prefixes are reserved (`spawn`, `teleport`, ...) so a plugin can't take one before the feature registers. Built-in plugins registering before external ones settles the order; reserving them also stops a plugin from claiming one a disabled feature left free.
+- Whether discovery should refuse a plugin folder whose id matches a built-in outright (today only the command prefix is protected, while the built-in is loaded).
 - Whether the launcher grows the mod manager or a separate tool does.
 - Storage: whether plugins may share data (a read-only view of another plugin's keys, granted in `plugin.ini`) or only through services.
 - Services: host-interposed trampolines (crash attributed to the provider, a small cost per call) or direct tables (faster, attributed to the caller).
