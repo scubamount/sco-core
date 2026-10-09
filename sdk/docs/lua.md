@@ -84,7 +84,7 @@ for _, r in ipairs(p:report()) do print(r.op, r.state, r.reason) end
 | `p:set(record, field, value)`, `p:append(record, field, value)` | `true`, or `false, err` |
 | `p:add_instance(type [, clone_record [, clone_field]])` | An instance (use it as a value or with `set_pointer`), or `nil, err` |
 | `p:set_pointer(record, field, instance)` | `true`, or `false, err` |
-| `p:add_record(...)` | `false, "unavailable"` (not in 1.0: saved patches have no record operation yet) |
+| `p:add_record(type, name, clone_record [, guid [, file_path]])` | A new record cloned from `clone_record` (same struct), returned as an instance (its root; later calls also name the record by `name`, and `{ ref = name }` points a reference field at it), or `nil, err`. No `guid`: a stable one derived from the plugin id and name. `nil, "unavailable"` on a host whose `sco.datacore` is 1.0 |
 | `p:commit()`, `p:discard()` | `true`, or `false, err` |
 | `p:report()` | A list of `{ state = "queued" \| "applied" \| "skipped" \| "refused", op = n, reason = "..." }`: one per operation (`op` 1, 2, ...), then the patch's (`op` 0) |
 
