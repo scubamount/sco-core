@@ -25,6 +25,13 @@ echo "abi_v1: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_storage.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_storage.c"
 echo "abi_storage: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The sco.ui table (tests/abi_ui.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ui.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ui.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_ui.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ui.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ui.c"
+echo "abi_ui: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
 # SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
 # header change that breaks them fails here. The full build from the packaged zip, with MSVC on
@@ -143,6 +150,15 @@ PLUGINS=("$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROO
   -ldl -o "$OUT/test_plugins"
 "$OUT/test_plugins" "$ROOT/tests/fixtures/plugins" "$OUT"
 
+# sco.ui (sco/ui.h, sco_ui.h, scosdk/ui.hpp): built-in plugins under the loader's crash guard (a
+# signal-based stand-in here), registration from threads beside a frame, so both sanitizer sets.
+UI=("$ROOT/tests/test_ui.cpp" "$ROOT/src/ui/ui.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp"
+    "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${UI[@]}" -ldl -o "$OUT/test_ui"
+"$OUT/test_ui"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${UI[@]}" -ldl -o "$OUT/test_ui_tsan"
+"$OUT/test_ui_tsan"
+
 # sco-lua (plugins/lua): the sandboxed Lua runtime, loaded through the real loader and host table.
 # Vendored Lua is built as C with its own warnings off; sco_lua.c with -Werror like the rest.
 LUA_SRC=$ROOT/plugins/lua/third_party/lua/src
@@ -156,14 +172,14 @@ for f in "$LUA_SRC"/*.c "$ROOT/plugins/lua/sco_lua.c"; do
 done
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_lua.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
   "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
-  "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
+  "$ROOT/src/ui/ui.cpp" "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
 "$OUT/test_lua" "$ROOT/sdk" "$OUT"
 
 # The host kit (sco/app.h): built-ins, the fake plugins m0 and m11, greeter and travel_pack through
 # sco::app (ASan+UBSan). Then sco-host-sim over the SDK examples, laid out like data/plugins with
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
-     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/game/"*.cpp "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN")
+     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/game/"*.cpp "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$SQLITE_ASAN")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"
 "$OUT/test_app" "$ROOT/sdk" "$OUT"
