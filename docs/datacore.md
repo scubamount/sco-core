@@ -175,6 +175,80 @@ value  = { struct = "SEntityEffectSystem_ParticleTagEffect", clone = { record = 
 
 **Checked without the game** (`lint`, and `sco-host-sim` for every indexed pack): TOML syntax, `format = 1`, known keys, value shapes, field path and GUID syntax, `@id` defined before use and only once, a field set twice, at most 4 MiB and 65,536 operations per file. Names resolve only against a real file: `check`.
 
+## The `sco.datacore` service
+
+Plugins (native C, C++ through `scosdk/datacore.hpp`, Lua through `sco.datacore`) queue the same operations a pack's `.toml` holds, from code: computed overrides, or overrides that depend on settings. Fixed ones belong in a data pack. It is a **host-owned service** (`sco.datacore`, version 1.0, [`sco_datacore.h`](../include/sco_datacore.h), pinned by `tests/abi_datacore.c`), found with `query_service`; `sco_api.h` is unchanged. The host publishes it **only when the product enables it**: `sco::app::Platform::dataCore` with a `dataRoot`. sc-offline turns it on with its CryPak adapter (design plan PR 8); until then `query_service` answers `SCO_NOT_FOUND` and Lua's `sco.datacore` is `nil`.
+
+```c
+const sco_datacore_v1* dc = NULL;
+uint64_t patch = 0, fast = 0;
+if (api->query_service(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_0, (const void**)&dc) == SCO_OK &&
+    dc->begin(self, 0, &patch) == SCO_OK) {
+    sco_dc_value v = { sizeof v, SCO_DC_FLOAT };
+    v.f = 3.5;
+    dc->set(patch, "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem", "Components[SCItemQuantumDriveParams].params.spoolUpTime", &v);
+    dc->add_instance(patch, "SCItemQuantumDriveParams", "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem",
+                     "Components[SCItemQuantumDriveParams]", &fast);
+    char at[24];
+    snprintf(at, sizeof at, "@%llu", (unsigned long long)fast);  /* a field of the added instance */
+    v.f = 2.5e8;
+    dc->set(patch, at, "params.driveSpeed", &v);
+    dc->set_pointer(patch, "EntityClassDefinition.QDRV_WETK_S01_Beacon_SCItem", "Components[SCItemQuantumDriveParams]", fast);
+    dc->commit(patch);
+}
+```
+
+| Function | Does |
+|---|---|
+| `state()` | `SCO_DC_OPEN` before the game's DataCore load, `SCO_DC_LOADED` after it |
+| `begin(self, flags, &patch)` | A patch owned by `self`; `SCO_DC_NON_ATOMIC` lets operations apply one by one. At most 64 open or queued per plugin |
+| `set(patch, record, field, value)` | A value in place; `SCO_DC_NULL` (or a NULL value) a null pointer; `SCO_DC_INSTANCE` points at an added instance. A field once per patch |
+| `add_instance(patch, type, clone_record, clone_field, &id)` | A new instance, cloned or zero-filled |
+| `set_pointer(patch, record, field, id)` | A pointer at an added instance |
+| `append(patch, record, field, value)` | One array element: a value, a pointer, or (arrays of structs) an added instance copied in |
+| `add_record(...)` | `SCO_UNAVAILABLE` in 1.0. The patcher has `AddRecord` (and `sco-dcb patch` exercises it), but saved patches use the pack format, which has no record operation yet; a later minor adds both |
+| `commit(patch)` | Before the load: queued for it. After it: saved (below). No more operations on it |
+| `discard(patch)` | Drops it (open, or queued before the load) |
+| `report(patch, i, &out)` | One entry per operation in call order, then one for the patch (`op_index` `SCO_DC_OP_PATCH`): `SCO_DC_QUEUED`, `APPLIED`, `SKIPPED` (this operation failed) or `REFUSED` (the patch was refused whole), with the reason |
+
+`record` is a record name, `"guid:xxxxxxxx-..."`, or `"@<id>"` for an instance this patch added (its own fields). `field` is a path as in packs. Values: `SCO_DC_BOOL`, `INT`, `UINT`, `FLOAT`, `STRING` (UTF-8; also enums by option name), `GUID`, `ENUM`, `REF` (a reference field's target record, by name or `guid:...`), `NULL`, `INSTANCE`. Call-time checks need no game file: path and GUID syntax, value shapes, UTF-8, instance ids of the same patch (`SCO_BAD_ARG`; nothing is queued). Names resolve at the load.
+
+**Timing (design decision 9).** In sc-offline the game loads DataCore before plugins load, so in practice a plugin's patch is committed after the load. It is never applied late. `commit` validates it, saves it in the pack format as `<dataRoot>/datacore/pending/<plugin id>.toml` (a temporary file renamed over the old one, so a crash leaves the old one), and reports `SCO_DC_QUEUED` with the reason `applies at the next launch`. At every later launch the load reads it right after that plugin's own data pack, with the same per-patch atomicity and report, until the plugin commits another patch after the load (which replaces it; an empty patch clears it) or the file is deleted. The saved patch of a plugin that is no longer installed, or is disabled, off, refused or crashed, is skipped and logged. Patches committed before a load (a product whose plugins load first) apply at it, after the plugin's saved patch.
+
+**Order** (decision 7): plugins in plugin order (built-ins first, then folder-name order); within one plugin its pack's `.toml` files, then its saved patch, then its patches committed before the load. A later source wins a field, and the conflict is logged with both ids. **Ownership:** a plugin that unloads or crashes before the load loses its uncommitted and queued patches; their ids answer `SCO_NOT_FOUND`.
+
+**Results.** After the load the host posts `datacore.applied` on the game thread (the next tick; after `game.ready` when the load came first) with a `sco_dc_applied { size; applied, skipped, refused; }` counting operations over every source. A plugin reads its own results with `report`. The load logs `[datacore] N packs: ...`, one line per skipped source and per conflict.
+
+**Host side** ([`sco/datacore_service.h`](../include/sco/datacore_service.h)): `service::Start({ dataRoot })` and `Stop()` (the host kit calls them), and `service::Load(schema, pluginList, contentIndex, dataRoot)`, which the CryPak adapter (plan PR 7) calls at the `.dcb` open on the loader thread. It switches the state to `SCO_DC_LOADED`, takes the queued patches, reads every source in the order above, applies them with `ApplyPacks`, stores each patch's report and posts the event. Plugin calls take the service's lock briefly and never wait for the load. `tests/test_datacore_service.cpp` runs a simulated launch sequence: launch 1 loads (a data pack plus patches committed before it), a plugin commits after it, launch 2 applies the saved patch in order and wins the conflict, and launch 3, with the plugin uninstalled, skips it.
+
+### From C++ and Lua
+
+```cpp
+#include "scosdk/datacore.hpp"                         // not in scosdk.hpp
+
+sco::sdk::DataCore dc;
+if (dc.Open(*this) == SCO_OK) {
+    sco::sdk::DataCorePatch p = dc.Begin();            // discarded on destruction unless committed
+    p.Set(eos, "Components[SCItemQuantumDriveParams].params.spoolUpTime", 3.5);
+    sco::sdk::DataCoreInstance fast = p.AddInstance("SCItemQuantumDriveParams", eos, "Components[SCItemQuantumDriveParams]");
+    p.Set(fast.Ref(), "params.driveSpeed", 2.5e8);
+    p.SetPointer(beacon, "Components[SCItemQuantumDriveParams]", fast);
+    p.Commit();
+}
+```
+
+```lua
+if sco.datacore then                                   -- nil when the product doesn't publish it
+  local p = sco.datacore.begin()                       -- or begin({ atomic = false })
+  p:set(eos, "Components[SCItemQuantumDriveParams].params.spoolUpTime", 3.5)
+  local fast = p:add_instance("SCItemQuantumDriveParams", eos, "Components[SCItemQuantumDriveParams]")
+  p:set_pointer(beacon, "Components[SCItemQuantumDriveParams]", fast)
+  p:commit()
+end
+```
+
+Details: [C++ SDK § DataCore](sdk-cpp.md#datacore), [Lua § sco.datacore](../sdk/docs/lua.md#scodatacore).
+
 ## Exit codes
 
 | Code | Meaning |

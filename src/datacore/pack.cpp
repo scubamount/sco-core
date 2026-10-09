@@ -634,11 +634,13 @@ PackResult ApplyPacks(const Schema& base, std::span<const Pack> packs) {
             }
         }
 
-        for (const PackOpReport& r : rep.ops) {
+        for (size_t k = 0; k < rep.ops.size(); ++k) {
+            const PackOpReport& r = rep.ops[k];
             if (r.status) ++rep.applied;
             else {
                 ++rep.skipped;
-                if (rep.reason.empty()) rep.reason = Fmt("line %u: ", r.line) + r.status.message;
+                // A file's operations have lines; a patch built in code (sco.datacore) has none.
+                if (rep.reason.empty()) rep.reason = (r.line ? Fmt("line %u: ", r.line) : Fmt("operation %zu: ", k + 1)) + r.status.message;
             }
         }
         if (pack.atomic && rep.skipped) {

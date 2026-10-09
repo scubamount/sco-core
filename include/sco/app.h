@@ -24,8 +24,9 @@
 //   1. SetGameThread (the caller's thread)
 //   2. image set: RegisterGameSignatures + ResolveAll(*image)
 //   3. setCapabilities() (after the rows are resolved, so it can use caps::SetFromSignatures)
-//   4. host::BuildApi({ hostVersion }); with dataRoot set, storage::Start (sco.storage);
-//      ui::Start (sco.ui) and ui::ReserveChord for each of reservedChords
+//   4. host::BuildApi({ hostVersion }); with dataRoot set, storage::Start (sco.storage) and, with
+//      dataCore too, datacore::service::Start (sco.datacore); ui::Start (sco.ui) and ui::ReserveChord
+//      for each of reservedChords
 //   5. the list: every built-in (FromBuiltin), then, with pluginsEnabled, Discover(pluginRoot)
 //   6. ContainCallouts(list)
 //   7. LoadBuiltin for each built-in; then, in list order, LoadNative / LoadScript (a lua plugin
@@ -34,8 +35,9 @@
 //   9. Dispatch "game.ready"
 // Startup problems are logged and reported, never fatal: a product with no image, no plugin
 // folder or a refused plugin still starts, and every plugin that can load does.
-// Stop: Dispatch "game.exit", UnloadAll (newest first, built-ins last), storage::Stop, ui::Stop
-// and host::WithdrawHostServices (host services outlive every plugin), ContainCallouts(nullptr).
+// Stop: Dispatch "game.exit", UnloadAll (newest first, built-ins last), storage::Stop, ui::Stop,
+// datacore::service::Stop and host::WithdrawHostServices (host services outlive every plugin),
+// ContainCallouts(nullptr).
 #include "sco/plugins.h"
 #include "sco/scan.h"
 #include <cstddef>
@@ -63,6 +65,11 @@ struct Platform {
     // strings must stay valid during Start.
     const char* const* reservedChords = nullptr;
     size_t nReservedChords = 0;
+    // With dataRoot set, Start also publishes the host service sco.datacore (sco_datacore.h,
+    // sco/datacore_service.h): plugins queue DataCore overrides, saved in <dataRoot>/datacore/pending/
+    // after the load. Off by default: a product turns it on once its CryPak adapter applies the
+    // DataCore load (sc-offline: design plan PR 8). Off, query_service answers SCO_NOT_FOUND.
+    bool dataCore = false;
 };
 
 // Starts the host kit (see above). Game thread: it becomes the game thread. False, and nothing

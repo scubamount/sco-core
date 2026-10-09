@@ -2,6 +2,7 @@
 // Everything runs on the game thread; the state below is touched by nothing else.
 #include "sco/app.h"
 #include "sco/caps.h"
+#include "sco/datacore_service.h"
 #include "sco/game/signatures.h"
 #include "sco/host.h"
 #include "sco/log.h"
@@ -46,6 +47,12 @@ bool Start(const Platform& platform) {
         so.dataRoot = pf.dataRoot;
         const Result sr = storage::Start(so);
         if (sr != Result::Ok) Log("[app] storage not started: %s", ResultName(sr));
+        if (pf.dataCore) {
+            datacore::service::Options dco;
+            dco.dataRoot = pf.dataRoot;
+            const Result dr = datacore::service::Start(dco);
+            if (dr != Result::Ok) Log("[app] sco.datacore not started: %s", ResultName(dr));
+        }
     }
     const Result ur = ui::Start();
     if (ur != Result::Ok) Log("[app] ui not started: %s", ResultName(ur));
@@ -118,6 +125,7 @@ void Stop() {
     plugins::UnloadAll(g_list, g_platform.moduleOps, g_platform.scripts);
     storage::Stop();
     ui::Stop();
+    datacore::service::Stop();
     host::WithdrawHostServices();
     plugins::ContainCallouts(nullptr);
     g_started = false;

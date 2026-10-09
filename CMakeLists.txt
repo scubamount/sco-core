@@ -168,9 +168,15 @@ add_library(sco_ui STATIC src/ui/ui.cpp)
 target_link_libraries(sco_ui PUBLIC sco_host)
 sco_project_target(sco_ui)
 
+# sco.datacore (sco/datacore_service.h, include/sco_datacore.h): plugins queue DataCore overrides; the
+# DataCore load applies data packs, saved patches and queued patches in plugin order.
+add_library(sco_datacore_service STATIC src/datacore/service.cpp)
+target_link_libraries(sco_datacore_service PUBLIC sco_datacore sco_host sco_plugins)
+sco_project_target(sco_datacore_service)
+
 # The host kit (sco/app.h): Start / Tick / Stop over the host table, caps, signatures and loader.
 add_library(sco_app STATIC src/app/sco_app.cpp)
-target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui)
+target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui sco_datacore_service)
 sco_project_target(sco_app)
 
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
@@ -297,6 +303,28 @@ if(SCO_BUILD_TESTS)
   add_test(NAME abi_ui
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_ui_targets})
 
+  # The sco.datacore table pin (tests/abi_datacore.c), the same three ways.
+  set(_abi_datacore_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_datacore.cpp")
+  file(CONFIGURE OUTPUT "${_abi_datacore_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_datacore.c\"\n")
+  add_library(sco_abi_datacore_c OBJECT tests/abi_datacore.c)
+  add_library(sco_abi_datacore_cxx OBJECT "${_abi_datacore_cxx}")
+  set(_abi_datacore_targets sco_abi_datacore_c sco_abi_datacore_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_datacore_short_enums OBJECT tests/abi_datacore.c)
+    target_compile_options(sco_abi_datacore_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_datacore_targets sco_abi_datacore_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_datacore_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME abi_datacore
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_datacore_targets})
+
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
   sco_project_target(test_core)
@@ -380,6 +408,13 @@ if(SCO_BUILD_TESTS)
     FIXTURES_REQUIRED dcb_pack_fixtures
     PASS_REGULAR_EXPRESSION "dcb_pack: OK"
     FAIL_REGULAR_EXPRESSION "dcb_pack: FAIL")
+  # The sco.datacore service over the real host table: a simulated launch sequence (load, a plugin
+  # commits after it, the next launch applies the saved patch in plugin order), patches committed
+  # before a load, release, atomicity, reports, datacore.applied, and the scosdk wrapper.
+  add_executable(test_datacore_service tests/test_datacore_service.cpp)
+  target_link_libraries(test_datacore_service PRIVATE sco_datacore_service)
+  sco_project_target(test_datacore_service)
+  add_test(NAME test_datacore_service COMMAND test_datacore_service "${SCO_TEST_OUT}")
   add_test(NAME dcb_tool
            COMMAND "${CMAKE_COMMAND}" "-DDCB=$<TARGET_FILE:sco-dcb>" "-DDIR=${SCO_TEST_OUT}"
                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dcb_tool.cmake")
@@ -439,7 +474,7 @@ if(SCO_BUILD_TESTS)
            COMMAND test_plugins "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugins" "${SCO_TEST_OUT}")
 
   add_executable(test_lua tests/test_lua.cpp)
-  target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua sco_ui)
+  target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua sco_ui sco_datacore_service)
   sco_project_target(test_lua)
   add_test(NAME test_lua COMMAND test_lua "${CMAKE_CURRENT_SOURCE_DIR}/sdk" "${SCO_TEST_OUT}")
 

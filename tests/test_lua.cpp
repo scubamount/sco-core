@@ -2,7 +2,9 @@
 // Discover -> LoadScript -> sco_lua_load, with sco::host::BuildApi's sco_api underneath. Host
 // build, no game. The "game thread" is this test's main thread.
 //   tools/test.sh
+#include "dcb_builder.h"
 #include "sco/caps.h"
+#include "sco/datacore_service.h"
 #include "sco/host.h"
 #include "sco/log.h"
 #include "sco/plugins.h"
@@ -450,6 +452,65 @@ static void TestLimits() {
     Unload(l);
 }
 
+// ---- sco.datacore (published by the host only when the product enables it) --------------------
+
+static void TestDataCore() {
+    namespace svc = sco::datacore::service;
+    Write("dcnone", "assert(sco.datacore == nil, 'not published')\n");
+    Loaded none = Load("dcnone");
+    CHECK(none.p && none.p->state == State::Loaded);
+    Unload(none);
+
+    const fs::path data = g_root.parent_path() / "lua_datacore";
+    fs::remove_all(data);
+    svc::Options o;
+    o.dataRoot = data;
+    CHECK(svc::Start(o) == Result::Ok);
+    Write("dcmod", R"(
+local dc = assert(sco.datacore, "sco.datacore")
+assert(dc.state() == "open")
+local p = assert(dc.begin())
+assert(p:set("ShipA", "speed", 2.5))
+local part = assert(p:add_instance("Part", "PartX"))
+assert(p:set_pointer("ShipB", "engine", part))
+assert(p:set("ShipB", "label", "lua"))
+assert(p:set("ShipA", "kind", { enum = "Small" }))
+assert(p:set("ShipA", "maker", { ref = "BaseOne" }))
+assert(p:append("ShipA", "parts", part))
+assert(p:append("ShipA", "parts", nil))
+local ok, err = p:set("ShipA", "speed..x", 1)
+assert(not ok and err == "bad_arg", "path syntax")
+assert(select(2, p:set("ShipA", "flag", {})) == "bad_arg", "a table that is no value")
+assert(select(2, p:add_record("Ship", "ShipC")) == "unavailable", "add_record")
+assert(p:commit())
+assert(select(2, p:commit()) == "bad_arg", "committed twice")
+local r = p:report()
+assert(#r == 9 and r[1].state == "queued" and r[1].op == 1 and r[9].op == 0, "report before the load")
+local q = assert(dc.begin({ atomic = false }))
+assert(q:discard())
+assert(select(2, q:commit()) == "not_found", "discarded")
+sco.register_command{ name = "dcmod.report", title = "Report", fn = function()
+  local rr = p:report()
+  return rr[#rr].state .. " " .. rr[1].state .. " " .. sco.datacore.state()
+end }
+)");
+    Loaded l = Load("dcmod");
+    CHECK(l.p && l.p->state == State::Loaded);
+    if (l.p && l.p->state != State::Loaded) std::printf("  dcmod: %s\n", l.p->reason.c_str());
+
+    const std::vector<uint8_t> file = dcb::ValuedFixture(36).Build();
+    sco::datacore::Schema s;
+    CHECK(s.Parse(file));
+    P::ContentIndex index;
+    const svc::LoadResult r = svc::Load(s, l.list, index, data);
+    CHECK(r.result.status.ok() && r.result.packs.size() == 1 && r.result.packs[0].state == sco::datacore::PackState::Applied);
+    CHECK(r.result.packs.size() == 1 && r.result.packs[0].applied == 8);
+    const Reply rep = Invoke(g_caller, "dcmod.report");
+    CHECK(rep.r == SCO_OK && rep.text == "applied applied loaded");
+    Unload(l);
+    svc::Stop();
+}
+
 #ifndef _WIN32
 #include <unistd.h>
 // A broken step budget turns the spin tests into endless loops: fail instead of hanging.
@@ -478,6 +539,7 @@ int main(int argc, char** argv) {
     TestHotkeys();
     TestSandbox();
     TestLimits();
+    TestDataCore();
     std::printf("sco-lua tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

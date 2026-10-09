@@ -13,6 +13,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
+#include "sco_datacore.h"
 #include "sco_ui.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -644,6 +645,211 @@ static int L_list_commands(lua_State* L) {
     return 1;
 }
 
+/* ---- sco.datacore (the host service sco_datacore.h) ----------------------------------------- */
+
+#define DC_PATCH "sco-lua.dcpatch"
+#define DC_INST  "sco-lua.dcinst"
+
+typedef struct DcPatch { uint64_t id; } DcPatch;
+typedef struct DcInst  { uint64_t patch, id; } DcInst;
+
+/* The service as the host publishes it now; NULL when it doesn't (the product didn't enable it). */
+static const sco_datacore_v1* DataCore(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service) || !s->api->query_service) return NULL;
+    if (s->api->query_service(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_0, &t) != SCO_OK) return NULL;
+    return (const sco_datacore_v1*)t;
+}
+
+/* A Lua value as a sco_dc_value: nil, boolean, integer, number, string, an instance from
+ * add_instance, { guid = "..." }, { enum = "..." } or { ref = "record" }. 0 when it is none of those. Strings stay
+ * on the Lua stack for the call. */
+static int ToDcValue(lua_State* L, int i, sco_dc_value* v) {
+    memset(v, 0, sizeof(*v));
+    v->size = sizeof(*v);
+    switch (lua_type(L, i)) {
+        case LUA_TNONE: case LUA_TNIL: v->type = SCO_DC_NULL; return 1;
+        case LUA_TBOOLEAN: v->type = SCO_DC_BOOL; v->i = lua_toboolean(L, i); return 1;
+        case LUA_TNUMBER:
+            if (lua_isinteger(L, i)) { v->type = SCO_DC_INT; v->i = (int64_t)lua_tointeger(L, i); }
+            else { v->type = SCO_DC_FLOAT; v->f = (double)lua_tonumber(L, i); }
+            return 1;
+        case LUA_TSTRING: v->type = SCO_DC_STRING; v->s = lua_tostring(L, i); return 1;
+        case LUA_TUSERDATA: {
+            const DcInst* inst = (const DcInst*)luaL_testudata(L, i, DC_INST);
+            if (!inst) return 0;
+            v->type = SCO_DC_INSTANCE;
+            v->u = inst->id;
+            return 1;
+        }
+        case LUA_TTABLE:   /* the string stays on the stack for the call */
+            if (lua_getfield(L, i, "guid") == LUA_TSTRING) { v->type = SCO_DC_GUID; v->s = lua_tostring(L, -1); return 1; }
+            if (lua_getfield(L, i, "enum") == LUA_TSTRING) { v->type = SCO_DC_ENUM; v->s = lua_tostring(L, -1); return 1; }
+            if (lua_getfield(L, i, "ref") == LUA_TSTRING) { v->type = SCO_DC_REF; v->s = lua_tostring(L, -1); return 1; }
+            return 0;
+        default: return 0;
+    }
+}
+
+static DcPatch* CheckPatch(lua_State* L) { return (DcPatch*)luaL_checkudata(L, 1, DC_PATCH); }
+
+static int L_dc_state(lua_State* L) {
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    if (!dc) return PushResult(L, SCO_UNAVAILABLE);
+    lua_pushstring(L, dc->state() == SCO_DC_OPEN ? "open" : "loaded");
+    return 1;
+}
+
+static int L_dc_begin(lua_State* L) {
+    Script* s = Of(L);
+    uint32_t flags = 0;
+    if (lua_istable(L, 1)) {
+        lua_getfield(L, 1, "atomic");
+        if (lua_type(L, -1) == LUA_TBOOLEAN && !lua_toboolean(L, -1)) flags |= SCO_DC_NON_ATOMIC;
+        lua_pop(L, 1);
+    }
+    const sco_datacore_v1* dc = DataCore(s);
+    if (!dc) { lua_pushnil(L); lua_pushstring(L, ResultName(SCO_UNAVAILABLE)); return 2; }
+    uint64_t id = 0;
+    const sco_result r = dc->begin(s->self, flags, &id);
+    CheckBudget(L);
+    if (r != SCO_OK) { lua_pushnil(L); lua_pushstring(L, ResultName(r)); return 2; }
+    DcPatch* p = (DcPatch*)lua_newuserdatauv(L, sizeof(DcPatch), 0);
+    p->id = id;
+    luaL_setmetatable(L, DC_PATCH);
+    return 1;
+}
+
+static int L_dc_set(lua_State* L) {
+    DcPatch* p = CheckPatch(L);
+    const char* record = luaL_checkstring(L, 2);
+    const char* field = luaL_checkstring(L, 3);
+    sco_dc_value v;
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    if (!dc) return PushResult(L, SCO_UNAVAILABLE);
+    if (!ToDcValue(L, 4, &v)) return PushResult(L, SCO_BAD_ARG);
+    const sco_result r = dc->set(p->id, record, field, v.type == SCO_DC_NULL ? NULL : &v);
+    CheckBudget(L);
+    return PushResult(L, r);
+}
+
+static int L_dc_append(lua_State* L) {
+    DcPatch* p = CheckPatch(L);
+    const char* record = luaL_checkstring(L, 2);
+    const char* field = luaL_checkstring(L, 3);
+    sco_dc_value v;
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    if (!dc) return PushResult(L, SCO_UNAVAILABLE);
+    if (!ToDcValue(L, 4, &v)) return PushResult(L, SCO_BAD_ARG);
+    const sco_result r = dc->append(p->id, record, field, v.type == SCO_DC_NULL ? NULL : &v);
+    CheckBudget(L);
+    return PushResult(L, r);
+}
+
+static int L_dc_add_instance(lua_State* L) {
+    DcPatch* p = CheckPatch(L);
+    const char* type = luaL_checkstring(L, 2);
+    const char* cloneRecord = luaL_optstring(L, 3, NULL);
+    const char* cloneField = luaL_optstring(L, 4, NULL);
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    if (!dc) { lua_pushnil(L); lua_pushstring(L, ResultName(SCO_UNAVAILABLE)); return 2; }
+    uint64_t id = 0;
+    const sco_result r = dc->add_instance(p->id, type, cloneRecord, cloneField, &id);
+    CheckBudget(L);
+    if (r != SCO_OK) { lua_pushnil(L); lua_pushstring(L, ResultName(r)); return 2; }
+    DcInst* inst = (DcInst*)lua_newuserdatauv(L, sizeof(DcInst), 0);
+    inst->patch = p->id;
+    inst->id = id;
+    luaL_setmetatable(L, DC_INST);
+    return 1;
+}
+
+static int L_dc_set_pointer(lua_State* L) {
+    DcPatch* p = CheckPatch(L);
+    const char* record = luaL_checkstring(L, 2);
+    const char* field = luaL_checkstring(L, 3);
+    const DcInst* inst = (const DcInst*)luaL_checkudata(L, 4, DC_INST);
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    if (!dc) return PushResult(L, SCO_UNAVAILABLE);
+    const sco_result r = dc->set_pointer(p->id, record, field, inst->id);
+    CheckBudget(L);
+    return PushResult(L, r);
+}
+
+static int L_dc_add_record(lua_State* L) {
+    DcPatch* p = CheckPatch(L);
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    if (!dc) return PushResult(L, SCO_UNAVAILABLE);
+    uint64_t id = 0;
+    const sco_result r = dc->add_record(p->id, luaL_checkstring(L, 2), luaL_checkstring(L, 3), luaL_optstring(L, 4, NULL),
+                                        luaL_optstring(L, 5, NULL), luaL_optstring(L, 6, NULL), &id);
+    CheckBudget(L);
+    return PushResult(L, r);   /* SCO_UNAVAILABLE in 1.0 (no record operation in saved patches yet) */
+}
+
+static int L_dc_commit(lua_State* L) {
+    DcPatch* p = CheckPatch(L);
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    const sco_result r = dc ? dc->commit(p->id) : SCO_UNAVAILABLE;
+    CheckBudget(L);
+    return PushResult(L, r);
+}
+
+static int L_dc_discard(lua_State* L) {
+    DcPatch* p = CheckPatch(L);
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    const sco_result r = dc ? dc->discard(p->id) : SCO_UNAVAILABLE;
+    CheckBudget(L);
+    return PushResult(L, r);
+}
+
+/* A list of { state = "queued" | "applied" | "skipped" | "refused", op = n, reason = "..." }: one per
+ * operation (op 1, 2, ...), then one for the patch (op 0). */
+static int L_dc_report(lua_State* L) {
+    static const char* const states[] = { "?", "queued", "applied", "skipped", "refused" };
+    DcPatch* p = CheckPatch(L);
+    const sco_datacore_v1* dc = DataCore(Of(L));
+    if (!dc) { lua_pushnil(L); lua_pushstring(L, ResultName(SCO_UNAVAILABLE)); return 2; }
+    lua_newtable(L);
+    for (uint32_t i = 0; i <= SCO_DC_MAX_OPS; ++i) {
+        sco_dc_report rep;
+        memset(&rep, 0, sizeof(rep));
+        rep.size = sizeof(rep);
+        const sco_result r = dc->report(p->id, i, &rep);
+        if (r == SCO_NOT_FOUND && i == 0) { lua_pop(L, 1); lua_pushnil(L); lua_pushstring(L, ResultName(r)); return 2; }
+        if (r != SCO_OK) break;
+        sco_lua_step(L, 1);
+        lua_createtable(L, 0, 3);
+        lua_pushstring(L, rep.state < 5 ? states[rep.state] : "?");
+        lua_setfield(L, -2, "state");
+        lua_pushinteger(L, rep.op_index == SCO_DC_OP_PATCH ? 0 : (lua_Integer)rep.op_index + 1);
+        lua_setfield(L, -2, "op");
+        lua_pushstring(L, rep.reason);
+        lua_setfield(L, -2, "reason");
+        lua_rawseti(L, -2, (lua_Integer)i + 1);
+    }
+    return 1;
+}
+
+/* The metatables of patch and instance userdata: methods only, locked, no __gc (an uncommitted
+ * patch is dropped by the host when the plugin unloads). */
+static void DataCoreTypes(lua_State* L) {
+    static const luaL_Reg methods[] = {
+        { "set", L_dc_set }, { "add_instance", L_dc_add_instance }, { "set_pointer", L_dc_set_pointer },
+        { "append", L_dc_append }, { "add_record", L_dc_add_record }, { "commit", L_dc_commit },
+        { "discard", L_dc_discard }, { "report", L_dc_report }, { NULL, NULL } };
+    luaL_newmetatable(L, DC_PATCH);
+    luaL_newlib(L, methods);
+    lua_setfield(L, -2, "__index");
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "__metatable");
+    lua_pop(L, 1);
+    luaL_newmetatable(L, DC_INST);
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "__metatable");
+    lua_pop(L, 1);
+}
+
 /* ---- sco.ui hotkeys (tabs and overlays need draw callbacks from Lua: G018) ------------------ */
 
 static const sco_ui_v1* UiTable(const Script* s) {
@@ -802,6 +1008,12 @@ static int SetupBody(lua_State* L) {
     lua_setfield(L, -2, "api_major");
     lua_pushinteger(L, s->api->minor);
     lua_setfield(L, -2, "api_minor");
+    DataCoreTypes(L);
+    if (DataCore(s)) {                                /* sco.datacore: only when the host publishes it */
+        static const luaL_Reg dcfns[] = { { "begin", L_dc_begin }, { "state", L_dc_state }, { NULL, NULL } };
+        luaL_newlib(L, dcfns);
+        lua_setfield(L, -2, "datacore");
+    }
     lua_setfield(L, g, "sco");
 
     lua_newtable(L);

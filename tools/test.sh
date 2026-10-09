@@ -32,6 +32,13 @@ echo "abi_storage: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-m
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ui.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ui.c"
 echo "abi_ui: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The sco.datacore table (tests/abi_datacore.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_datacore.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_datacore.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_datacore.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_datacore.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_datacore.c"
+echo "abi_datacore: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
 # SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
 # header change that breaks them fails here. The full build from the packaged zip, with MSVC on
@@ -140,6 +147,14 @@ DATACORE=("$ROOT/src/datacore/datacore.cpp" "$ROOT/src/datacore/patch.cpp" "$ROO
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore_pack.cpp" "${DATACORE[@]}" -o "$OUT/test_datacore_pack"
 "$OUT/test_datacore_pack" "$ROOT" "$OUT"
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tools/sco-dcb.cpp" "${DATACORE[@]}" -o "$OUT/sco-dcb"
+# The sco.datacore service over the real host table: a simulated launch sequence (load, a commit after
+# it saved to data/datacore/pending/, the next launch applying it), release, atomicity, reports,
+# datacore.applied and scosdk/datacore.hpp (ASan+UBSan).
+SERVICE=("$ROOT/src/datacore/service.cpp" "${DATACORE[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "${RUNTIME[@]}"
+         "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_log_status.cpp"
+         "$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" "$ROOT/src/plugins/content.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore_service.cpp" "${SERVICE[@]}" -ldl -o "$OUT/test_datacore_service"
+"$OUT/test_datacore_service" "$OUT"
 "$OUT/sco-dcb" info "$OUT/datacore_36.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: valid fixture not OK"; exit 1; }
 "$OUT/sco-dcb" info "$OUT/datacore_32.dcb" | grep -q '^record size: 32 bytes' || { echo "sco-dcb: 32-byte records not derived"; exit 1; }
 set +e
@@ -211,14 +226,15 @@ for f in "$LUA_SRC"/*.c "$ROOT/plugins/lua/sco_lua.c"; do
 done
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_lua.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
   "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
-  "$ROOT/src/ui/ui.cpp" "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
+  "$ROOT/src/ui/ui.cpp" "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}" "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
 "$OUT/test_lua" "$ROOT/sdk" "$OUT"
 
 # The host kit (sco/app.h): built-ins, the fake plugins m0 and m11, greeter and travel_pack through
 # sco::app (ASan+UBSan). Then sco-host-sim over the SDK examples, laid out like data/plugins with
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
-     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$SQLITE_ASAN")
+     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$SQLITE_ASAN"
+     "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"
 "$OUT/test_app" "$ROOT/sdk" "$OUT"
@@ -229,7 +245,7 @@ mkdir -p "$SIM/hello"
 sed 's/^entry = hello\.dll/entry = hello.so/' "$ROOT/sdk/examples/hello/plugin.ini" > "$SIM/hello/plugin.ini"
 cp -R "$ROOT/sdk/examples/greeter" "$ROOT/sdk/examples/travel_pack" "$ROOT/sdk/examples/quantum_pack" "$SIM/"
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tools/sco-host-sim.cpp" "${APP[@]}" \
-  "$ROOT/src/sco_pe_file.cpp" "${DATACORE[@]}" "${LUA_OBJS[@]}" -ldl -o "$OUT/sco-host-sim"
+  "$ROOT/src/sco_pe_file.cpp" "${LUA_OBJS[@]}" -ldl -o "$OUT/sco-host-sim"
 if ! "$OUT/sco-host-sim" "$SIM" --ticks 3 --invoke hello.wave "Pilot One" > "$OUT/sim.log"; then
   cat "$OUT/sim.log"; echo "sco-host-sim: failed"; exit 1
 fi
