@@ -57,6 +57,7 @@ grep -q 'invoke  my_plugin.ping -> ok "pong"' "$WORK/template.txt"
 "$CHECK" "$P/quantum_pack" | tee "$WORK/quantum_pack.txt"
 grep -q 'content datacore/eos.toml' "$WORK/quantum_pack.txt"
 "$CHECK" "$P/greeter"
+"$CHECK" "$P/notebook"
 
 # sco-plugin-check reads plugin.ini with the host's rules (src/plugins/manifest.cpp): it refuses
 # what the game refuses and accepts what the game accepts.
@@ -120,6 +121,11 @@ print("parity", true, nil)
 EOF
   "$LUA" "$ROOT/tools/lua-check.lua" "$CASES/parity" | tee "$WORK/parity.txt"
   grep -q "\[parity\] info: parity$(printf '\t')true$(printf '\t')nil" "$WORK/parity.txt"
+  # The storage example (sco.store): add a note, then list and clear run without arguments.
+  "$LUA" "$ROOT/tools/lua-check.lua" "$P/notebook" --invoke notebook.add "buy fuel" | tee "$WORK/notebook.txt"
+  grep -q 'invoke  notebook.add -> ok "note 1 saved"' "$WORK/notebook.txt"
+  grep -q 'invoke  notebook.list -> ok "1 note: buy fuel"' "$WORK/notebook.txt"
+  grep -q 'invoke  notebook.clear -> ok "removed 1 note"' "$WORK/notebook.txt"
 fi
 
 # A copied template must build outside the SDK folder with -DSCO_SDK.
@@ -131,7 +137,7 @@ cmake --build "$WORK/mine/build" --config Release
 # no compiler is enabled and the 64-bit check must not fire. greeter builds in its own folder,
 # under a name other than build or out (those are always left out): that build folder must not be
 # installed with the pack, however the platform spells the temp path.
-for ex in greeter travel_pack quantum_pack; do
+for ex in greeter notebook travel_pack quantum_pack; do
   if [ $ex = greeter ]; then B="$ROOT/examples/$ex/my-build"; else B="$WORK/$ex-build"; fi
   cmake -S "$ROOT/examples/$ex" -B "$B"
   cmake --install "$B" --config Release --prefix "$WORK/$ex-out"

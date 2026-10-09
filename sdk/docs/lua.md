@@ -12,7 +12,7 @@ The script sees only:
 - `string`, `table`, `math`, `utf8`,
 - the safe base functions: `assert`, `error`, `ipairs`, `next`, `pairs`, `pcall`, `select`, `tonumber`, `tostring`, `type`, `xpcall`, `rawequal`, `rawget`, `rawlen`, `rawset`, `setmetatable`, `getmetatable`, and `print` (which logs at `info`).
 
-There is no `io`, `os`, `package`, `require`, `debug`, `dofile`, `loadfile` or FFI, and precompiled (bytecode) chunks are refused. A script can't read or write files or start programs.
+There is no `io`, `os`, `package`, `require`, `debug`, `dofile`, `loadfile` or FFI, and precompiled (bytecode) chunks are refused. A script can't read or write files or start programs; `sco.store` is storage without file names.
 
 `setmetatable` refuses a `__gc` field (finalizers would run outside the limits below).
 
@@ -62,6 +62,49 @@ sco.register_command{
 ```
 
 `type` is `"int"`, `"float"`, `"string"` or `"bool"`. The host checks the arguments against `args` before calling `fn`, which gets them as plain Lua values in order. `fn` returns the reply shown on the status line (a string, or nothing); `error(...)` makes the command fail.
+
+## `sco.store`
+
+The plugin's own storage, kept across launches: a key-value store and SQL on its own SQLite database, which no other plugin can open (the host service [`sco.storage`](../../docs/storage.md)). Keys are strings of 1-255 bytes, values are strings (any bytes) of at most 1 MiB. [`examples/notebook`](../examples/notebook) uses it.
+
+```lua
+local st = sco.store
+st.put("spots.home", "Lorville")
+local home = st.get("spots.home")            -- "Lorville"; nil when there is no such key
+for _, key in ipairs(st.keys("spots.")) do print(key) end
+
+assert(st.begin())                            -- many writes: one transaction, much faster
+st.exec("CREATE TABLE IF NOT EXISTS visits(place TEXT, at INTEGER)")
+st.exec("INSERT INTO visits VALUES (?, ?)", { "Lorville", 1 })
+assert(st.commit())
+
+for _, row in ipairs(st.sql("SELECT place, at FROM visits WHERE at > ?", { 0 })) do
+  print(row.place, row.at)
+end
+st.sql("SELECT place FROM visits", nil, function(row) print(row.place) end)   -- row by row
+```
+
+| Call | Returns |
+|---|---|
+| `sco.store.available()` | Whether the host publishes storage |
+| `sco.store.get(key)` | The value (a string), or `nil` when there is none |
+| `sco.store.put(key, value)` | `true` |
+| `sco.store.delete(key)` | `true` when it removed a value, `false` when there was none |
+| `sco.store.keys([prefix [, after [, limit]]])` | A list of keys that start with `prefix` and sort after `after`, in byte order; at most `limit` (1-1000, default 1000). For the next page pass the last key as `after` |
+| `sco.store.begin()`, `commit()`, `rollback()` | `true`. One transaction at a time, over key-value and SQL alike; until `commit` nothing is kept, and an unload or crash rolls it back |
+| `sco.store.exec(sql [, params])` | The number of rows an `INSERT`, `UPDATE` or `DELETE` changed (other statements: not meaningful) |
+| `sco.store.sql(sql [, params])` | A list of rows, each `{ column = value, ... }`; at most 1000 rows, more is `too_many` (add a `LIMIT`) |
+| `sco.store.sql(sql, params, fn)` | Calls `fn(row)` for each row until it returns `false`, then `true` |
+
+Every call fails with `nil, err, message`: `err` is the result name (`"bad_arg"`: a refused or malformed statement, a key too long, a transaction already open; `"failed"`: the statement ran and failed; `"too_many"`: the storage quota is full, or too many rows; `"unavailable"`: the host has no storage), and `message` the host's text when it left one (`"no such table: visits"`). A host without storage (an older one, or a product without a data folder) still has `sco.store`; every call answers `nil, "unavailable"`.
+
+- **SQL**: one statement per call, any SQLite statement on the plugin's own database except those [storage refuses](../../docs/storage.md#sql-what-a-plugin-may-run) (`ATTACH`, `VACUUM`, `BEGIN` / `COMMIT` in SQL: use `begin` / `commit`, most `PRAGMA`s, the `sco_*` tables' schema). The key-value store is the table `sco_kv(key, value)`.
+- **Parameters**: a list bound to `?`, `?NNN` or `:name` in order, at most 32: integers, numbers, strings (bound as TEXT), booleans (1 or 0); set `n` to bind trailing `nil`s as NULL (`{ "a", nil, n = 2 }`). Column values come back as integers, numbers and strings (TEXT and BLOB); NULL columns are absent from the row.
+- **Steps**: each storage call, and each row or key read, counts 100 steps against the [budget](#the-sandbox), on top of the callback's own code.
+- **Cursors** are the runtime's: `sql` closes its cursor on every path, including an error in `fn` or the budget running out. Nothing in `sco.store` names a file or a path.
+- A transaction is the plugin's until `commit` or `rollback`: a callback that fails between `begin` and `commit` leaves it open (the next `begin` answers `bad_arg`), so roll back on your error paths.
+
+`lua-check.lua` has an in-memory `sco.store` (key-value and transactions; `exec` and `sql` answer `unavailable`, since a stock Lua has no SQLite).
 
 ## `sco.datacore`
 
