@@ -94,6 +94,13 @@ target_include_directories(sco_engine PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_engine PUBLIC Threads::Threads)
 sco_project_target(sco_engine)
 
+# Game-file overrides (sco/vfs.h): virtual files from splices, the reader arithmetic and the mount
+# table. Engine-agnostic: no engine, no Windows; the CryPak adapter comes separately.
+add_library(sco_vfs STATIC src/vfs/compose.cpp src/vfs/table.cpp)
+target_include_directories(sco_vfs PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_vfs PUBLIC Threads::Threads)
+sco_project_target(sco_vfs)
+
 add_library(sco_plugins STATIC
   src/plugins/manifest.cpp src/plugins/discover.cpp src/plugins/loader.cpp src/plugins/content.cpp)
 if(WIN32)
@@ -212,6 +219,11 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_spatial PRIVATE sco_engine)
   sco_project_target(test_spatial)
   add_test(NAME test_spatial COMMAND test_spatial)
+
+  add_executable(test_vfs tests/test_vfs.cpp)
+  target_link_libraries(test_vfs PRIVATE sco_vfs)
+  sco_project_target(test_vfs)
+  add_test(NAME test_vfs COMMAND test_vfs)
 
   # Fake native plugins for test_plugins, laid out like tools/test.sh (tools/test-win.sh on
   # Windows): <out>/plugins/m<mode>/{plugin.ini,m<mode>.<ext>}, m11 a second clean plugin, and
