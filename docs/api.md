@@ -226,6 +226,48 @@ The queries return false and leave `out` alone when `out` is null, the zone or a
 
 **Threads.** Every method is safe from any thread. Queries take a shared lock and run concurrently; `Set`, `Remove` and `Clear` take it exclusively. Each query sees one consistent tree, but two queries in a row may see a `Set` between them: do related math in one `Transform` call.
 
+## `sco/vfs.h`: game-file overrides
+
+The engine-agnostic core of game-file overrides ([design](design/vfs-datacore.md#3-scovfs-game-file-overrides)), in library `sco_vfs`. A mounted game file is served as a virtual file: ranges of the real (base) file plus replacement bytes, described by splices in base offsets. Bytes, offsets and paths only; the engine adapter that routes CryPak's open/read/seek/close here comes separately.
+
+```cpp
+struct Splice   { uint64_t at, removed; std::shared_ptr<const Bytes> bytes, old; };   // base offsets
+struct Segment  { uint64_t start, len; Kind kind /* Base | Buffer */; uint64_t from; const uint8_t* src; };
+struct Composed { uint64_t baseSize, size; std::vector<Segment> segments; std::vector<std::shared_ptr<const Bytes>> buffers; };
+struct Limits   { uint64_t bufferBytes = 64 MiB; size_t splicesPerPath = 65536; uint64_t fileSize = 4 GiB; };
+struct Result   { std::string error; /* empty = ok */ };
+```
+
+| Function | Does |
+|---|---|
+| `Result Compose(baseSize, splices, Composed& out, maxSize = kMaxFileSize)` | Validates the splices and builds segments that tile `[0, size)`. Each splice removes or adds something; they are sorted by `at`, never at the same offset, never overlapping, inside the base; `old`, when set, is exactly `removed` bytes. The error names the first bad splice (`splice 3 (at 4096): overlaps splice 2 (at 4000, removes 100)`); `out` is untouched on failure |
+| `Reader(file)`, `bool Seek(int64_t off, Whence)` | One open handle. `Set`, `Cur`, `End` (from `Size()`); a negative or overflowing result fails and leaves the position alone. Past the end is allowed, and reads there return 0 |
+| `size_t Read(dst, n, BaseIo& base)` | Copies from `Tell()`. Finds the segment by binary search, copies buffers, reads base ranges through `base` (seeking it only when its position isn't already the one needed). A failed seek or short base read returns the bytes read so far |
+| `Tell()`, `Size()`, `Eof()` | From the virtual file; `Eof()` is `Tell() >= Size()` |
+| `std::string NormalizePath(path)` | `\Data\Game2.DCB` -> `data/game2.dcb`; empty over `kMaxPathLength` (1024) |
+
+`BaseIo` is the engine's original read and seek for the handle (`bool Seek(uint64_t)`, `size_t Read(void*, size_t)`). Positions are 64-bit throughout; the adapter narrows the engine's `int` seeks.
+
+**Mounts.** A `Mount` is `{ path, priority, source, producer }`, where the producer is a `SpliceList` (fixed splices, optionally with an expected base `header` and each splice's expected `old` bytes) or a `Transform` (`Result(BaseIo&, baseSize, std::vector<Splice>& out)`, run at composition time; `sco::datacore` will be one). `Table::Build(mounts, limits)` makes an immutable table:
+
+| Member | Does |
+|---|---|
+| `bool Mounted(path)` | Any path form; no allocation, so unmounted files cost one hash lookup |
+| `shared_ptr<const Composed> Open(path, base, baseSize)` | The virtual file, or null to pass through (not mounted, or every mount inert). Composes once per path and base identity (size plus a hash of the first 4 KiB) under a per-path guard: concurrent opens wait for the one composition. Never throws |
+| `std::vector<MountInfo> Mounts()` | `{ path, source, priority, state, reason }` per mount, in Build order |
+| `uint64_t BufferBytes()` | Replacement bytes counted against `Limits::bufferBytes` |
+
+| State | Means |
+|---|---|
+| `Pending` | Not composed yet |
+| `Applied` | In the virtual file. `reason` counts splices dropped because a higher-priority mount of the path already covers them, and names that mount |
+| `Inert` | Contributes nothing this run: header or expected old bytes differ (`expected bytes differ at 150 (splice 2; game updated?)`), the transform failed or threw, or the merged path broke a limit. Other mounts of the path still apply |
+| `Refused` | By Build: bad path, invalid splices, a mount over `splicesPerPath`, or over the replacement-byte budget (taken highest priority first, so the lowest go) |
+
+All mounts of a path splice the same base. Higher `priority` wins an overlap, and among equal priorities the later mount in the Build list wins. A file is never served half-applied: if the merged result fails (too many splices, over `fileSize`), every mount of the path is inert and the file passes through.
+
+**Threads.** `MountTable` holds the published `shared_ptr<const Table>`: `Current()` and `Publish()` are atomic, and handles keep the table and file they opened with. `Table` is safe from any thread. A `Reader` belongs to one handle and takes no lock; no sco-core lock is held while it calls `BaseIo`. Composition calls `BaseIo` and transforms under the path's guard.
+
 ## `sco/pe_file.h`: host tools only
 
 ```cpp
