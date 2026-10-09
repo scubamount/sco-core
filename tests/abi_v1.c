@@ -140,5 +140,5 @@ static void pin_api_signatures(const sco_api* a) {
 void sco_abi_v1_pins(void);
 void sco_abi_v1_pins(void) {
     (void)pin_query; (void)pin_load; (void)pin_unload;
-    (void)pin_api_signatures;
+    (void)&pin_api_signatures;
 }
