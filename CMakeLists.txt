@@ -127,6 +127,11 @@ add_executable(sco-sigcheck tools/sco-sigcheck.cpp)
 target_link_libraries(sco-sigcheck PRIVATE sco_core)
 sco_project_target(sco-sigcheck)
 
+# The real host kit, loader and sco-lua outside the game.
+add_executable(sco-host-sim tools/sco-host-sim.cpp)
+target_link_libraries(sco-host-sim PRIVATE sco_app sco_lua)
+sco_project_target(sco-host-sim)
+
 # ---- tests ------------------------------------------------------------------------------------
 
 if(SCO_BUILD_TESTS)
