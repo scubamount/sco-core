@@ -46,6 +46,9 @@ HOST=("$ROOT/tests/test_host.cpp" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/s
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${HOST[@]}" -o "$OUT/test_host"
 "$OUT/test_host"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${HOST[@]}" -o "$OUT/test_host_tsan"
+# Detours over small functions written into executable memory (x86-64 only; skipped elsewhere).
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_hook.cpp" "$ROOT/src/hook/sco_hook.cpp" -o "$OUT/test_hook"
+"$OUT/test_hook"
 "$OUT/test_host_tsan"
 
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load

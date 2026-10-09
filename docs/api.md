@@ -108,6 +108,10 @@ See [The runtime](architecture.md#the-runtime) for the model. Every call returns
 
 `Invoke(name, args, nargs, done, ctx, owner)` on the game thread runs the command at once, calls `done(result, reply, ctx)` (if set) and returns the same result. From another thread it copies the name and arguments, queues the call as a task of `owner` and returns `Ok`; `done` runs exactly once on the game thread on a later tick, unless `Release(owner)` drops the call first. Any other return (`BadArg`, or `TooMany` for a full queue or no memory) means `done` is never called. Results: `NotFound` (no such live command), `BadArg` (argument count or type differs from the command's `ArgDef`s, a null string, or a `Bool` that isn't 0 or 1), `Unavailable` (capability check), else what the command returned. `reply` is at most 255 characters and always NUL-terminated.
 
+### Services
+
+`ProvideService(owner, prefix, name, version, table)` publishes a function table under a name; `QueryService(name, minVersion, &table)` finds it (same major, at least as new). `Release(owner)` withdraws the owner's services. The host's `provide_service` / `query_service` ([API v1 § Services](api-v1.md#services-11)) call these with the plugin's id as the prefix; a host feature may pass a null prefix. The runtime keeps only the name, version and pointer and never calls the table.
+
 ## `sco/caps.h`: capabilities
 
 Named yes/no answers to "does this feature work on this game build?". `sco_api.has()` and the command capability check answer from here once `sco::host::BuildApi` has run. Every function is safe from any thread.
@@ -157,6 +161,20 @@ struct Platform {
 `Platform` is copied; `builtins`, `scripts` and `hostVersion` must outlive `Stop`.
 
 Call `Stop` from the game's own quit path, on the game thread. The game's menu Quit calls `CSystem::Quit` (`Quit via console command`), then `System Fast Shutdown (ExitOnQuit enabled)`: the process ends without the message loop ever getting `WM_QUIT`, so a `WM_QUIT` hook never runs `Stop` and plugins never see `game.exit`. sc-offline hooks `CSystem::Quit` through the `system.quit` signature row (`sco/game/system.h`, `QuitFunction`: the entry and the 15 prologue bytes a detour may overwrite). Never call `Stop` from `DLL_PROCESS_DETACH`: it runs under the loader lock, at the wrong time. Even from the quit path, `game.exit` is best effort: a crash or a killed process never sends it. Start the host kit regardless of whether any one feature resolved. Why: [framework plan, Lessons](framework.md#lessons). Storage and services ([framework plan, Phase 5](framework.md#phase-5-services-and-storage)) will be further `Platform` fields with defaults.
+
+## `sco/hook.h`: detours and near-code memory
+
+One place that patches game code (library `sco_hook`, x86-64 Windows and Linux), so two features or plugins can't detour the same function or allocate over each other.
+
+| Function | Does |
+|---|---|
+| `InstallDetour(target, stolen, detour, &original)` | Detours `target`. `stolen` (5-32) must be whole instructions with no RIP-relative operand or relative branch: they are copied as-is into the trampoline. A signature row's layout checks pin this, as `sco::game::QuitHook::stolenBytes` does. A relay (14-byte absolute jump to `detour`) and the trampoline (stolen bytes, then a jump back) go in a cave near `target`; `target` becomes `E9 rel32` plus NOPs. `AlreadyHooked` for a second detour on one target |
+| `RemoveDetour(target)` | Restores the stolen bytes; the trampoline stays callable |
+| `AllocateNear(anchor, n)` | `n` bytes (at most 64 KiB) of read/write/execute memory within ±2 GiB of `anchor`, 16-byte aligned, never freed |
+| `WriteCode(at, bytes, n)` | Writes over code: unprotect, copy, restore, flush the instruction cache |
+| `IsHooked(target)`, `DetourCount()`, `ErrorName(e)`, `LastOsError()` | Queries |
+
+Errors: `BadArg`, `AlreadyHooked`, `NoCave`, `Protect` (the OS refused; `LastOsError()`), `NotHooked`, `Unsupported` (not x86-64). Patching isn't atomic against a thread running `target` at that moment: install before the game runs it, or from its own thread. Instruction-length decoding (so callers needn't count stolen bytes) is planned.
 
 ## `sco/pe_file.h`: host tools only
 

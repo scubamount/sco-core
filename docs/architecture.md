@@ -137,6 +137,8 @@ The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../includ
 | `src/api/sco_tasks.cpp` | Game-thread identity, task queue, `GameThreadTick`, `Release` |
 | `src/api/sco_events.cpp` | Event bus |
 | `src/api/sco_commands.cpp` | Command registry and `Invoke` |
+| `src/api/sco_services.cpp` | Service registry (`ProvideService`, `QueryService`) |
+| `src/hook/sco_hook.cpp` | Near caves, `WriteCode`, the detour registry (`sco/hook.h`) |
 | `src/api/sco_caps.cpp` | Capability registry |
 | `src/host/sco_host.cpp` | The host's `sco_api` table and per-plugin handles |
 | `src/api/internal.h` | Callout depth and the per-module halves of `Release`, shared by `src/api/` |
@@ -145,4 +147,5 @@ The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../includ
 | `tests/test_core.cpp` | Unit tests against a synthetic image |
 | `tests/test_runtime.cpp` | Runtime tests (run under ASan+UBSan and ThreadSanitizer) |
 | `tests/test_host.cpp` | Capability and `sco_api` table tests (ASan+UBSan and ThreadSanitizer) |
+| `tests/test_hook.cpp` | Detours over small functions written into executable memory (x86-64) |
 | `tools/sco-sigcheck.cpp` | The offline checker |

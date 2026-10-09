@@ -63,7 +63,8 @@ The build is 64-bit only; configuring for 32 bits stops with an error.
 | Target | Sources | Links |
 |---|---|---|
 | `sco_core` | Scanners, signatures, log/status, PE file loader, `src/game/*.cpp`; on Windows also `sco_image_win.cpp` | |
-| `sco_runtime` | `src/api/sco_tasks.cpp`, `sco_events.cpp`, `sco_commands.cpp` | |
+| `sco_runtime` | `src/api/sco_tasks.cpp`, `sco_events.cpp`, `sco_commands.cpp`, `sco_services.cpp` | |
+| `sco_hook` | `src/hook/sco_hook.cpp`: detours and near-code memory, `sco/hook.h` (x86-64) | |
 | `sco_host` | `src/api/sco_caps.cpp`, `src/host/sco_host.cpp` | `sco_runtime`, `sco_core` |
 | `sco_plugins` | `src/plugins/*.cpp` (`guard_win.cpp` on Windows only) | `sco_runtime`, `sco_core`, `dl` |
 | `sco_lua_vendor` | `plugins/lua/third_party/lua/src/*.c` without `lua.c`/`luac.c` | `m` on Unix |

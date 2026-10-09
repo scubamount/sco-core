@@ -81,6 +81,12 @@ target_link_libraries(sco_host PUBLIC sco_runtime sco_core)
 sco_project_target(sco_host)
 
 # Plugin discovery, plugin.ini, the native loader (with the SEH guard on Windows), content index.
+# Detours and near-code memory (sco/hook.h). Products link it; nothing else in sco-core needs it.
+add_library(sco_hook STATIC src/hook/sco_hook.cpp)
+target_include_directories(sco_hook PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_hook PUBLIC Threads::Threads)
+sco_project_target(sco_hook)
+
 add_library(sco_plugins STATIC
   src/plugins/manifest.cpp src/plugins/discover.cpp src/plugins/loader.cpp src/plugins/content.cpp)
 if(WIN32)
@@ -183,6 +189,10 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_host PRIVATE sco_host)
   sco_project_target(test_host)
   add_test(NAME test_host COMMAND test_host)
+  add_executable(test_hook tests/test_hook.cpp)
+  target_link_libraries(test_hook PRIVATE sco_hook)
+  add_test(NAME test_hook COMMAND test_hook)
+  sco_project_target(test_hook)
 
   # Fake native plugins for test_plugins, laid out like tools/test.sh (tools/test-win.sh on
   # Windows): <out>/plugins/m<mode>/{plugin.ini,m<mode>.<ext>}, m11 a second clean plugin, and
