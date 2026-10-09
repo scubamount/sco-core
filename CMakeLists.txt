@@ -94,6 +94,13 @@ target_include_directories(sco_engine PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_engine PUBLIC Threads::Threads)
 sco_project_target(sco_engine)
 
+# Game-file overrides (sco/vfs.h): virtual files from splices, the reader arithmetic and the mount
+# table. Engine-agnostic: no engine, no Windows; the CryPak adapter comes separately.
+add_library(sco_vfs STATIC src/vfs/compose.cpp src/vfs/table.cpp)
+target_include_directories(sco_vfs PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_vfs PUBLIC Threads::Threads)
+sco_project_target(sco_vfs)
+
 # The DataCore parser and validation (sco/datacore.h): bytes in, tables out. No engine, no Windows.
 add_library(sco_datacore STATIC src/datacore/datacore.cpp)
 target_include_directories(sco_datacore PUBLIC "${SCO_INCLUDE_DIR}")
@@ -222,6 +229,11 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_spatial PRIVATE sco_engine)
   sco_project_target(test_spatial)
   add_test(NAME test_spatial COMMAND test_spatial)
+
+  add_executable(test_vfs tests/test_vfs.cpp)
+  target_link_libraries(test_vfs PRIVATE sco_vfs)
+  sco_project_target(test_vfs)
+  add_test(NAME test_vfs COMMAND test_vfs)
 
   # The DataCore parser over tests/dcb_builder.h fixtures; it also writes the fixtures dcb_tool
   # runs sco-dcb on.
