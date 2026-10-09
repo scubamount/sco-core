@@ -15,7 +15,7 @@
 
 sco-core is the heart: the runtime, the plugin system, the services and the SDK that every mod is built from. A product such as sc-offline is a thin **bootstrap** (inject, patch the game offline, find the main thread, draw a menu) plus a set of **plugins**. sc-offline's own features become plugins built into its DLL, using the same plain-C API ([`sco_api.h`](api-v1.md)) as third-party plugins, so the API is exercised by the code that ships. Another mod suite is another set of plugins on the same core, with sc-offline's bootstrap or its own.
 
-The [scope rules](../sdk/docs/plugin-rules.md) don't change: offline and single-player only, nothing connects to anything, nothing that helps online play, cheating or anti-cheat bypass.
+The [scope rules](../sdk/docs/plugin-rules.md) changed on 2026-10-09 (maintainer's decision): offline play stays the default and the game never connects to Cloud Imperium Games' servers; local IPC with other processes on the same PC and private LAN/VPN co-presence between sc-offline players through `sco.net` are allowed. The bans (online play, getting around anti-cheat, signature-check bypass, forcing the game's host type, unauthenticated remote commands, telemetry, anything that helps cheating) are permanent. The design is `docs/design/multiplayer.md` ([PR #37](https://github.com/scubamount/sco-core/pull/37), in review).
 
 ## Where things stand
 
@@ -44,7 +44,7 @@ The [scope rules](../sdk/docs/plugin-rules.md) don't change: offline and single-
 | First deliverable | **This plan**, reviewed before any sc-offline code changes |
 | Host features' command prefixes | **Reserved by built-in plugins**: built-ins load before any discovered plugin and register their commands first, so each owns its id as a command prefix: a plugin folder with the same id gets `SCO_BAD_ARG` from `register_command` for any command under that prefix (and is refused if it fails its load on that). A disabled or refused built-in leaves its prefix free; discovery doesn't yet refuse a folder by id alone |
 | Signal for `game.exit` | **The game's own quit path**, on the game thread, not `WM_QUIT` and never `DLL_PROCESS_DETACH` ([lesson 1](#1-the-game-quits-without-wm_quit)) |
-| Storage engines | **Local and embedded only** (memory, files, SQLite and similar). Network databases (Postgres, MySQL, Redis, ...) are out of scope: sco-core never connects to anything |
+| Storage engines | **Local and embedded only** (memory, files, SQLite and similar). Network databases (Postgres, MySQL, Redis, ...) are out of scope: storage never leaves the PC, and `sco.net` co-presence is the only network path ([plugin rules](../sdk/docs/plugin-rules.md)) |
 
 ## Architecture
 
