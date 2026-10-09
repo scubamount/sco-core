@@ -572,11 +572,19 @@ static void TestDrift() {
     }
 }
 
+// Options for a batch that reports each refusal instead of refusing the whole batch. Assigned, not
+// aggregate-initialized: guidSeed has no default member initializer (clang -Wmissing-field-initializers).
+static PatchOptions NonAtomic() {
+    PatchOptions o;
+    o.atomic = false;
+    return o;
+}
+
 // Applies one operation to a fresh patch over the normal scene and returns its category; the
 // patch must then emit nothing.
 template <class Fn>
 static Refusal One(const Schema& s, Fn&& fn) {
-    Patch p(s, PatchOptions{ false });
+    Patch p(s, NonAtomic());
     const Status st = fn(p);
     std::vector<sco::vfs::Splice> out;
     const Status e = p.Emit(out);
@@ -669,7 +677,7 @@ static void TestRefusals() {
     CHECK(One(s, [&](Patch& p) { InstanceId x; InstanceSource src; src.field = "x"; return p.AddInstance("Part", src, x); }) == R::BadArgument);
     CHECK(One(s, [&](Patch& p) { InstanceId x; return p.AddInstance("Empty", {}, x); }) == R::None);   // zero-size instances
     {
-        Patch p(s, PatchOptions{ false });
+        Patch p(s, NonAtomic());
         InstanceId bad;
         CHECK(p.AddInstance("Nope", {}, bad).category == R::StructNotFound && !bad.valid());
         CHECK(p.SetPointer(Rec("ShipA"), "engine", bad).category == R::DependencyFailed);
@@ -712,7 +720,7 @@ static void TestAtomic() {
         CHECK(e.category == Refusal::FieldNotFound && out.empty());
     }
     {
-        Patch p(s, PatchOptions{ false });
+        Patch p(s, NonAtomic());
         CHECK(p.OverrideField(Rec("ShipA"), "speed", Value::OfFloat(3)).ok());
         CHECK(!p.OverrideField(Rec("ShipA"), "nope", Value::OfFloat(3)));
         CHECK(!p.AppendElement(Rec("ShipA"), "names", Value::OfFloat(1)));   // refused before any string is added
@@ -812,7 +820,7 @@ static void TestFuzz(uint32_t recordSize) {
         Schema s;
         if (!s.Parse(f)) continue;
         ++parsed;
-        Patch p(s, PatchOptions{ false });
+        Patch p(s, NonAtomic());
         for (const Status& st : RunOps(p)) {
             if (!st) { ++refusedOps; if (st.message.empty()) ++bad; }
         }
