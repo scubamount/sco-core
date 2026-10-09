@@ -95,17 +95,22 @@ function(sco_add_pack id)
     message(FATAL_ERROR "sco_add_pack(${id}): ${_dir}/plugin.ini not found")
   endif()
   # A build folder inside the pack (cmake -B build in the pack's folder) is not part of it.
-  set(_skip_build "")
-  file(RELATIVE_PATH _rel "${_dir}" "${CMAKE_BINARY_DIR}")
+  # Folders named build or out are always left out. Any other build folder is found by comparing
+  # real paths: Windows can spell one folder two ways (C:/Users/RUNNER~1 and C:/Users/runneradmin).
+  file(REAL_PATH "${_dir}" _dir)
+  file(REAL_PATH "${CMAKE_BINARY_DIR}" _bin)
+  set(_skip_build PATTERN "build" EXCLUDE PATTERN "out" EXCLUDE)
+  file(RELATIVE_PATH _rel "${_dir}" "${_bin}")
   if(NOT _rel STREQUAL "" AND NOT IS_ABSOLUTE "${_rel}" AND NOT _rel MATCHES "^\\.\\.(/|$)")
     string(REGEX REPLACE "/.*" "" _top "${_rel}")
     set(_esc "${_dir}/${_top}")
     foreach(_c "\\" "." "+" "*" "?" "^" "$" "(" ")" "[" "]" "|")
       string(REPLACE "${_c}" "\\${_c}" _esc "${_esc}")
     endforeach()
-    set(_skip_build REGEX "^${_esc}(/.*)?$" EXCLUDE)
+    list(APPEND _skip_build REGEX "^${_esc}(/.*)?$" EXCLUDE)
   endif()
-  # Nothing to compile: the pack's folder is the plugin.
+  # Nothing to compile: the pack's folder is the plugin. Installed from the real path, the same
+  # spelling the REGEX above was built from.
   install(DIRECTORY "${_dir}/" DESTINATION "data/plugins/${id}"
           PATTERN "CMakeLists.txt" EXCLUDE ${_skip_build})
 endfunction()

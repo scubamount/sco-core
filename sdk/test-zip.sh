@@ -121,14 +121,15 @@ cmake -S "$WORK/mine" -B "$WORK/mine/build" -DSCO_SDK="$ROOT" -DCMAKE_BUILD_TYPE
 cmake --build "$WORK/mine/build" --config Release
 
 # The Lua and data-pack examples configure and install on their own too: project(... NONE), so
-# no compiler is enabled and the 64-bit check must not fire. greeter builds in its own folder
-# (cmake -B build inside the pack): that build folder must not be installed with the pack.
+# no compiler is enabled and the 64-bit check must not fire. greeter builds in its own folder,
+# under a name other than build or out (those are always left out): that build folder must not be
+# installed with the pack, however the platform spells the temp path.
 for ex in greeter travel_pack; do
-  if [ $ex = greeter ]; then B="$ROOT/examples/$ex/build"; else B="$WORK/$ex-build"; fi
+  if [ $ex = greeter ]; then B="$ROOT/examples/$ex/my-build"; else B="$WORK/$ex-build"; fi
   cmake -S "$ROOT/examples/$ex" -B "$B"
   cmake --install "$B" --config Release --prefix "$WORK/$ex-out"
   "$CHECK" "$WORK/$ex-out/data/plugins/$ex"
-  for f in build CMakeLists.txt; do
+  for f in my-build CMakeLists.txt; do
     [ ! -e "$WORK/$ex-out/data/plugins/$ex/$f" ] || { echo "sco_add_pack($ex) installed $f"; exit 1; }
   done
 done
