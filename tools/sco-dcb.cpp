@@ -73,9 +73,9 @@ static void PrintInfo(const char* path, const Schema& s) {
     std::printf("record size: %u bytes (derived from the totals; the header has no field for it)\n\n", s.recordSize);
     std::printf("%-22s %12s %10s %6s %12s\n", "table", "offset", "count", "entry", "bytes");
     for (const auto& t : s.tables) {
-        char entry[16] = "-";
+        char entry[24] = "-";
         if (t.entrySize) std::snprintf(entry, sizeof(entry), "%llu", static_cast<ull>(t.entrySize));
-        char count[16] = "-";
+        char count[24] = "-";
         if (t.entrySize || t.name == "data") std::snprintf(count, sizeof(count), "%llu", static_cast<ull>(t.count));
         std::printf("%-22s %12llu %10s %6s %12llu\n", t.name.c_str(), static_cast<ull>(t.offset), count, entry,
                     static_cast<ull>(t.bytes));
