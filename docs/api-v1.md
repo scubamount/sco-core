@@ -284,6 +284,7 @@ Some services are published by the host itself rather than by a plugin. They liv
 | Service | Version | Header | What |
 |---|---|---|---|
 | `sco.storage` | 1.0 | [`sco_storage.h`](../include/sco_storage.h) | Per-plugin persistent storage: key-value and SQL over SQLite, in the plugin's own database. [Storage](storage.md) |
+| `sco.ui` | 1.0 | [`sco_ui.h`](../include/sco_ui.h) | Tabs, overlays and badges in the product's menu, drawn by the product through the plugin's draw function, and hotkeys: key chords bound to commands. [UI](ui.md) |
 
 `sco.datacore` ([design § 6](design/vfs-datacore.md#6-plugins-the-scodatacore-service)) will be the next one. The host side is `sco::host::ProvideHostService` ([API: sco/host.h](api.md#scohosth-the-hosts-sco_api-table)).
 

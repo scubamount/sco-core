@@ -40,6 +40,8 @@ A disabled script stays listed but does nothing: its event callbacks stop, its c
 | `sco.register_command(t)` | `true`, or `false, err` | Registers a command (below) |
 | `sco.invoke(name, ...)` | `true, reply`, or `false, err[, reply]` | Runs any command, sc-offline's or a plugin's, now. Arguments must match the command's types exactly (`int` takes an integer, not `"2"` or `2.0`). When the command itself fails, the third value is its reply |
 | `sco.list_commands()` | table | `{ {name, title, help, capability, args = { {name, type, help}, ... } }, ... }` |
+| `sco.bind_hotkey(chord, command, ...)` | `true` or `false, why, message` | Binds a key chord (`"ctrl+alt+h"`) to a command with the extra values as its arguments: typed by the command's definition when it is registered, else by their Lua types. `message` names who holds a taken chord. Withdrawn when the script unloads. Needs the host service `sco.ui` (`unavailable` without it). Tabs and overlays from Lua come later |
+| `sco.unbind_hotkey(chord)` | `true` or `false, why, message` | Removes the script's own binding |
 
 `err` is the result name from the C API in lower case: `"bad_arg"`, `"unavailable"`, `"not_found"`, `"too_many"`, `"crashed"`.
 

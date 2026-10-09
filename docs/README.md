@@ -10,6 +10,7 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 | [Plugin API v1](api-v1.md) | `sco_api.h`: exports, the host table, commands, events, capabilities, threading, compatibility, layout |
 | [C++ SDK](sdk-cpp.md) | `include/scosdk/`: the C++20 layer over `sco_api.h`: plugin class, commands, services, raw handlers, storage, lifetimes, the exception boundary |
 | [Storage](storage.md) | The host service `sco.storage`: per-plugin key-value and SQL over SQLite, transactions, crash safety, what SQL may run, limits |
+| [UI](ui.md) | The host service `sco.ui`: tabs, overlays and badges in the product's menu, hotkeys bound to commands, chords, conflicts, hosting it |
 | [plugin.ini](../sdk/docs/plugin-ini.md) | Every key of the plugin manifest |
 | [Data packs](../sdk/docs/data-packs.md) | Missions, rules, scripts and lists without code |
 | [Lua plugins](../sdk/docs/lua.md) | The `sco` table, the sandbox and its limits |

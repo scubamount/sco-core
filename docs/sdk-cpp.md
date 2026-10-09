@@ -27,6 +27,7 @@ The C++20 layer of the sco plugin SDK: header-only, over [`sco_api.h`](api-v1.md
 | [`scosdk/service.hpp`](../include/scosdk/service.hpp) | `Provide`, `Release`, `ServiceRef<T>`, `HasMember`, `ServiceVersion` |
 | [`scosdk/raw.hpp`](../include/scosdk/raw.hpp) | `RegisterRaw<In, Out>`, `InvokeRaw`, `RegisterRawBytes`, `InvokeRawBytes` |
 | [`scosdk/storage.hpp`](../include/scosdk/storage.hpp) | `Storage`, `StorageCursor`, `StorageTransaction`, `SqlInt` / `SqlFloat` / `SqlText` / `SqlBlob` / `SqlNull` (the host service `sco.storage`, [`sco_storage.h`](../include/sco_storage.h)); not in `scosdk.hpp`, include it when you use storage |
+| [`scosdk/ui.hpp`](../include/scosdk/ui.hpp) | `Ui`: tabs, overlays, badges and hotkeys (the host service `sco.ui`, [`sco_ui.h`](../include/sco_ui.h)); not in `scosdk.hpp`, include it when you use UI |
 | [`scosdk/scosdk.hpp`](../include/scosdk/scosdk.hpp) | All of the above |
 
 Put the SDK's `include/` folder on the include path; the headers find `sco_api.h` there.
@@ -142,6 +143,28 @@ if (store.Open(*this) == SCO_OK) {
 - Every call is `noexcept` and answers `sco_result` (out of memory is `SCO_TOO_MANY`); `LastError()` has the message of the last failure.
 - `StorageCursor` is move-only and closes its cursor on destruction; `Int`, `Float`, `Text`, `Blob` and `Value` read the current row. `Keys(prefix, out)` lists keys in byte order.
 - The transaction is the plugin's, not the thread's ([Storage § Threads](storage.md#threads)).
+
+## UI
+
+`sco::sdk::Ui` wraps the host service [`sco.ui`](ui.md): tabs and overlays the product draws through your draw function, badges, and hotkeys bound to commands. Keep the `Ui` for the plugin's life.
+
+```cpp
+#include "scosdk/ui.hpp"
+
+struct Panel { void Draw(void* frame) { /* the product's frame context (sc-offline: ImGui) */ } };
+static Panel g_panel;
+
+sco::sdk::Ui ui;
+if (ui.Open(*this) == SCO_OK) {
+    ui.AddTab("hello.main", "Hello", 100, g_panel);     // or (id, title, order, draw_fn, ctx)
+    ui.SetBadge("hello.main", "3");
+    if (ui.BindHotkey("ctrl+alt+h", "hello.wave", { sco::sdk::MakeArg("Pilot") }) != SCO_OK)
+        Warn("hotkey: %s", ui.LastError().c_str());   // "ctrl+alt+h is bound by 'other' to other.cmd"
+}
+```
+
+- The object passed to `AddTab` / `AddOverlay` is borrowed until `RemoveTab` / `RemoveOverlay` or unload; an exception from its `Draw` is caught and dropped.
+- Draws run on the game thread; registration and hotkeys work from any thread ([UI § Threads](ui.md#threads)).
 
 ## Lifetimes
 

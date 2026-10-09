@@ -162,7 +162,7 @@ struct Platform {
 |---|---|
 | `bool app::Start(const Platform& pf)` | `SetGameThread`; with `image`, `RegisterGameSignatures` and `ResolveAll(*image)`; `setCapabilities()`; `host::BuildApi`; with `dataRoot`, `storage::Start` (a failure is logged `[app] storage not started: <RESULT>`); the list (every built-in, then `Discover(pluginRoot)` when `pluginsEnabled`); `ContainCallouts`; `LoadBuiltin` for the built-ins, then `LoadNative` / `LoadScript` in list order (a `lua` plugin is refused `no script runtime` without `scripts`); the content index; with `image`, `LogSignatureReport(false)`; `LogReport`; dispatches `game.ready`. Problems are logged, never fatal. False (nothing changes) when already started |
 | `void app::Tick(uint32_t nowMs)` | `GameThreadTick(nowMs)`. No-op unless started |
-| `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last), `storage::Stop`, `host::WithdrawHostServices` (host services outlive every plugin) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
+| `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last), `storage::Stop`, `ui::Stop`, `host::WithdrawHostServices` (host services outlive every plugin) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
 | `const std::vector<plugins::Plugin>& app::Plugins()` | The list of the last `Start` (built-ins first), final states after `Stop`. Never resized between two `Start`s |
 | `const plugins::ContentIndex& app::Content()` | The data-pack index of the last `Start` |
 
@@ -189,6 +189,25 @@ struct Options {
 | `Result storage::Start(const Options& o)` | Publishes `sco.storage` 1.0 with `host::ProvideHostService` and installs a release hook, so `Release(self)` rolls back the plugin's transaction and closes its cursors and database. `BadArg`: empty `dataRoot`, `budgetMs` 0, already started. The folder is created on the first call |
 | `void storage::Stop()` | Withdraws the service, rolls back open transactions, closes every database; the table then answers `SCO_UNAVAILABLE`. No-op unless started. Call after every plugin has unloaded |
 | `bool storage::Started()`, `const sco_storage_v1* storage::Table()`, `fs::path storage::DatabasePath(const char* id)` | State, the table `query_service` hands out, and a plugin's database path (empty unless started) |
+
+## `sco/ui.h`: the `sco.ui` service
+
+The host side of [`sco.ui`](ui.md) (library `sco_ui`): the registry of plugin tabs, overlays and badges and the hotkey table. No renderer: the product draws what is registered. `sco::app::Start` calls `ui::Start` and reserves `Platform::reservedChords`; other hosts call them themselves.
+
+| Function | Does |
+|---|---|
+| `Result ui::Start()` | Publishes `sco.ui` 1.0 with `host::ProvideHostService` and installs a release hook, so `Release(self)` withdraws everything the plugin registered. `BadArg`: already started |
+| `void ui::Stop()` | Withdraws the service and clears every tab, overlay, binding, reservation and message; the table then answers `SCO_UNAVAILABLE`. No-op unless started. Call after every plugin has unloaded |
+| `bool ui::Started()`, `const sco_ui_v1* ui::Table()` | State, and the table `query_service` hands out |
+| `bool ui::NormalizeChord(text, std::string& out)` | The chord grammar ([UI § Hotkeys](ui.md#hotkeys)): `"Alt + Ctrl + Esc"` -> `"ctrl+alt+escape"`. False for anything else. Any thread |
+| `Result ui::ReserveChord(chord)` | A chord the product handles itself: plugins can't bind it, `Dispatch` answers `NotFound`. `BadArg`: not a chord, or a plugin holds it. `Unavailable` before `Start` |
+| `std::vector<TabInfo> ui::Tabs()` | Live tabs (`id`, `title`, `badge`, `owner`, `order`) by ascending order, ties in registration order. Any thread |
+| `std::vector<OverlayInfo> ui::Overlays()`, `std::string ui::Badge(id)`, `std::vector<HotkeyInfo> ui::Hotkeys()`, `ui::ReservedChords()` | Overlays in registration order; one tab's badge; bindings (`chord`, `command`, `owner`, `nargs`) and reservations sorted by chord. Any thread |
+| `Result ui::DrawTab(id, void* frame)` | Calls the tab's `draw(frame, ctx)` now, as a callout of its owner (the crash guard; where = the id). `NotFound`, `WrongThread` (game thread only), `Crashed` (the plugin faulted and was released) |
+| `size_t ui::DrawOverlays(void* frame)` | Every overlay in registration order, each as a callout; returns how many completed. Game thread |
+| `Result ui::Dispatch(chord, std::string* reply)` | Invokes the bound command with its stored args and the binding's plugin as the caller (`sco::Invoke`). On the game thread it runs now and fills `reply`; elsewhere it is queued. `NotFound`: no binding, a reserved chord, or no such command |
+
+Limits: `kMaxTabs` and `kMaxOverlays` 256, `kMaxHotkeys` 512, `kMaxReserved` 256.
 
 ## `sco/hook.h`: detours and near-code memory
 
