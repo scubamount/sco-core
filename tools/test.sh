@@ -226,7 +226,8 @@ for f in "$LUA_SRC"/*.c "$ROOT/plugins/lua/sco_lua.c"; do
 done
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_lua.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
   "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
-  "$ROOT/src/ui/ui.cpp" "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}" "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
+  "$ROOT/src/ui/ui.cpp" "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}" "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN" \
+  "${LUA_OBJS[@]}" -ldl -lm -o "$OUT/test_lua"
 "$OUT/test_lua" "$ROOT/sdk" "$OUT"
 
 # The host kit (sco/app.h): built-ins, the fake plugins m0 and m11, greeter and travel_pack through

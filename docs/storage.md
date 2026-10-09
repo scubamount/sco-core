@@ -167,4 +167,4 @@ Data lives in `<dataRoot>/storage/<plugin id>.db` (plus SQLite's `-wal` and `-sh
 
 ## Lua
 
-sco-lua has no service bindings yet (it doesn't query any service today). `sco.store.get/put/delete/list` and `sco.store.sql` for scripts, counting against the step budget, are planned as a follow-up (G018); until then storage is for native and C++ plugins.
+Lua plugins use storage through `sco.store` in sco-lua ([Lua reference](../sdk/docs/lua.md#scostore)): `get`, `put`, `delete`, `keys`, `begin` / `commit` / `rollback`, `exec`, and `sql`, which returns rows as tables (at most 1000) or passes each row to a function. Errors are `nil, err, message` with this service's `last_error`. Each call and each row read counts against the script's step budget; `sql` closes its cursor on every path, including a script error in the row function and the budget running out. The binding queries the service on each call, so a host without it answers `nil, "unavailable"`. Covered by `tests/test_lua.cpp` (round trip, two scripts isolated, SQL with parameters, cursors after errors and an overrun, an older host) and the SDK example `examples/notebook`.

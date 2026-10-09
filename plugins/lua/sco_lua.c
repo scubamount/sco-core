@@ -14,6 +14,7 @@
 #include "lauxlib.h"
 #include "lualib.h"
 #include "sco_datacore.h"
+#include "sco_storage.h"
 #include "sco_ui.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -862,6 +863,356 @@ static void DataCoreTypes(lua_State* L) {
     lua_pop(L, 1);
 }
 
+/* ---- sco.store (the host service sco_storage.h) --------------------------------------------- */
+
+#define STORE_CURSOR   "sco-lua.cursor"
+#define STORE_STEPS    100    /* steps per storage call, and per row or key read */
+#define STORE_MAX_ROWS 1000   /* rows sco.store.sql returns as a table */
+#define STORE_MAX_KEYS 1000   /* keys one sco.store.keys call returns */
+#define STORE_MAX_PARAMS 32
+
+typedef struct StoreCursor { uint64_t id; int open; } StoreCursor;
+
+/* The service as the host publishes it now; NULL on a host without it (a 1.0 host, or a product
+ * without a data folder). */
+static const sco_storage_v1* Storage(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service) || !s->api->query_service) return NULL;
+    if (s->api->query_service(SCO_STORAGE_NAME, SCO_STORAGE_VERSION_1_0, &t) != SCO_OK) return NULL;
+    return (const sco_storage_v1*)t;
+}
+
+/* nil, the result's name and the host's message (when it left one): every sco.store error. */
+static int StoreFail(lua_State* L, const Script* s, const sco_storage_v1* st, sco_result r) {
+    char msg[256];
+    uint32_t size = sizeof(msg);
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(r));
+    if (!st) { lua_pushliteral(L, "sco.storage is not available on this host"); return 3; }
+    if (st->last_error(s->self, msg, &size) == SCO_OK && msg[0]) { lua_pushstring(L, msg); return 3; }
+    return 2;
+}
+
+/* nil, "bad_arg", why: a call sco-lua refuses before the host sees it. */
+static int StoreBad(lua_State* L) {
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(SCO_BAD_ARG));
+    lua_pushliteral(L, "a key or SQL with a NUL byte, a value over 1 MiB, or a bad parameter list or limit");
+    return 3;
+}
+
+/* Argument i as a string without embedded NULs (keys and SQL are C strings). NULL: it has one. */
+static const char* CString(lua_State* L, int i) {
+    size_t n = 0;
+    const char* p = luaL_checklstring(L, i, &n);
+    return strlen(p) == n ? p : NULL;
+}
+
+/* Every call starts here: one charge to the step budget, then the table (NULL: unavailable). */
+static const sco_storage_v1* StoreCall(lua_State* L, Script** out) {
+    *out = Of(L);
+    sco_lua_step(L, STORE_STEPS);
+    return Storage(*out);
+}
+
+static int L_store_available(lua_State* L) {
+    lua_pushboolean(L, Storage(Of(L)) != NULL);
+    return 1;
+}
+
+/* get(key): the value as a string, nil when there is none, or nil, err, message. */
+static int L_store_get(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    const char* key = CString(L, 1);
+    if (!st) return StoreFail(L, s, st, SCO_UNAVAILABLE);
+    if (!key) return StoreBad(L);
+    for (int tries = 0; tries < 3; ++tries) {   /* the size can change between the two calls */
+        uint32_t size = 0;
+        sco_result r = st->get(s->self, key, NULL, &size);
+        if (r == SCO_NOT_FOUND) { lua_pushnil(L); return 1; }
+        if (r == SCO_OK) { lua_pushliteral(L, ""); return 1; }
+        if (r != SCO_TOO_MANY) return StoreFail(L, s, st, r);
+        luaL_Buffer b;
+        char* buf = luaL_buffinitsize(L, &b, size);
+        r = st->get(s->self, key, buf, &size);
+        if (r == SCO_OK) { luaL_pushresultsize(&b, size); return 1; }
+        lua_pop(L, 1);                          /* the buffer */
+        if (r == SCO_NOT_FOUND) { lua_pushnil(L); return 1; }
+        if (r != SCO_TOO_MANY) return StoreFail(L, s, st, r);
+    }
+    return StoreFail(L, s, st, SCO_FAILED);
+}
+
+/* put(key, value): true, or nil, err, message. */
+static int L_store_put(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    const char* key = CString(L, 1);
+    size_t n = 0;
+    luaL_checktype(L, 2, LUA_TSTRING);
+    const char* value = lua_tolstring(L, 2, &n);
+    if (!st) return StoreFail(L, s, st, SCO_UNAVAILABLE);
+    if (!key || n > SCO_STORAGE_MAX_VALUE) return StoreBad(L);
+    const sco_result r = st->put(s->self, key, value, (uint32_t)n);
+    if (r != SCO_OK) return StoreFail(L, s, st, r);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+/* delete(key): true when it removed a value, false when there was none, or nil, err, message. */
+static int L_store_delete(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    const char* key = CString(L, 1);
+    if (!st) return StoreFail(L, s, st, SCO_UNAVAILABLE);
+    if (!key) return StoreBad(L);
+    const sco_result r = st->del(s->self, key);
+    if (r != SCO_OK && r != SCO_NOT_FOUND) return StoreFail(L, s, st, r);
+    lua_pushboolean(L, r == SCO_OK);
+    return 1;
+}
+
+/* keys([prefix [, after [, limit]]]): a list of at most limit (default and most STORE_MAX_KEYS)
+ * keys starting with prefix, sorting after `after`, in byte order; pass the last one back as
+ * after for the next page. Or nil, err, message. */
+static int L_store_keys(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    const char* prefix = lua_isnoneornil(L, 1) ? NULL : CString(L, 1);
+    const char* after = lua_isnoneornil(L, 2) ? NULL : CString(L, 2);
+    const lua_Integer limit = luaL_optinteger(L, 3, STORE_MAX_KEYS);
+    if (!st) return StoreFail(L, s, st, SCO_UNAVAILABLE);
+    if ((!prefix && !lua_isnoneornil(L, 1)) || (!after && !lua_isnoneornil(L, 2)) ||
+        limit < 1 || limit > STORE_MAX_KEYS)
+        return StoreBad(L);
+    char key[SCO_STORAGE_MAX_KEY + 1];
+    lua_createtable(L, 0, 0);
+    const int list = lua_gettop(L);
+    for (lua_Integer n = 0; n < limit; ++n) {
+        uint32_t size = sizeof(key);
+        const sco_result r = st->next_key(s->self, prefix, after, key, &size);
+        if (r == SCO_NOT_FOUND) break;
+        if (r != SCO_OK) return StoreFail(L, s, st, r);
+        lua_pushstring(L, key);
+        after = lua_tostring(L, -1);           /* kept alive by the list */
+        lua_rawseti(L, list, n + 1);
+        if (n + 1 < limit) sco_lua_step(L, STORE_STEPS);
+    }
+    lua_settop(L, list);
+    return 1;
+}
+
+static int StoreTx(lua_State* L, sco_result (*fn)(sco_plugin*), const sco_storage_v1* st, Script* s) {
+    if (!st) return StoreFail(L, s, st, SCO_UNAVAILABLE);
+    const sco_result r = fn(s->self);
+    if (r != SCO_OK) return StoreFail(L, s, st, r);
+    lua_pushboolean(L, 1);
+    return 1;
+}
+
+static int L_store_begin(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    return StoreTx(L, st ? st->begin : NULL, st, s);
+}
+
+static int L_store_commit(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    return StoreTx(L, st ? st->commit : NULL, st, s);
+}
+
+static int L_store_rollback(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    return StoreTx(L, st ? st->rollback : NULL, st, s);
+}
+
+/* The parameter list at index i (nil, or a list: integer, number, string, boolean as 0/1; its
+ * field n, when set, counts trailing nils as NULL). Strings stay referenced by the list. 0 when
+ * a value has another type or there are too many. */
+static int ToParams(lua_State* L, int i, sco_sql_value* p, uint32_t* n) {
+    *n = 0;
+    if (lua_isnoneornil(L, i)) return 1;
+    luaL_checktype(L, i, LUA_TTABLE);
+    lua_Integer count = (lua_Integer)lua_rawlen(L, i);
+    lua_getfield(L, i, "n");
+    if (lua_isinteger(L, -1)) count = lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    if (count < 0 || count > STORE_MAX_PARAMS) return 0;
+    for (lua_Integer k = 1; k <= count; ++k) {
+        sco_sql_value* v = &p[k - 1];
+        memset(v, 0, sizeof(*v));
+        const int ty = lua_rawgeti(L, i, k);
+        switch (ty) {
+            case LUA_TNIL: v->type = SCO_SQL_NULL; break;
+            case LUA_TBOOLEAN: v->type = SCO_SQL_INT; v->v.i = lua_toboolean(L, -1); break;
+            case LUA_TNUMBER:
+                if (lua_isinteger(L, -1)) { v->type = SCO_SQL_INT; v->v.i = (int64_t)lua_tointeger(L, -1); }
+                else { v->type = SCO_SQL_FLOAT; v->v.f = (double)lua_tonumber(L, -1); }
+                break;
+            case LUA_TSTRING: {
+                size_t len = 0;
+                v->type = SCO_SQL_TEXT;
+                v->v.p = lua_tolstring(L, -1, &len);   /* the list keeps the string alive */
+                if (len > UINT32_MAX) { lua_pop(L, 1); return 0; }
+                v->size = (uint32_t)len;
+                break;
+            }
+            default: lua_pop(L, 1); return 0;
+        }
+        lua_pop(L, 1);
+    }
+    *n = (uint32_t)count;
+    return 1;
+}
+
+/* exec(sql [, params]): the number of rows changed, or nil, err, message. */
+static int L_store_exec(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    const char* sql = CString(L, 1);
+    sco_sql_value params[STORE_MAX_PARAMS];
+    uint32_t n = 0;
+    const int ok = ToParams(L, 2, params, &n);
+    if (!st) return StoreFail(L, s, st, SCO_UNAVAILABLE);
+    if (!sql || !ok) return StoreBad(L);
+    int64_t changes = 0;
+    const sco_result r = st->exec(s->self, sql, n ? params : NULL, n, &changes);
+    if (r != SCO_OK) return StoreFail(L, s, st, r);
+    lua_pushinteger(L, (lua_Integer)changes);
+    return 1;
+}
+
+/* The cursor's __close: runs when sql returns and when an error unwinds through it (a script
+ * error in the row callback, the step budget, no memory), so no path leaves a cursor open. */
+static int L_cursor_close(lua_State* L) {
+    StoreCursor* c = (StoreCursor*)lua_touserdata(L, 1);
+    if (c && c->open) {
+        c->open = 0;
+        const sco_storage_v1* st = Storage(Of(L));
+        if (st) st->close(Of(L)->self, c->id);
+    }
+    return 0;
+}
+
+/* Pushes the current row as { column = value, ... } (NULL columns are absent). names: the list
+ * of column names. */
+static sco_result PushRow(lua_State* L, const sco_storage_v1* st, const Script* s, uint64_t cur,
+                          int names, uint32_t ncols) {
+    lua_createtable(L, 0, (int)ncols);
+    for (uint32_t i = 0; i < ncols; ++i) {
+        sco_sql_value v;
+        memset(&v, 0, sizeof(v));
+        sco_result r = st->column(s->self, cur, i, &v, NULL, NULL);
+        if (r != SCO_OK) return r;
+        switch (v.type) {
+            case SCO_SQL_NULL: continue;
+            case SCO_SQL_INT: lua_pushinteger(L, (lua_Integer)v.v.i); break;
+            case SCO_SQL_FLOAT: lua_pushnumber(L, (lua_Number)v.v.f); break;
+            case SCO_SQL_TEXT: case SCO_SQL_BLOB: {
+                uint32_t size = v.size + (v.type == SCO_SQL_TEXT ? 1u : 0u);
+                luaL_Buffer b;
+                char* buf = luaL_buffinitsize(L, &b, size ? size : 1);
+                r = size ? st->column(s->self, cur, i, &v, buf, &size) : SCO_OK;
+                if (r != SCO_OK) return r;
+                luaL_pushresultsize(&b, v.size);
+                break;
+            }
+            default: return SCO_FAILED;
+        }
+        lua_rawgeti(L, names, (lua_Integer)i + 1);
+        lua_insert(L, -2);
+        lua_rawset(L, -3);
+    }
+    return SCO_OK;
+}
+
+/* sql(sql [, params [, fn]]): without fn, a list of rows (at most STORE_MAX_ROWS; more is
+ * too_many); with fn, fn(row) for each row until it returns false, then true. Or nil, err,
+ * message. Each row counts STORE_STEPS against the step budget. */
+static int L_store_sql(lua_State* L) {
+    Script* s;
+    const sco_storage_v1* st = StoreCall(L, &s);
+    const char* sql = CString(L, 1);
+    sco_sql_value params[STORE_MAX_PARAMS];
+    uint32_t n = 0;
+    const int ok = ToParams(L, 2, params, &n);
+    const int fn = !lua_isnoneornil(L, 3);
+    if (fn) luaL_checktype(L, 3, LUA_TFUNCTION);
+    if (!st) return StoreFail(L, s, st, SCO_UNAVAILABLE);
+    if (!sql || !ok) return StoreBad(L);
+    lua_settop(L, 3);
+    /* The guard first: allocating it can fail, opening the cursor after it can't leak. */
+    StoreCursor* c = (StoreCursor*)lua_newuserdatauv(L, sizeof(StoreCursor), 0);
+    c->id = 0;
+    c->open = 0;
+    luaL_setmetatable(L, STORE_CURSOR);
+    lua_toclose(L, 4);
+    lua_createtable(L, 0, 0);                   /* 5: column names */
+    lua_createtable(L, fn ? 0 : 8, 0);          /* 6: rows */
+    sco_result r = st->query(s->self, sql, n ? params : NULL, n, &c->id);
+    if (r != SCO_OK) return StoreFail(L, s, st, r);
+    c->open = 1;
+    uint32_t ncols = 0;
+    r = st->column_count(s->self, c->id, &ncols);
+    for (uint32_t i = 0; i < ncols && r == SCO_OK; ++i) {
+        char name[256];
+        uint32_t size = sizeof(name);
+        r = st->column_name(s->self, c->id, i, name, &size);
+        if (r == SCO_TOO_MANY) {                /* a long name: ask its size */
+            luaL_Buffer b;
+            char* buf = luaL_buffinitsize(L, &b, size);
+            r = st->column_name(s->self, c->id, i, buf, &size);
+            if (r == SCO_OK) luaL_pushresultsize(&b, size ? size - 1 : 0);
+        } else if (r == SCO_OK) {
+            lua_pushstring(L, name);
+        }
+        if (r == SCO_OK) lua_rawseti(L, 5, (lua_Integer)i + 1);
+    }
+    lua_Integer rows = 0;
+    while (r == SCO_OK) {
+        sco_lua_step(L, STORE_STEPS);
+        r = st->step(s->self, c->id);
+        if (r == SCO_NOT_FOUND) { r = SCO_OK; break; }
+        if (r != SCO_OK) break;
+        if (!fn && rows == STORE_MAX_ROWS) {
+            lua_closeslot(L, 4);
+            lua_pushnil(L);
+            lua_pushstring(L, ResultName(SCO_TOO_MANY));
+            lua_pushfstring(L, "more than %d rows: add a LIMIT, or pass a function", STORE_MAX_ROWS);
+            return 3;
+        }
+        if (fn) lua_pushvalue(L, 3);
+        r = PushRow(L, st, s, c->id, 5, ncols);
+        if (r != SCO_OK) break;
+        if (!fn) { lua_rawseti(L, 6, ++rows); continue; }
+        lua_call(L, 1, 1);                      /* an error here unwinds through the guard */
+        const int stop = lua_type(L, -1) == LUA_TBOOLEAN && !lua_toboolean(L, -1);
+        lua_settop(L, 6);
+        if (stop) break;
+    }
+    if (r != SCO_OK) {
+        const int got = StoreFail(L, s, st, r);   /* last_error before close overwrites it */
+        lua_closeslot(L, 4);
+        return got;
+    }
+    lua_closeslot(L, 4);
+    if (fn) lua_pushboolean(L, 1);
+    else lua_pushvalue(L, 6);
+    return 1;
+}
+
+static void StoreTypes(lua_State* L) {
+    luaL_newmetatable(L, STORE_CURSOR);
+    lua_pushcfunction(L, L_cursor_close);
+    lua_setfield(L, -2, "__close");
+    lua_pushboolean(L, 0);
+    lua_setfield(L, -2, "__metatable");
+    lua_pop(L, 1);
+}
+
 /* ---- sco.ui hotkeys (tabs and overlays need draw callbacks from Lua: G018) ------------------ */
 
 static const sco_ui_v1* UiTable(const Script* s) {
@@ -1021,6 +1372,16 @@ static int SetupBody(lua_State* L) {
     lua_pushinteger(L, s->api->minor);
     lua_setfield(L, -2, "api_minor");
     DataCoreTypes(L);
+    StoreTypes(L);
+    {                                                 /* sco.store: always there; unavailable without sco.storage */
+        static const luaL_Reg stfns[] = {
+            { "available", L_store_available }, { "get", L_store_get }, { "put", L_store_put },
+            { "delete", L_store_delete }, { "keys", L_store_keys }, { "begin", L_store_begin },
+            { "commit", L_store_commit }, { "rollback", L_store_rollback }, { "exec", L_store_exec },
+            { "sql", L_store_sql }, { NULL, NULL } };
+        luaL_newlib(L, stfns);
+        lua_setfield(L, -2, "store");
+    }
     if (DataCore(s)) {                                /* sco.datacore: only when the host publishes it */
         static const luaL_Reg dcfns[] = { { "begin", L_dc_begin }, { "state", L_dc_state }, { NULL, NULL } };
         luaL_newlib(L, dcfns);

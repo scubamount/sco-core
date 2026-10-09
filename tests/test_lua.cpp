@@ -10,9 +10,11 @@
 #include "sco/plugins.h"
 #include "sco/runtime.h"
 #include "sco/status.h"
+#include "sco/storage.h"
 #include "sco/ui.h"
 #include "../plugins/lua/sco_lua.h"
 #include <csignal>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -53,13 +55,13 @@ struct Loaded {
 };
 
 // Discovers the root and loads plugin `id` (a fresh handle each time).
-static Loaded Load(const std::string& id) {
+static Loaded Load(const std::string& id, const sco_api* api = nullptr) {
     Loaded l;
     P::Options opts;
     opts.enabled = true;
     l.list = P::Discover(g_root, opts);
     for (auto& p : l.list) if (p.folder == id) l.p = &p;
-    if (l.p && l.p->state == State::Ready) P::LoadScript(*l.p, g_api, sco::host::NewPlugin(id.c_str()), kLua);
+    if (l.p && l.p->state == State::Ready) P::LoadScript(*l.p, api ? api : g_api, sco::host::NewPlugin(id.c_str()), kLua);
     return l;
 }
 
@@ -513,6 +515,184 @@ end }
     svc::Stop();
 }
 
+// ---- sco.store (over the host service sco.storage) ---------------------------------------------
+
+// Opens and closes SCO_STORAGE_MAX_CURSORS cursors as `self`: true when none was refused, so the
+// script left no cursor open.
+static bool AllCursorsFree(sco_plugin* self) {
+    const sco_storage_v1* st = sco::storage::Table();
+    std::vector<uint64_t> ids;
+    bool ok = true;
+    for (uint32_t i = 0; i < SCO_STORAGE_MAX_CURSORS; ++i) {
+        uint64_t id = 0;
+        if (st->query(self, "SELECT 1", nullptr, 0, &id) != SCO_OK) { ok = false; break; }
+        ids.push_back(id);
+    }
+    for (uint64_t id : ids) st->close(self, id);
+    return ok;
+}
+
+static void TestStore(const fs::path& sdk) {
+    // A host without the service: sco.store is there, every call answers unavailable.
+    static const char* const kNone = R"lua(
+        assert(sco.store.available() == false)
+        local v, err, msg = sco.store.get("a")
+        assert(v == nil and err == "unavailable" and msg == "sco.storage is not available on this host", tostring(msg))
+        assert(select(2, sco.store.put("a", "b")) == "unavailable")
+        assert(select(2, sco.store.sql("SELECT 1")) == "unavailable")
+        assert(select(2, sco.store.begin()) == "unavailable")
+        sco.log("info", "no storage: clean")
+    )lua";
+    Write("stnone", kNone);
+    Loaded none = Load("stnone");
+    CHECK(none.p && none.p->state == State::Loaded && Logged("[stnone] no storage: clean"));
+    if (none.p && none.p->state != State::Loaded) std::printf("  stnone: %s\n", none.p->reason.c_str());
+    Unload(none);
+
+    const fs::path data = g_root.parent_path() / "lua_storage";
+    fs::remove_all(data);
+    sco::storage::Options o;
+    o.dataRoot = data;
+    CHECK(sco::storage::Start(o) == Result::Ok);
+
+    // An older host (sco_api 1.0, no query_service) while the service is published.
+    sco_api old = *g_api;
+    old.size = static_cast<uint32_t>(offsetof(sco_api, query_service));
+    Write("stold", kNone);
+    Loaded oldl = Load("stold", &old);
+    CHECK(oldl.p && oldl.p->state == State::Loaded && Logged("[stold] no storage: clean"));
+    Unload(oldl);
+
+    Write("storea", R"lua(
+        local st = sco.store
+        assert(st.available())
+        -- key-value round trip
+        assert(st.get("missing") == nil and select("#", st.get("missing")) == 1)
+        assert(st.put("spots.home", "Lorville") and st.get("spots.home") == "Lorville")
+        assert(st.put("spots.empty", "") and st.get("spots.empty") == "")
+        assert(st.put("spots.bin", "a\0b") and st.get("spots.bin") == "a\0b")
+        assert(st.put("shared", "a"))
+        assert(st.delete("spots.empty") == true and st.delete("spots.empty") == false)
+        local k = assert(st.keys("spots."))
+        assert(#k == 2 and k[1] == "spots.bin" and k[2] == "spots.home", table.concat(k, ","))
+        local page = assert(st.keys("spots.", "spots.bin", 1))
+        assert(#page == 1 and page[1] == "spots.home")
+        local v, err, msg = st.put(string.rep("k", 256), "x")
+        assert(v == nil and err == "bad_arg", "key too long: " .. tostring(v) .. " " .. tostring(err) .. " " .. tostring(msg))
+        assert(select(2, st.get("a\0b")) == "bad_arg", "NUL in a key")
+        assert(select(2, st.keys(nil, nil, 0)) == "bad_arg", "limit")
+        -- transactions
+        assert(st.begin())
+        assert(select(2, st.begin()) == "bad_arg", "begin twice")
+        assert(st.put("tx.gone", "1") and st.rollback())
+        assert(st.get("tx.gone") == nil)
+        assert(st.begin() and st.put("tx.kept", "1") and st.commit())
+        assert(st.get("tx.kept") == "1")
+        assert(select(2, st.commit()) == "bad_arg", "commit with none open")
+        -- SQL with parameters
+        assert(st.exec("CREATE TABLE visits(place TEXT, at INTEGER, speed REAL, note TEXT)"))
+        assert(st.exec("INSERT INTO visits VALUES (?, ?, ?, ?)", { "Lorville", 1, 2.5, n = 4 }) == 1)
+        assert(st.exec("INSERT INTO visits VALUES (?, ?, ?, ?)", { "Area18", 2, 0.5, "rain" }) == 1)
+        assert(st.exec("INSERT INTO visits VALUES (:p, :a, 0, NULL)", { "Orison", true }) == 1)
+        local rows = assert(st.sql("SELECT place, at, speed, note FROM visits WHERE at >= ? ORDER BY at DESC, place", { 1 }))
+        assert(#rows == 3 and rows[1].place == "Area18" and rows[1].note == "rain" and rows[1].at == 2)
+        assert(rows[2].place == "Lorville" and math.type(rows[2].at) == "integer" and rows[2].at == 1)
+        assert(rows[2].speed == 2.5 and rows[2].note == nil and rows[3].place == "Orison" and rows[3].at == 1)
+        local one = assert(st.sql("SELECT value FROM sco_kv WHERE key = ?", { "spots.bin" }))
+        assert(#one == 1 and one[1].value == "a\0b", "a BLOB from the key-value table")
+        assert(#assert(st.sql("SELECT * FROM visits WHERE place = ?", { "nowhere" })) == 0)
+        v, err, msg = st.sql("ATTACH DATABASE 'x.db' AS x")
+        assert(v == nil and err == "bad_arg" and type(msg) == "string", "ATTACH refused")
+        assert(select(2, st.sql("SELECT ?", {})) == "bad_arg", "parameter count")
+        assert(select(2, st.sql("SELECT ?", { {} })) == "bad_arg", "a table as a parameter")
+        -- bounded: more than 1000 rows as a table is too_many; a function sees them all
+        assert(st.begin())
+        assert(st.exec("CREATE TABLE n(i INTEGER)"))
+        for i = 1, 1001 do assert(st.exec("INSERT INTO n VALUES (?)", { i })) end
+        assert(st.commit())
+        assert(select(2, st.sql("SELECT i FROM n")) == "too_many")
+        local count = 0
+        assert(st.sql("SELECT i FROM n", nil, function(r) count = count + r.i end) == true)
+        assert(count == 1001 * 1002 // 2, "rows by function")
+        count = 0
+        assert(st.sql("SELECT i FROM n ORDER BY i", nil, function(r) count = r.i; return r.i < 3 end))
+        assert(count == 3, "a function returning false stops")
+        sco.register_command{ name = "storea.get", title = "Get", args = {{ name = "k", type = "string" }},
+                              fn = function(key) return st.get(key) end }
+        -- A script error mid-iteration: 70 times, more than the 64 cursors a plugin may hold.
+        sco.register_command{ name = "storea.boom", title = "Boom", fn = function()
+          for i = 1, 70 do
+            local ok, e = pcall(st.sql, "SELECT i FROM n", nil, function(r) if r.i == 2 then error("mid-iteration") end end)
+            if ok or not tostring(e):find("mid-iteration", 1, true) then return "pass " .. i .. ": " .. tostring(e) end
+          end
+          return #assert(st.sql("SELECT i FROM n LIMIT 5")) .. " rows after 70 errors"
+        end }
+    )lua");
+    Loaded a = Load("storea");
+    CHECK(a.p && a.p->state == State::Loaded);
+    if (a.p && a.p->state != State::Loaded) std::printf("  storea: %s\n", a.p->reason.c_str());
+    const Reply boom = Invoke(g_caller, "storea.boom");
+    CHECK(boom.r == SCO_OK && boom.text == "5 rows after 70 errors");
+    if (boom.text != "5 rows after 70 errors") std::printf("  storea.boom -> %d %s\n", boom.r, boom.text.c_str());
+    CHECK(a.p && AllCursorsFree(a.p->self));
+
+    // Isolation: a second script has its own keys and tables.
+    Write("storeb", R"lua(
+        local st = sco.store
+        assert(st.get("shared") == nil and st.get("spots.home") == nil, "another plugin's keys")
+        assert(st.put("shared", "b"))
+        assert(#assert(st.keys()) == 1)
+        local v, err = st.sql("SELECT * FROM visits")
+        assert(v == nil and (err == "bad_arg" or err == "failed"), "another plugin's table: " .. tostring(err))
+    )lua");
+    Loaded b = Load("storeb");
+    CHECK(b.p && b.p->state == State::Loaded);
+    if (b.p && b.p->state != State::Loaded) std::printf("  storeb: %s\n", b.p->reason.c_str());
+    CHECK(Invoke(g_caller, "storea.get", { Str("shared") }).text == "a");
+    Unload(b);
+    Unload(a);
+
+    // Committed data outlives the script: a reload sees it.
+    Write("storea", R"lua(
+        sco.register_command{ name = "storea.get", title = "Get", args = {{ name = "k", type = "string" }},
+                              fn = function(key) return sco.store.get(key) end }
+    )lua");
+    a = Load("storea");
+    CHECK(Invoke(g_caller, "storea.get", { Str("spots.home") }).text == "Lorville");
+    CHECK(Invoke(g_caller, "storea.get", { Str("tx.gone") }).text.empty());
+    Unload(a);
+
+    // The step budget running out inside a row callback: the script is disabled, its cursor closed.
+    Write("stspin", R"lua(
+        assert(sco.store.exec("CREATE TABLE IF NOT EXISTS t(i INTEGER)"))
+        assert(sco.store.exec("INSERT INTO t VALUES (1), (2)"))
+        sco.register_command{ name = "stspin.spin", title = "Spin", fn = function()
+          sco.store.sql("SELECT i FROM t", nil, function() while true do end end) end }
+    )lua");
+    Loaded spin = Load("stspin");
+    CHECK(spin.p && spin.p->state == State::Loaded);
+    const Reply sr = Invoke(g_caller, "stspin.spin");
+    CHECK(sr.r == SCO_CRASHED && sr.text.find("step budget") != std::string::npos);
+    CHECK(spin.p && !sco_lua_alive(spin.p->self) && AllCursorsFree(spin.p->self));
+    Unload(spin);
+
+    // The SDK's storage example, sdk/examples/notebook: notes survive a reload.
+    fs::copy(sdk / "examples/notebook", g_root / "notebook", fs::copy_options::recursive);
+    Loaded nb = Load("notebook");
+    CHECK(nb.p && nb.p->state == State::Loaded);
+    CHECK(Invoke(g_caller, "notebook.add", { Str("buy fuel") }).text == "note 1 saved");
+    CHECK(Invoke(g_caller, "notebook.add", { Str("visit Orison") }).text == "note 2 saved");
+    Unload(nb);
+    nb = Load("notebook");
+    const Reply list = Invoke(g_caller, "notebook.list");
+    CHECK(list.r == SCO_OK && list.text == "2 notes: buy fuel | visit Orison");
+    if (list.text != "2 notes: buy fuel | visit Orison") std::printf("  notebook.list -> %d %s\n", list.r, list.text.c_str());
+    CHECK(Invoke(g_caller, "notebook.clear").text == "removed 2 notes");
+    CHECK(Invoke(g_caller, "notebook.list").text == "0 notes");
+    Unload(nb);
+    sco::storage::Stop();
+}
+
 #ifndef _WIN32
 #include <unistd.h>
 // A broken step budget turns the spin tests into endless loops: fail instead of hanging.
@@ -542,6 +722,7 @@ int main(int argc, char** argv) {
     TestSandbox();
     TestLimits();
     TestDataCore();
+    TestStore(argv[1]);
     std::printf("sco-lua tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

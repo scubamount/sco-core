@@ -20,7 +20,7 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 | `include/scosdk/` | The C++20 layer over `sco_api.h`, header-only: [C++ plugins](#c-plugins) |
 | `cmake/sco-plugin.cmake` | `sco_add_plugin()` and `sco_add_pack()`: build a plugin and lay it out |
 | `template/` | A native plugin to copy and rename |
-| `examples/` | `hello` (native C), `cpp_hello` (native C++20), `travel_pack` (data), `quantum_pack` (data: DataCore overrides), `greeter` (Lua) |
+| `examples/` | `hello` (native C), `cpp_hello` (native C++20), `travel_pack` (data), `quantum_pack` (data: DataCore overrides), `greeter` (Lua), `notebook` (Lua: storage with `sco.store`) |
 | `tools/sco-plugin-check.c` | Checks a built plugin folder on your machine, without the game |
 | `tools/lua-check.lua` | Runs a Lua plugin against a stand-in `sco` table, without the game |
 | `docs/` | [plugin.ini](docs/plugin-ini.md), [data packs](docs/data-packs.md), [Lua](docs/lua.md), [plugin rules](docs/plugin-rules.md), [API reference](../docs/api-v1.md), [C++ SDK](../docs/sdk-cpp.md) |
@@ -46,7 +46,7 @@ cmake --build build
 cmake --install build --prefix out
 ```
 
-`out/data/plugins/` now holds `hello/`, `cpp_hello/`, `travel_pack/`, `quantum_pack/`, `greeter/` and `my_plugin/` (the template), laid out the way sc-offline reads them, and `out/bin/` holds `sco-plugin-check`.
+`out/data/plugins/` now holds `hello/`, `cpp_hello/`, `travel_pack/`, `quantum_pack/`, `greeter/`, `notebook/` and `my_plugin/` (the template), laid out the way sc-offline reads them, and `out/bin/` holds `sco-plugin-check`.
 
 ## Check a plugin
 
