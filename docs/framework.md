@@ -9,7 +9,7 @@
 | [3. sc-offline runs on the host kit](#phase-3-sc-offline-runs-on-the-host-kit) | Done, played in game 2026-10-09 | sc-offline PR #56, merged as `78756af` |
 | [4. Features become built-in plugins](#phase-4-sc-offlines-features-become-built-in-plugins) | In progress | |
 | [5. Services and storage](#phase-5-services-and-storage) | In progress: sco_api 1.1 services and raw handlers, host-owned services and `sco.storage` landed | sco-core PR #24 |
-| [6. The framework grows](#phase-6-the-framework-grows) | Planned | |
+| [6. The framework grows](#phase-6-the-framework-grows) | In progress: plugin panels and hotkeys (`sco.ui` 1.0) landed | this PR (`sco.ui`) |
 
 ## Goal
 
@@ -231,7 +231,7 @@ Each item gets its own design review before code; every ABI change is a 1.x mino
 | Item | Why | Sketch |
 |---|---|---|
 | Lists and queries | The menu's ship, gear and NPC lists, and any plugin that offers a choice ([open in api-v1.md](api-v1.md#commands)) | A `query` function that streams typed rows to a callback, the same row shape as `store_sql` |
-| Plugin panels | Plugins with their own UI | Contributions to the frontend model: labels, buttons bound to commands, argument widgets, settings |
+| Plugin panels | Plugins with their own UI | **Landed as the host service `sco.ui` 1.0** ([UI](ui.md)): plugins register tabs (with an order and a badge) and overlays with a draw function the product calls during its frame with its own frame context (sc-offline: ImGui), as a guarded callout, so a crashing draw disables only that plugin; hotkeys bind key chords to commands, refused when taken or reserved by the product, dispatched through the command registry. Everything is withdrawn when the plugin unloads. Still to come: declarative widgets (labels, buttons bound to commands, argument widgets, settings) for plugins that don't draw, and tabs from Lua (G018) |
 | More events | Mods that react to the game | `player.spawned`, `zone.changed`, `ship.spawned`, `menu.opened`; each `data` struct starts with a size |
 | Plugin dependencies | Plugins built on other plugins | `depends = <id> >= <version>`, on the same load-order machinery as `uses` |
 | Game services | Plugins that spawn, teleport or query entities | sc-offline's built-in features as capability-gated commands and services, so no plugin needs a raw game address |

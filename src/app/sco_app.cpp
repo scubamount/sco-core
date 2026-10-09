@@ -9,6 +9,7 @@
 #include "sco/runtime.h"
 #include "sco/signatures.h"
 #include "sco/storage.h"
+#include "sco/ui.h"
 #include <utility>
 
 namespace sco::app {
@@ -52,6 +53,13 @@ bool Start(const Platform& platform) {
             const Result dr = datacore::service::Start(dco);
             if (dr != Result::Ok) Log("[app] sco.datacore not started: %s", ResultName(dr));
         }
+    }
+    const Result ur = ui::Start();
+    if (ur != Result::Ok) Log("[app] ui not started: %s", ResultName(ur));
+    for (size_t i = 0; pf.reservedChords && i < pf.nReservedChords; ++i) {
+        const char* chord = pf.reservedChords[i];
+        const Result rr = ui::ReserveChord(chord);
+        if (rr != Result::Ok) Log("[app] hotkey '%s' not reserved: %s", chord ? chord : "(null)", ResultName(rr));
     }
 
     plugins::Options opts;
@@ -116,6 +124,7 @@ void Stop() {
     if (r != Result::Ok) Log("[app] game.exit: %s", ResultName(r));
     plugins::UnloadAll(g_list, g_platform.moduleOps, g_platform.scripts);
     storage::Stop();
+    ui::Stop();
     datacore::service::Stop();
     host::WithdrawHostServices();
     plugins::ContainCallouts(nullptr);

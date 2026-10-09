@@ -85,6 +85,7 @@ typedef enum sco_dc_type {
     SCO_DC_ENUM     = 6,   /* s: the option name */
     SCO_DC_NULL     = 7,   /* a null pointer */
     SCO_DC_INSTANCE = 8,   /* u: an instance id add_instance returned for the same patch */
+    SCO_DC_REF      = 9,   /* s: a reference field's target record: a name or "guid:xxxxxxxx-..." */
     SCO_DC_TYPE_FORCE32 = 0x7fffffff
 } sco_dc_type;
 
@@ -94,7 +95,7 @@ typedef struct sco_dc_value {
     int64_t     i;      /* BOOL, INT */
     uint64_t    u;      /* UINT; INSTANCE: the instance id */
     double      f;      /* FLOAT */
-    const char* s;      /* STRING, GUID, ENUM; copied during the call */
+    const char* s;      /* STRING, GUID, ENUM, REF; copied during the call */
 } sco_dc_value;
 
 typedef struct sco_dc_report {
@@ -134,7 +135,8 @@ typedef struct sco_datacore_v1 {
     /* Appends one element to an array field: a value, a pointer (SCO_DC_NULL, SCO_DC_INSTANCE), or
      * for an array of structs SCO_DC_INSTANCE, the added instance to copy in. */
     sco_result (*append)(uint64_t patch, const char* record, const char* field, const sco_dc_value* v);
-    /* A new record. SCO_UNAVAILABLE in 1.0: the patcher's AddRecord comes with plan PR 4. */
+    /* A new record. SCO_UNAVAILABLE in 1.0: saved patches use the data-pack format, which has no
+     * record operation yet (the patcher's AddRecord is there; sco-dcb patch exercises it). */
     sco_result (*add_record)(uint64_t patch, const char* type, const char* name, const char* guid,
                              const char* clone_record, const char* file_path, uint64_t* out_record);
     /* Before the load: queues the patch for it (reports SCO_DC_QUEUED). After it: saves the patch as

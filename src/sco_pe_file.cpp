@@ -66,6 +66,11 @@ bool FileImage::Load(const std::string& path) {
         else if (strcmp(name, ".rdata") == 0) img.rdata = s;
     }
     if (!img.text.base || !img.rdata.base) { error = "no .text or .rdata section"; return false; }
+    // The exception directory (data directory 3: .pdata), for FunctionStart. Optional.
+    uint32_t pdataRva = 0, pdataSize = 0;
+    if (optSize >= 112 + 4 * 8 && Get(file, pe + 24 + 112 + 3 * 8, pdataRva) && Get(file, pe + 24 + 112 + 3 * 8 + 4, pdataSize)
+        && pdataRva && pdataSize && pdataRva < sizeOfImage)
+        img.pdata = { mem.data() + pdataRva, pdataSize < sizeOfImage - pdataRva ? pdataSize : sizeOfImage - pdataRva };
     return true;
 }
 

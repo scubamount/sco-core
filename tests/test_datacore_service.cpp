@@ -196,6 +196,13 @@ static void TestLaunches() {
     str.type = SCO_DC_STRING;
     str.s = "saved \"label\"";
     CHECK(g_dc->set(post, "guid:27262524-2322-2120-2f2e-2d2c2b2a2928", "label", &str) == SCO_OK);   // ShipB by GUID
+    sco_dc_value ref{};
+    ref.size = sizeof(ref);
+    ref.type = SCO_DC_REF;
+    ref.s = "BaseOne";
+    CHECK(g_dc->set(post, "ShipB", "maker", &ref) == SCO_OK);
+    ref.s = "guid:nope";
+    CHECK(g_dc->set(post, "ShipA", "maker", &ref) == SCO_BAD_ARG);
     // Call-time validation: refused, not queued.
     sco_dc_value bogus = F(1.0);
     CHECK(g_dc->set(post, "ShipA", "speed..x", &bogus) == SCO_BAD_ARG);
@@ -230,7 +237,7 @@ static void TestLaunches() {
     for (const auto& e : fs::directory_iterator(file.parent_path())) CHECK(e.path().extension() != ".tmp");
     dc::Pack savedPack;
     std::string error;
-    CHECK(dc::ParsePack(Read(file), savedPack, error) && savedPack.ops.size() == 5);
+    CHECK(dc::ParsePack(Read(file), savedPack, error) && savedPack.ops.size() == 6);
 
     svc::Stop();
     CHECK(!svc::Started() && g_dc->state() == SCO_DC_LOADED);
@@ -248,8 +255,9 @@ static void TestLaunches() {
     CHECK(Val(base, r2, "ShipA", "speed") == "2.0");
     CHECK(Val(base, r2, "ShipB", "engine.weight") == "11.0" && Val(base, r2, "ShipB", "engine.partName") == "\"p0\"");
     CHECK(Val(base, r2, "ShipB", "label") == "\"saved \\\"label\\\"\"");
+    CHECK(Val(base, r2, "ShipB", "maker") == "{ ref = \"guid:37363534-3332-3130-3f3e-3d3c3b3a3938\" }");   // BaseOne
     CHECK(r2.conflicts.size() == 1 && r2.conflicts[0].find("alpha (datacore/a.toml:2) overridden by beta (pending:") != std::string::npos);
-    CHECK(sco::GameThreadTick(2) == sco::Result::Ok && g_last.applied == 6 && g_last.refused == 0);
+    CHECK(sco::GameThreadTick(2) == sco::Result::Ok && g_last.applied == 7 && g_last.refused == 0);
     svc::Stop();
 
     // ---- launch 3: beta uninstalled; its saved patch is skipped, alpha's value is back ----------
@@ -282,6 +290,7 @@ static void TestLaunches() {
         CHECK(p.Set("ShipA", "flag", true) == SCO_OK && p.Set("ShipA", "label", "sdk") == SCO_OK);
         CHECK(p.Set("ShipA", "kind", sco::sdk::DataCoreEnum{ "Small" }) == SCO_OK);
         CHECK(p.Set("ShipA", "id", sco::sdk::DataCoreGuid{ "93929190-9594-9796-9f9e-9d9c9b9a9998" }) == SCO_OK);
+        CHECK(p.Set("ShipA", "maker", sco::sdk::DataCoreRef{ "PartX" }) == SCO_OK);
         sco::sdk::DataCoreInstance part = p.AddInstance("Part", "PartX");
         CHECK(part && part.Result() == SCO_OK);
         CHECK(p.Set(part.Ref(), "weight", 3.25f) == SCO_OK);
@@ -300,7 +309,7 @@ static void TestLaunches() {
         CHECK(Val(base, r4, "ShipA", "parts[0].weight") == "3.25" && Val(base, r4, "ShipA", "parts[1]") == "null");
         CHECK(Val(base, r4, "ShipA", "counts[0]") == "30" && Val(base, r4, "ShipB", "speed") == "101.0");
         const std::vector<sco_dc_report> reps = p.Reports();
-        CHECK(reps.size() == 12 && reps.back().op_index == SCO_DC_OP_PATCH && reps.back().state == SCO_DC_APPLIED);
+        CHECK(reps.size() == 13 && reps.back().op_index == SCO_DC_OP_PATCH && reps.back().state == SCO_DC_APPLIED);
     }
     sco::GameThreadTick(4);
     svc::Stop();

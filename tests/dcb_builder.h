@@ -43,7 +43,8 @@ struct Record {
     uint32_t    structIndex = 0;
     Guid        id{};
     uint16_t    instance = 0;
-    uint32_t    unknown = 0;      // written at +8 when recordSize > 32
+    uint32_t    unknown = 0;      // written at +8 when recordSize > 32 and team is empty
+    std::string team;             // else +8 is this name-pool string's offset (research R1: a team tag)
 };
 
 // Value pools, in file order.
@@ -155,6 +156,8 @@ public:
         for (const Enum& e : enums) enumName.push_back(Name(e.name));
         for (const Enum& e : enums)
             for (const std::string& o : e.options) optionName.push_back(Name(o));
+        std::vector<uint32_t> recTeam;
+        for (const Record& r : records) recTeam.push_back(r.team.empty() ? r.unknown : Name(r.team));
         for (const Record& r : records) {
             recName.push_back(Name(r.name));
             recFile.push_back(Value(r.fileName));
@@ -221,7 +224,7 @@ public:
             std::vector<uint8_t> e(recordSize, 0);
             Le(e.data(), recName[i], 4);
             Le(e.data() + 4, recFile[i], 4);
-            if (recordSize > 32) Le(e.data() + 8, r.unknown, 4);
+            if (recordSize > 32) Le(e.data() + 8, recTeam[i], 4);
             uint8_t* tail = e.data() + recordSize - 24;
             Le(tail, r.structIndex, 4);
             std::memcpy(tail + 4, r.id.data(), 16);
@@ -321,11 +324,11 @@ inline Builder Fixture(uint32_t recordSize = 36) {
     b.enums = { { "Kind", { "Small", "Large" } } };
     b.mappings = { { kVec2, 3 }, { kBase, 1 }, { kShip, 2 }, { kPart, 4 }, { kEmpty, 0 } };
     b.records = {
-        { "ShipA", "libs/foundry/records/test/ships.xml", kShip, MakeGuid(0x10), 0, 0x1111 },
-        { "ShipB", "libs/foundry/records/test/ships.xml", kShip, MakeGuid(0x20), 1, 0x1111 },
-        { "BaseOne", "libs/foundry/records/test/base_one.xml", kBase, MakeGuid(0x30), 0, 0x2222 },
-        { "PartX", "libs/foundry/records/test/part_x.xml", kPart, MakeGuid(0x40), 0, 0x3333 },
-        { "PartY", "libs/foundry/records/test/part_y.xml", kPart, MakeGuid(0x50), 2, 0x4444 },
+        { "ShipA", "libs/foundry/records/test/ships.xml", kShip, MakeGuid(0x10), 0, 0, "Ships" },
+        { "ShipB", "libs/foundry/records/test/ships.xml", kShip, MakeGuid(0x20), 1, 0, "Ships" },
+        { "BaseOne", "libs/foundry/records/test/base_one.xml", kBase, MakeGuid(0x30), 0, 0, "Design" },
+        { "PartX", "libs/foundry/records/test/part_x.xml", kPart, MakeGuid(0x40), 0, 0, "Parts" },
+        { "PartY", "libs/foundry/records/test/part_y.xml", kPart, MakeGuid(0x50), 2, 0, "Parts" },
     };
     uint8_t one[16] = { 1 };
     for (Pool p : { Int8, Int16, Int64, UInt8, UInt16, UInt32, UInt64, Bool, Double }) b.Push(p, one);

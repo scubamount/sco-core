@@ -50,6 +50,7 @@ PIN(SCO_DC_GUID == 5);
 PIN(SCO_DC_ENUM == 6);
 PIN(SCO_DC_NULL == 7);
 PIN(SCO_DC_INSTANCE == 8);
+PIN(SCO_DC_REF == 9);
 PIN(SCO_DC_TYPE_FORCE32 == 0x7fffffff);
 
 /* ---- sco_dc_value ---- */

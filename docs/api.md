@@ -6,10 +6,10 @@ Everything is in namespace `sco` (game tables in `sco::game`). Version 0: intern
 
 ```cpp
 struct Section { uint8_t* base; size_t size; };
-struct Image   { uint8_t* base; Section text, rdata; uint32_t timestamp; uint32_t size; };
+struct Image   { uint8_t* base; Section text, rdata, pdata; uint32_t timestamp; uint32_t size; };
 ```
 
-`Image` is the game image as the scanners see it: `base` is where it starts in memory, `text` and `rdata` are its two sections, `timestamp` and `size` come from the PE header.
+`Image` is the game image as the scanners see it: `base` is where it starts in memory, `text` and `rdata` are its two sections, `pdata` is the exception directory (data directory 3, `RUNTIME_FUNCTION` entries; empty when the image has none), `timestamp` and `size` come from the PE header.
 
 Patterns are hex bytes separated by spaces, with `?` or `??` for any byte: `"48 8B 05 ?? ?? ?? ?? C3"`.
 
@@ -20,6 +20,7 @@ Patterns are hex bytes separated by spaces, with `?` or `??` for any byte: `"48 
 | `bool BytesMatch(const uint8_t* p, const char* pattern)` | Whether the bytes at `p` match. Doesn't check bounds: `p` plus the pattern length must be inside the image |
 | `const uint8_t* FindCString(const Section& s, const char* str)` | The first NUL-terminated copy of `str` that starts at a string boundary (`"Anchor"` doesn't match inside `"HelloAnchor"`) |
 | `uint8_t* FindRipLea(const Section& text, uint8_t r0, uint8_t r1, uint8_t r2, const uint8_t* target)` | The first 7-byte instruction starting `r0 r1 r2` whose RIP-relative operand points at `target`. `48 8D 15` is `lea rdx, [rip+X]`; `4C 8D 05` is `lea r8, [rip+X]` |
+| `uint8_t* FunctionStart(const Image& img, const uint8_t* at)` | The start of the function holding `at`, as `RtlLookupFunctionEntry` finds it in game: a binary search of `.pdata` for the entry whose `[begin, end)` holds `at`, then its chained unwind info (`UNW_FLAG_CHAININFO`) followed up to 8 links to the primary entry. `nullptr` when no entry holds `at` or an entry points outside the image. Works on a file image too, so `sco-sigcheck` resolves rows that need it |
 | `int32_t Rel32(const uint8_t* p)` | The little-endian 32-bit displacement at `p` |
 | `uint8_t* RipTarget(const uint8_t* insn, size_t dispOffset, size_t insnSize)` | `insn + insnSize + Rel32(insn + dispOffset)`: what a RIP-relative operand points at. `mov rax, [rip+X]` is `(insn, 3, 7)`; `call X` is `(insn, 1, 5)` |
 | `Image ModuleImage()` | Windows only: the running process's main executable |
@@ -61,6 +62,7 @@ Helpers for resolvers:
 | `bool sco::game::RegisterGameSignatures()` | Registers every game table. Runs once; later calls return the first result |
 | `bool sco::game::TeleportAddresses(TeleportAddrs& out)` | Fills `clientMgr`, `entitySystem` and `handleFromId`, or returns false and leaves `out` untouched if any `teleport.*` row isn't OK |
 | `bool sco::game::QuitFunction(QuitHook& out)` (`sco/game/system.h`) | Fills `fn` (CSystem::Quit's entry) and `stolenBytes` (`kQuitStolenBytes`, 15: the whole instructions a 14-byte absolute jmp detour overwrites), or returns false and leaves `out` untouched if `system.quit` isn't OK |
+| `bool sco::game::pak::Resolve(Targets& out)` (`sco/game/pak.h`) | Fills `loader` and `cryPak` (the address of the `ICryPak*` global), or returns false and leaves `out` untouched unless all three `pak.*` rows are OK. The slot offsets are constants the rows pin: `kOpenSlot` 0x148 (`pak.crypak`), `kReadSlot` 0x160, `kSeekSlot` 0x1D0, `kCloseSlot` 0x1E0 (`pak.slots`) |
 
 Rows today:
 
@@ -71,6 +73,9 @@ Rows today:
 | `teleport.handle_from_id` | The function called at `to_camera+0x9F` |
 | `teleport.entity_system` | The global read at `to_camera+0x2B0` |
 | `system.quit` | CSystem::Quit: the function whose first `lea r9` to the `CSystem::Quit invoked with - cause=$$, ...` log string is at `+0xA3`, with 9 layout checks (the 15 prologue bytes a detour overwrites among them) and its second reference to the string at `+0x176`. `MISSING` if the string is gone |
+| `pak.datacore_loader` | `CDataCoreLoader::InitializeBinary`: the function holding the `lea r9` to `"DCB file is smaller than expected"`, its start from `.pdata` (`FunctionStart`, chained unwind info followed), then the 24-byte prologue `48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 55 41 54 41 55 41 56 41 57`. Every other `lea r9` to the string must be in the same function, else `AMBIG`. `MISSING` if the string is gone. Moved byte for byte from sc-offline's `quantum.cpp:417-427` |
+| `pak.crypak` | The `ICryPak*` global: in the loader's first 0x400 bytes, `48 8B 0D ?? ?? ?? ?? 4C 8D 05 ?? ?? ?? ?? 48 8B 55 ?? 45 33 C9 48 8B 01 FF 90 48 01 00 00` (`mov rcx, [rip+X]` ... `call [rax+0x148]`, FOpen); the result is `X`. Two matches naming different globals: `AMBIG` (`quantum.cpp:428-430`) |
+| `pak.slots` | Layout check: the loader's first 0x2400 bytes call `[rax+0x160]`, `[rax+0x1D0]` and `[rax+0x1E0]` (read, seek, close; `FF 90 <slot>`). The address is the first read call (`quantum.cpp:431-436`) |
 
 ## `sco/log.h`: log
 
@@ -162,7 +167,7 @@ struct Platform {
 |---|---|
 | `bool app::Start(const Platform& pf)` | `SetGameThread`; with `image`, `RegisterGameSignatures` and `ResolveAll(*image)`; `setCapabilities()`; `host::BuildApi`; with `dataRoot`, `storage::Start` (a failure is logged `[app] storage not started: <RESULT>`); the list (every built-in, then `Discover(pluginRoot)` when `pluginsEnabled`); `ContainCallouts`; `LoadBuiltin` for the built-ins, then `LoadNative` / `LoadScript` in list order (a `lua` plugin is refused `no script runtime` without `scripts`); the content index; with `image`, `LogSignatureReport(false)`; `LogReport`; dispatches `game.ready`. Problems are logged, never fatal. False (nothing changes) when already started |
 | `void app::Tick(uint32_t nowMs)` | `GameThreadTick(nowMs)`. No-op unless started |
-| `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last), `storage::Stop`, `host::WithdrawHostServices` (host services outlive every plugin) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
+| `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last), `storage::Stop`, `ui::Stop`, `host::WithdrawHostServices` (host services outlive every plugin) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
 | `const std::vector<plugins::Plugin>& app::Plugins()` | The list of the last `Start` (built-ins first), final states after `Stop`. Never resized between two `Start`s |
 | `const plugins::ContentIndex& app::Content()` | The data-pack index of the last `Start` |
 
@@ -190,6 +195,25 @@ struct Options {
 | `void storage::Stop()` | Withdraws the service, rolls back open transactions, closes every database; the table then answers `SCO_UNAVAILABLE`. No-op unless started. Call after every plugin has unloaded |
 | `bool storage::Started()`, `const sco_storage_v1* storage::Table()`, `fs::path storage::DatabasePath(const char* id)` | State, the table `query_service` hands out, and a plugin's database path (empty unless started) |
 
+## `sco/ui.h`: the `sco.ui` service
+
+The host side of [`sco.ui`](ui.md) (library `sco_ui`): the registry of plugin tabs, overlays and badges and the hotkey table. No renderer: the product draws what is registered. `sco::app::Start` calls `ui::Start` and reserves `Platform::reservedChords`; other hosts call them themselves.
+
+| Function | Does |
+|---|---|
+| `Result ui::Start()` | Publishes `sco.ui` 1.0 with `host::ProvideHostService` and installs a release hook, so `Release(self)` withdraws everything the plugin registered. `BadArg`: already started |
+| `void ui::Stop()` | Withdraws the service and clears every tab, overlay, binding, reservation and message; the table then answers `SCO_UNAVAILABLE`. No-op unless started. Call after every plugin has unloaded |
+| `bool ui::Started()`, `const sco_ui_v1* ui::Table()` | State, and the table `query_service` hands out |
+| `bool ui::NormalizeChord(text, std::string& out)` | The chord grammar ([UI § Hotkeys](ui.md#hotkeys)): `"Alt + Ctrl + Esc"` -> `"ctrl+alt+escape"`. False for anything else. Any thread |
+| `Result ui::ReserveChord(chord)` | A chord the product handles itself: plugins can't bind it, `Dispatch` answers `NotFound`. `BadArg`: not a chord, or a plugin holds it. `Unavailable` before `Start` |
+| `std::vector<TabInfo> ui::Tabs()` | Live tabs (`id`, `title`, `badge`, `owner`, `order`) by ascending order, ties in registration order. Any thread |
+| `std::vector<OverlayInfo> ui::Overlays()`, `std::string ui::Badge(id)`, `std::vector<HotkeyInfo> ui::Hotkeys()`, `ui::ReservedChords()` | Overlays in registration order; one tab's badge; bindings (`chord`, `command`, `owner`, `nargs`) and reservations sorted by chord. Any thread |
+| `Result ui::DrawTab(id, void* frame)` | Calls the tab's `draw(frame, ctx)` now, as a callout of its owner (the crash guard; where = the id). `NotFound`, `WrongThread` (game thread only), `Crashed` (the plugin faulted and was released) |
+| `size_t ui::DrawOverlays(void* frame)` | Every overlay in registration order, each as a callout; returns how many completed. Game thread |
+| `Result ui::Dispatch(chord, std::string* reply)` | Invokes the bound command with its stored args and the binding's plugin as the caller (`sco::Invoke`). On the game thread it runs now and fills `reply`; elsewhere it is queued. `NotFound`: no binding, a reserved chord, or no such command |
+
+Limits: `kMaxTabs` and `kMaxOverlays` 256, `kMaxHotkeys` 512, `kMaxReserved` 256.
+
 ## `sco/hook.h`: detours and near-code memory
 
 One place that patches game code (library `sco_hook`, x86-64 Windows and Linux), so two features or plugins can't detour the same function or allocate over each other.
@@ -199,12 +223,14 @@ One place that patches game code (library `sco_hook`, x86-64 Windows and Linux),
 | `InstallDetour(target, stolen, detour, &original)` | Detours `target`. The stolen bytes must be whole instructions with no RIP-relative operand or relative branch: they are copied as-is into the trampoline. `stolen = 0` counts them with `StolenLength(target, 5)` (`BadArg` when it can't); otherwise pass 5-32, pinned by a signature row's layout checks as `sco::game::QuitHook::stolenBytes` is. Near path: a relay (14-byte absolute jump to `detour`) and the trampoline (stolen bytes, then a jump back) go in a cave near `target`; `target` becomes `E9 rel32` plus NOPs. Far path, when no cave can be mapped within ±2 GiB: `target` becomes `FF 25 00000000 <detour>` (14 bytes) plus NOPs and the trampoline goes in any executable memory; this needs 14 stolen bytes (`stolen = 0` recounts with `StolenLength(target, 14)`), `NoCave` with fewer. `AlreadyHooked` for a second detour on one target |
 | `RemoveDetour(target)` | Restores the stolen bytes; the trampoline stays callable |
 | `RemoveAll()` | Restores every detour, last installed first (host shutdown, tests); returns how many. One the OS refused to restore stays installed |
-| `Transaction`: `Add(target, stolen, detour, &original)`, `Commit()`, `Rollback()` | Hooks that only make sense together. `Add` queues; `Commit` installs in order and, if one fails, removes the ones it installed and returns that first error; `Rollback` removes what `Commit` installed; the destructor leaves committed hooks in place. Opt-in and **not for independent hooks**: sc-offline installs each feature's hook on its own, so one missing pattern leaves the others working |
+| `Transaction`: `Add(target, stolen, detour, &original)`, `AddSlot(slot, fn, &original)`, `Commit()`, `Rollback()` | Hooks that only make sense together, detours and slot swaps mixed. `Add` and `AddSlot` queue; `Commit` installs in order and, if one fails, removes the ones it installed and returns that first error; `Rollback` removes what `Commit` installed; the destructor leaves committed hooks in place. Opt-in and **not for independent hooks**: sc-offline installs each feature's hook on its own, so one missing pattern leaves the others working |
 | `StolenLength(code, atLeast)` | Bytes of whole instructions at `code` covering at least `atLeast`, or 0 when it meets one it can't decode or can't move (below), or a `ret` / `jmp r/m` before `atLeast` (what follows may be another function) |
 | `MemoryProtectScope(address, size)` | RAII: the range is read/write/execute until the scope ends, then the old protection comes back (Windows; POSIX: read + execute). `Succeeded()` |
 | `AllocateNear(anchor, n)` | `n` bytes (at most 64 KiB) of read/write/execute memory within ±2 GiB of `anchor`, 16-byte aligned, never freed |
 | `WriteCode(at, bytes, n)` | Writes over code: unprotect (`MemoryProtectScope`), copy, restore, flush the instruction cache |
-| `IsHooked(target)`, `DetourCount()`, `ErrorName(e)`, `LastOsError()` | Queries |
+| `SwapSlot(slot, fn, &original)` | Vtable slots ([design decision 2](design/vfs-datacore.md#decisions-maintainer-2026-10-09)): `*original` = the pointer in `slot`, set before the slot changes; then the slot is made writable (`MemoryProtectScope`; on Windows the old protection, read-only for a vtable, comes back, on POSIX read + execute) and switched with one atomic pointer store, so a thread calling through the vtable sees the old or the new function, never a torn pointer. No stolen bytes, no trampoline. Every caller through the vtable, on every thread, reaches `fn` while swapped: `fn` passes what it doesn't handle to `original`. One swap per slot (`AlreadyHooked`); `BadArg` for a null or unaligned slot, null `fn` or `original` |
+| `RestoreSlot(slot)` | Writes back what `SwapSlot` found. `NotHooked` if not swapped; `Protect` leaves it swapped |
+| `IsHooked(target)`, `DetourCount()`, `IsSlotSwapped(slot)`, `SlotCount()`, `ErrorName(e)`, `LastOsError()` | Queries. `RemoveAll` restores detours only |
 | `SetNearAllocatorForTesting(fn)` | **Test-only**: replaces the near-cave search (`nullptr` restores it) so a test can force the far path. Not for products |
 
 `StolenLength` decodes the usual x86-64 prologue set: prefixes `66`/`F2`/`F3` and REX `40`-`4F`; `push`/`pop r` (`50`-`5F`); the ALU families `00`-`3D` (add/or/adc/sbb/and/sub/xor/cmp, r/m and accumulator-immediate forms); `80`/`81`/`83` imm; `63` movsxd; `68`/`6A` push imm; `69`/`6B` imul; `84`-`8B` test/xchg/mov; `8D` lea; `90`-`99`; `A8`/`A9` test imm; `B0`-`BF` mov r, imm (imm64 with REX.W); `C0`/`C1`/`D0`-`D3` shifts; `C2`/`C3` ret; `C6`/`C7` mov r/m, imm; `C9` leave; `CC`; `F6`/`F7` (test imm and the one-operand group); `FE`/`FF` inc/dec/call/jmp/push r/m; and `0F` `10`/`11`/`28`/`29` movups/movss/movsd/movaps, `1E` (endbr64), `1F` nop, `40`-`4F` cmov, `57` xorps, `90`-`9F` setcc, `AF` imul, `B6`/`B7`/`BE`/`BF` movzx/movsx; full ModRM/SIB/disp8/disp32. It refuses RIP-relative operands, `E8`/`E9`/`EB`/`70`-`7F`/`0F 80`-`8F` (relative call/jmp/jcc), `E0`-`E3` (loop/jrcxz), `C7 F8` (xbegin), far call/jmp, VEX/EVEX and anything not listed.
@@ -292,9 +318,46 @@ All mounts of a path splice the same base. Higher `priority` wins an overlap, an
 
 **Threads.** `MountTable` holds the published `shared_ptr<const Table>`: `Current()` and `Publish()` are atomic, and handles keep the table and file they opened with. `Table` is safe from any thread. A `Reader` belongs to one handle and takes no lock; no sco-core lock is held while it calls `BaseIo`. Composition calls `BaseIo` and transforms under the path's guard.
 
+
+## `sco/game/pak.h`: the CryPak adapter
+
+`sco::game::pak` (library `sco_pak`: links `sco_core`, `sco_hook`, `sco_vfs`, `sco_host`) serves `sco::vfs` mounts to Star Citizen's CryPak, the engine's own file I/O. Design: [vfs-datacore.md § 3](design/vfs-datacore.md#the-game-specific-part-scogamepak-in-sco-core); it lives in sco-core by [decision 1](design/vfs-datacore.md#decisions-maintainer-2026-10-09), and a product only enables it.
+
+```cpp
+sco::game::RegisterGameSignatures();
+sco::ResolveAll(image);
+sco::game::pak::Options o;                              // scope = Scope::DataCoreLoad
+o.mounts = [] { return g_mountTable.Current(); };       // the product's sco::vfs::MountTable
+if (sco::game::pak::Enable(o) == sco::Result::Ok) ...   // "vfs.pak" set
+```
+
+| Function | Does |
+|---|---|
+| `Result Enable(const Options&)` | `Resolve`, then the overload below. `Unavailable` (and `vfs.pak` off, `needs pak.<row> (<STATE>)`) when a `pak.*` row isn't OK |
+| `Result Enable(const Options&, const Targets&)` | Detours the loader (`InstallDetour`, stolen bytes counted by `StolenLength`) and sets `vfs.pak`. Refusals change nothing and turn `vfs.pak` off with the reason: `BadArg` (`Options.size` mismatch, null `mounts`, null targets; already enabled, `vfs.pak` untouched), `Unavailable` (`Scope::AllFiles`: plan PR 10), `Failed` (the detour was refused). Tests pass their own `Targets` |
+| `void Disable()` | Removes the loader detour and clears `vfs.pak` (`disabled`). Idempotent. Slots are only swapped inside a load window, and a window always restores them when the loader returns (`Transaction::Rollback` of its `SwapSlot`s), so a `Disable` during a load leaves that load whole and its slots go back at its end |
+| `bool Enabled()` | |
+| `LoadReport LastLoad()` | `{ outcome, loaderOk, path, baseSize, size, reason }` of the last load: `Applied` (served from its mount), `Passed` (a `.dcb` was tracked but not mounted, or every mount of it inert; `reason` names the mount's own reason), `NoDcb`, `NoCryPak` (the global was null: nothing swapped), `SwapFailed`. `OutcomeName` gives `applied`, `passed`, ... |
+
+**The load window** (`Scope::DataCoreLoad`, the only scope until plan PR 10). The loader detour records its thread, swaps the four `ICryPak` vtable slots (open 0x148, read 0x160, seek 0x1D0, close 0x1E0) with `SwapSlot` in one `Transaction`, calls the real loader, and rolls the swaps back: the vtable is the engine's own outside the loader call, exactly as sc-offline's `quantum.cpp` does today. A second load while one runs, or one racing `Disable`, runs without a window. Each load logs one line (`[+] [pak] <path> served from its mount (<base> -> <virtual> bytes), load ok`, `[pak] <path> passed through (<reason>), load ok`, ...).
+
+**Routing.**
+
+- **Open:** every open goes to the engine first. Only the first `.dcb` the loader's own thread opens in the window is tracked. If `mounts()` has it mounted, the adapter probes the real file's size and calls `Table::Open`; a composed file gets a `sco::vfs::Reader`. A passed-through file is then seeked back to 0, where the engine expects a new handle. The probe and `Table::Open` move the real position, and a served file doesn't care because its `Reader` seeks before its first base read.
+- **Read / seek** on the tracked handle, on the loader's thread, are answered by the `Reader`: `length * elems` bytes in, whole elements out (`done / length`), and `SEEK_SET`/`CUR`/`END` (`END` from the virtual size) with -1 for a bad mode or a negative position. Base bytes come from the engine's own read and seek for the handle, passing the caller's debug tag. The adapter's own reads pass the loader's name, as `quantum.cpp` does.
+- **Everything else passes straight through:** other handles, other files, a second `.dcb`, and every call from another thread, the tracked handle included. Another thread using the tracked handle moves the real file, so the `Reader` forgets where the base is and seeks before its next base read.
+- **Close** of the tracked handle, from any thread, forgets it.
+- **Tell, size and eof aren't routed.** The DataCore loader doesn't call them on the file: `pak.slots` checks the calls it makes, and on 4.10.193 the only CryPak calls in its first 0x2400 bytes are 28 reads, 1 seek and 3 closes. Plan PR 10 adds those slots with persistent hooks.
+
+**Offsets.** Positions are 64-bit throughout. The engine's seek takes an `int`, so the adapter reaches a base position past 2 GiB with `SEEK_SET INT_MAX` and then `SEEK_CUR` steps of at most `INT_MAX`. The engine itself can reach virtual positions past 2 GiB the same way, because the `Reader` keeps 64-bit positions. The file size has no slot yet (plan PR 10). It is probed with a seek and a one-byte read: doubling from 4 KiB, then bisecting, about `2 x log2(size)` probes. A file over `sco::vfs::kMaxFileSize` stops the probe and passes through.
+
+**Never a crash on a refusal.** Every refusal (not mounted, an inert mount, a failed probe, an exception while building the report) leaves the engine reading its own bytes. Known limits, both from `sco::vfs` and both acceptable for one `.dcb`: the memory budget (`Limits::bufferBytes`) doesn't count segment tables, and `Table::Open` is `noexcept` while it allocates its error strings, so out of memory there ends the process.
+
+**Threads.** The hooks take no lock. The originals are atomics, written before the slots point at the hooks. The tracked handle, the loader thread and the window flag are atomics. The `Reader` is touched only on the loader thread. `Enable`, `Disable`, `LastLoad` and the window's open and close share one mutex, which is never held while the engine's loader runs.
+
 ## `sco/datacore.h`: the DataCore file
 
-The game's DataCore database (`Data\Game2.dcb`) in library `sco_datacore` ([design](design/vfs-datacore.md), sections 2 and 4): the parser below, and the patcher that turns semantic overrides into `sco::vfs` splices ([Patching](#patching-datacore)). Standard library only; no engine, no Windows. `AddRecord` comes in a later PR.
+The game's DataCore database (`Data\Game2.dcb`) in library `sco_datacore` ([design](design/vfs-datacore.md), sections 2 and 4): the parser below, and the patcher that turns semantic overrides into `sco::vfs` splices ([Patching](#patching-datacore)). Standard library only; no engine, no Windows.
 
 ```cpp
 sco::datacore::Schema s;
@@ -312,7 +375,7 @@ if (!s.Parse(bytes)) Log("datacore: %s", s.error.c_str());   // bytes: std::span
 | `Properties(i)` | A struct's property indices, inherited first |
 | `FindStruct(name)`, `FindRecord(guid)`, `FindRecordByName(name)` | Lookups; the first entry wins when one repeats |
 
-`Check` is `None`, `File` (smaller than the header), `Totals` (rules 1-3: nothing adds up to the file size), `Structure` (an index or range outside its table), `RecordSize` (rule 4) or `NameOffset` (rule 5). `FormatGuid` prints a `Guid` the way unp4k does. Every count is checked against the file size before anything is read or allocated, so a truncated or corrupted file is refused, never read past. A `Schema` is plain data: concurrent `const` use is safe. The tool on top is [`sco-dcb`](datacore.md). `File()` returns the bytes it parsed.
+`Check` is `None`, `File` (smaller than the header), `Totals` (rules 1-3: nothing adds up to the file size), `Structure` (an index or range outside its table), `RecordSize` (rule 4) or `NameOffset` (rule 5, which also covers record +8: a name-pool offset, the owning team's tag, research R1). `PatchSupported(s)` and `AddRecordSupported(s)` answer the capabilities `kCapPatch` (`datacore.patch`) and `kCapAddRecord` (`datacore.add_record`): both on whenever validation passes. `FormatGuid` prints a `Guid` the way unp4k does. Every count is checked against the file size before anything is read or allocated, so a truncated or corrupted file is refused, never read past. A `Schema` is plain data: concurrent `const` use is safe. The tool on top is [`sco-dcb`](datacore.md). `File()` returns the bytes it parsed.
 
 ### Patching DataCore
 
@@ -325,16 +388,24 @@ p.OverrideField(ship, "Components[SCItemQuantumDriveParams].params.spoolUpTime",
 sco::datacore::InstanceId fresh;
 p.AddInstance("SCItemQuantumDriveParams", { ship, "Components[SCItemQuantumDriveParams].params" }, fresh);
 p.SetPointer(ship, "Components[SCItemQuantumDriveParams].params", fresh);
+sco::datacore::NewRecord drive;                      // a new record, cloned from an existing one
+drive.type = "EntityClassDefinition";
+drive.name = "EntityClassDefinition.MY_Drive";
+drive.clone.record = RecordRef{ std::nullopt, "EntityClassDefinition.QDRV_Example" };
+sco::datacore::AddedRecord added;
+p.AddRecord(drive, added);                           // addressable by name or added.guid from now on
+p.OverrideField(ship, "defaultDrive", Value::OfRecord({ added.guid, "" }));   // a reference field
 std::vector<sco::vfs::Splice> splices;
 if (Status st = p.Emit(splices); !st) Log("datacore: %s: %s", RefusalName(st.category), st.message.c_str());
 ```
 
 | Member | Does |
 |---|---|
-| `OverrideField(rec \| instance, path, Value)` | Writes a bool, integer, float, double, guid, string, locale, enum (by option name) or pointer (`Instance` or null) in place. The value's kind must fit the field's type and range |
+| `OverrideField(rec \| instance, path, Value)` | Writes a bool, integer, float, double, guid, string, locale, enum (by option name), pointer (`Instance` or null) or reference (`Value::OfRecord` or null) in place. The value's kind must fit the field's type and range |
 | `AddInstance(type, cloneFrom, out)` | Appends an instance to the end of the struct's block (the last mapping's), copied from an instance of exactly that struct or zero-filled; `out` is its id |
 | `SetPointer(rec \| instance, path, target)` | Points a strong or weak pointer (field or array element) at an instance of its type or a derived one |
 | `AppendElement(rec \| instance, path, Value)` | Copies the array's elements plus the new one to the end of its pool (or block, for arrays of structs, where `Value` is the instance to copy) and repoints the array; appends in place when the array already ends there |
+| `AddRecord(NewRecord, out)` | A new top-level record ([design "AddRecord"](design/vfs-datacore.md#addrecord)): `type`, `name` (unique), `filePath` (`libs/foundry/records/...xml`; empty: `libs/foundry/records/sco/<packId>/<name>.xml`), `guid` (empty: a random version-4 GUID from `PatchOptions::guidSeed`, else `std::random_device`), `clone` (required: a record of the same struct). The entry goes to the end of the record table, the root instance (a copy of the clone's) to the end of the struct's block, the name and a new path to the end of their pools; a path already in the file reuses its offset. Record +8 is the value of the records already in that file, else the clone's. `out` has the GUID, the root `InstanceId` and the record's index. Later operations find the record by name or GUID |
 | `FindInstance(source, out)` | An existing instance (record root, array element, strong pointer target) as a pointer target |
 | `Emit(out)` | The splices: sorted, non-overlapping, each with its expected `old` bytes, the header rewritten as one 120-byte overwrite when a count or the value-string length changes. Then re-validation: the splices are applied to the base and the result re-parsed. On any failure `out` is empty |
 | `Reports()` | One `{ op, Status }` per operation, in call order |
@@ -342,9 +413,9 @@ if (Status st = p.Emit(splices); !st) Log("datacore: %s: %s", RefusalName(st.cat
 
 **Paths** walk from the record's root instance: `name` (a property, inherited ones included), `name[3]`, `name[Type]` (the first element whose struct is `Type` or derives from it). Inline structs and strong pointers are followed; weak pointers and references are not.
 
-**Refusals are data.** `Status` is `{ Refusal category; std::string message; }`; act on the category, show the message (`record "ShipA" field "speedX": no property "speedX" in Ship`). Categories: `Layout` (the base failed validation), `BadArgument`, `RecordNotFound`, `StructNotFound`, `FieldNotFound` (also null, weak and reference steps), `IndexOutOfRange`, `TypeMismatch`, `ValueOutOfRange`, `UnknownEnumOption`, `Opaque` (validation rule 6), `Unsupported` (reference fields until research R1; structs with no data block), `DependencyFailed` (an instance whose `AddInstance` was refused), `Corrupt` (the file's arrays or pointers point outside their pools), `Limit` (a count past 32 bits) and `Revalidation`.
+**Refusals are data.** `Status` is `{ Refusal category; std::string message; }`; act on the category, show the message (`record "ShipA" field "speedX": no property "speedX" in Ship`). Categories: `Layout` (the base failed validation), `BadArgument`, `RecordNotFound`, `StructNotFound`, `FieldNotFound` (also null, weak and reference steps), `IndexOutOfRange`, `TypeMismatch`, `ValueOutOfRange`, `UnknownEnumOption`, `Opaque` (validation rule 6), `Unsupported` (structs with no data block; `AddRecord` into a struct with no records, or into a file whose records disagree on record +8), `Duplicate` (`AddRecord`: the name or GUID exists, in the file or this batch), `DependencyFailed` (an instance whose `AddInstance` was refused), `Corrupt` (the file's arrays or pointers point outside their pools), `Limit` (a count past 32 bits) and `Revalidation`.
 
-**Atomicity.** An operation is checked in full before it writes, so a refused one changes nothing. With `PatchOptions::atomic` (the default, the design's per-pack rule) `Emit` refuses the whole batch with the first refused operation's category; with `atomic = false` it emits the accepted ones. Nothing existing is renumbered: overwrites are in place, and instances, array copies and strings are appended. Strings reuse the field's current pool offset when it already holds the same text, or one this batch added; the value-string pool is never searched. A null pointer is written as struct and instance `0xFFFFFFFF`, as 4.10.193 stores it.
+**Atomicity.** An operation is checked in full before it writes, so a refused one changes nothing. With `PatchOptions::atomic` (the default, the design's per-pack rule) `Emit` refuses the whole batch with the first refused operation's category; with `atomic = false` it emits the accepted ones. Nothing existing is renumbered: overwrites are in place, and instances, array copies and strings are appended. Strings reuse the field's current pool offset when it already holds the same text, or one this batch added; the value-string pool is never searched. A null pointer is written as struct and instance `0xFFFFFFFF`, as 4.10.193 stores it. A reference is written as the target record's root `instanceIndex` (`u32`) and its GUID, never the record's position (R1); a null reference is `0xFFFFFFFF` and a zero GUID. The reference's target struct isn't checked against the field's.
 
 Also on `Patch`: `Fork()` (a copy to try more operations on and keep or drop whole, which is how packs get per-pack atomicity), `ReadFields(rec | instance, path, out, maxDepth)` (the values under a record or field as patched so far, in pack syntax: what `sco-dcb show` prints), and each `OpReport` carries the `FieldSlot` an `OverrideField` or `SetPointer` wrote, so two operations that reach one field by different paths are recognized. Free functions: `CheckFieldPath(path)` (syntax only) and `ParseGuid(text, out)` (the inverse of `FormatGuid`).
 

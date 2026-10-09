@@ -1,10 +1,10 @@
 // sco::datacore patcher (sco/datacore.h): semantic overrides over a parsed Schema, turned into
 // base-offset splices for sco::vfs. docs/design/vfs-datacore.md section 4: "API", "How each
-// operation becomes splices", "When something is missing".
+// operation becomes splices", "AddRecord", "When something is missing".
 //
 // The patch is an overlay on the base file: byte overwrites in base offsets, plus one append region
-// per pool, per mapping block and for the value-string pool, each inserted at the end of what it
-// extends. Reads go through the overlay, so later operations see earlier ones. Every operation
+// per pool, per mapping block, for the record table and for both string pools, each inserted at the
+// end of what it extends. Reads go through the overlay, so later operations see earlier ones. Every operation
 // resolves and checks everything first and only then writes, so a refused one changes nothing.
 #include "internal.h"
 #include "sco/datacore.h"
@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <map>
 #include <optional>
+#include <random>
 #include <type_traits>
 #include <unordered_map>
 
@@ -85,6 +86,7 @@ const char* KindName(Value::Kind k) {
     case Value::Kind::Guid: return "guid";
     case Value::Kind::Enum: return "enum option";
     case Value::Kind::Instance: return "instance";
+    case Value::Kind::Record: return "record";
     }
     return "?";
 }
@@ -108,6 +110,7 @@ const char* RefusalName(Refusal r) {
     case Refusal::UnknownEnumOption: return "unknown enum option";
     case Refusal::Opaque: return "opaque struct";
     case Refusal::Unsupported: return "unsupported";
+    case Refusal::Duplicate: return "duplicate";
     case Refusal::DependencyFailed: return "dependency failed";
     case Refusal::Corrupt: return "corrupt data";
     case Refusal::Limit: return "limit";
@@ -140,12 +143,25 @@ struct Patch::Impl {
         std::string text;
     };
 
+    // A record AddRecord appended, and what a record reference resolves to.
+    struct NewRec { std::string name; Guid id; uint32_t st = 0, instance = 0, team = 0; uint64_t entry = 0; };
+    struct Target { uint32_t st = 0, instance = 0, team = 0; Guid id; Loc entry; std::string_view name; };
+    // A file path already used by records: its value-pool offset and the records' +8.
+    struct FileUse { uint32_t offset = 0, team = 0; bool agree = true; };
+
     const Schema& s;
     std::span<const uint8_t> f;
     PatchOptions opt;
     bool valid = false;
     std::array<uint64_t, kKinds> poolAt{}, poolEnd{}, poolRank{};
     uint64_t stringsEnd = 0, stringsRank = 0, mappingsAt = 0;
+    uint64_t recordsAt = 0, recordsEnd = 0, recordsRank = 0, namesAt = 0, namesEnd = 0, namesRank = 0;
+    std::vector<uint8_t> hasRecords;                  // per struct: a record-capable type
+    std::vector<NewRec> added;
+    std::unordered_map<std::string, uint32_t> addedByName, addedByGuid;
+    std::unordered_map<std::string, FileUse> files;   // built on the first AddRecord
+    bool filesBuilt = false;
+    std::mt19937_64 rng;
     std::vector<std::vector<uint32_t>> mappingsOf;   // per struct, in file order
     std::map<uint64_t, uint8_t> over;                // base offset -> new byte
     std::map<uint64_t, Region> regions;              // by rank (file order)
@@ -153,7 +169,12 @@ struct Patch::Impl {
     std::vector<OpReport> reports;
     std::optional<Loc> wrote;                        // the slot the running OverrideField wrote
 
-    Impl(const Schema& schema, PatchOptions o) : s(schema), f(schema.File()), opt(o) {
+    Impl(const Schema& schema, PatchOptions o) : s(schema), f(schema.File()), opt(std::move(o)) {
+        if (opt.guidSeed) rng.seed(*opt.guidSeed);
+        else {
+            std::random_device rd;
+            rng.seed((static_cast<uint64_t>(rd()) << 32) ^ rd());
+        }
         if (s.failed != Check::None || s.recordSize == 0 || f.size() != s.fileSize) return;
         bool pools = true;
         for (size_t k = 0; k < kKinds; ++k) {
@@ -168,20 +189,33 @@ struct Patch::Impl {
                 }
             pools &= found;
         }
-        bool strs = false, maps = false;
+        bool strs = false, maps = false, recs = false, names = false;
         for (size_t i = 0; i < s.tables.size(); ++i) {
-            if (s.tables[i].name == "value strings") {
-                stringsEnd = s.tables[i].offset + s.tables[i].bytes;
+            const Table& t = s.tables[i];
+            if (t.name == "value strings") {
+                stringsEnd = t.offset + t.bytes;
                 stringsRank = i;
                 strs = true;
-            } else if (s.tables[i].name == "mappings") {
-                mappingsAt = s.tables[i].offset;
+            } else if (t.name == "mappings") {
+                mappingsAt = t.offset;
                 maps = true;
+            } else if (t.name == "records") {
+                recordsAt = t.offset;
+                recordsEnd = t.offset + t.bytes;
+                recordsRank = i;
+                recs = true;
+            } else if (t.name == "name strings") {
+                namesAt = t.offset;
+                namesEnd = t.offset + t.bytes;
+                namesRank = i;
+                names = true;
             }
         }
         mappingsOf.resize(s.structs.size());
         for (uint32_t m = 0; m < s.mappings.size(); ++m) mappingsOf[s.mappings[m].structIndex].push_back(m);
-        valid = pools && strs && maps;
+        hasRecords.assign(s.structs.size(), 0);
+        for (const Record& r : s.records) hasRecords[r.structIndex] = 1;   // indices checked by the parser
+        valid = pools && strs && maps && recs && names;
     }
 
     // ---- the overlay ---------------------------------------------------------------------------
@@ -306,18 +340,43 @@ struct Patch::Impl {
         }
     }
 
-    Status Root(const RecordRef& ref, Node& out) const {
+    static std::string GuidKey(const Guid& g) { return std::string(reinterpret_cast<const char*>(g.bytes.data()), 16); }
+    const NewRec* AddedByGuid(const Guid& g) const {
+        const auto it = addedByGuid.find(GuidKey(g));
+        return it == addedByGuid.end() ? nullptr : &added[it->second];
+    }
+    const NewRec* AddedByName(std::string_view n) const {
+        const auto it = addedByName.find(std::string(n));
+        return it == addedByName.end() ? nullptr : &added[it->second];
+    }
+    // A record of the file or of this patch: GUID first, then the name.
+    Status Lookup(const RecordRef& ref, Target& t) const {
         const Record* r = ref.guid ? s.FindRecord(*ref.guid) : nullptr;
-        if (!r && !ref.name.empty()) r = s.FindRecordByName(ref.name);
-        if (!r) {
-            if (!ref.guid && ref.name.empty()) return Refuse(Refusal::BadArgument, "no record given");
-            return Refuse(Refusal::RecordNotFound, "not found");
+        const NewRec* n = !r && ref.guid ? AddedByGuid(*ref.guid) : nullptr;
+        if (!r && !n && !ref.name.empty()) {
+            r = s.FindRecordByName(ref.name);
+            if (!r) n = AddedByName(ref.name);
         }
-        if (s.structInfo[r->structIndex].opaque)
-            return Refuse(Refusal::Opaque, "struct " + SName(r->structIndex) + " has a field of unknown type");
+        if (r) {
+            const uint64_t i = static_cast<uint64_t>(r - s.records.data());
+            t = { r->structIndex, r->instanceIndex, r->unknown, r->id, { kBase, recordsAt + i * s.recordSize }, s.Name(r->name) };
+            return {};
+        }
+        if (n) {
+            t = { n->st, n->instance, n->team, n->id, { recordsRank, n->entry }, n->name };
+            return {};
+        }
+        if (!ref.guid && ref.name.empty()) return Refuse(Refusal::BadArgument, "no record given");
+        return Refuse(Refusal::RecordNotFound, "not found");
+    }
+    Status Root(const RecordRef& ref, Node& out) const {
+        Target t;
+        if (Status st = Lookup(ref, t); !st) return st;
+        if (s.structInfo[t.st].opaque)
+            return Refuse(Refusal::Opaque, "struct " + SName(t.st) + " has a field of unknown type");
         Loc l;
-        if (!InstanceLoc(r->structIndex, r->instanceIndex, l)) return Refuse(Refusal::Corrupt, "its root instance doesn't exist");
-        out = { Node::Inst, r->structIndex, r->instanceIndex, l, 0, 0 };
+        if (!InstanceLoc(t.st, t.instance, l)) return Refuse(Refusal::Corrupt, "its root instance doesn't exist");
+        out = { Node::Inst, t.st, t.instance, l, 0, 0 };
         return {};
     }
     Status Start(InstanceId id, Node& out) const {
@@ -565,8 +624,20 @@ struct Patch::Impl {
             Put(e.bytes, v.instance.structIndex, 4);
             Put(e.bytes + 4, v.instance.index, 4);
             return {};
-        case type::kReference:
-            return Refuse(Refusal::Unsupported, "reference fields wait for research R1 (the u32 before the GUID)");
+        case type::kReference: {
+            // R1: the target record's root instanceIndex, then its GUID; null is all ones and a zero GUID.
+            e.size = 20;
+            if (v.kind == K::Null) {
+                Put(e.bytes, kNull, 4);
+                return {};
+            }
+            if (v.kind != K::Record) return mismatch();
+            Target target;
+            if (Status st = Lookup(v.record, target); !st) return Refuse(st.category, "reference target " + Ref(v.record) + ": " + st.message);
+            Put(e.bytes, target.instance, 4);
+            std::memcpy(e.bytes + 4, target.id.bytes.data(), 16);
+            return {};
+        }
         case type::kClass:
             return Refuse(Refusal::TypeMismatch, "a struct field takes no value; clone an instance with AddInstance");
         default:
@@ -746,6 +817,144 @@ struct Patch::Impl {
         return {};
     }
 
+    // ---- AddRecord (design section 4, "AddRecord") ----------------------------------------------
+
+    bool NameStart(uint32_t o) const {
+        return o < s.header.nameStringLength && (o == 0 || f[namesAt + o - 1] == 0);
+    }
+    void BuildFiles() {
+        if (filesBuilt) return;
+        filesBuilt = true;
+        for (const Record& r : s.records) {
+            auto [it, fresh] = files.try_emplace(std::string(s.ValueString(r.fileName)), FileUse{ r.fileName, r.unknown, true });
+            if (!fresh && it->second.team != r.unknown) it->second.agree = false;
+        }
+    }
+    Guid NewGuid() {
+        // Version 4 in FormatGuid's string form: the third group (bytes 1..0) starts with 4, the
+        // fourth (byte 15 first) with 8..b.
+        Guid g;
+        const uint64_t a = rng(), b = rng();
+        for (int i = 0; i < 8; ++i) {
+            g.bytes[static_cast<size_t>(i)] = static_cast<uint8_t>(a >> (8 * i));
+            g.bytes[static_cast<size_t>(i) + 8] = static_cast<uint8_t>(b >> (8 * i));
+        }
+        g.bytes[1] = static_cast<uint8_t>((g.bytes[1] & 0x0F) | 0x40);
+        g.bytes[15] = static_cast<uint8_t>((g.bytes[15] & 0x3F) | 0x80);
+        return g;
+    }
+    bool GuidTaken(const Guid& g, std::string& owner) const {
+        if (const Record* r = s.FindRecord(g)) { owner = std::string(s.Name(r->name)); return true; }
+        if (const NewRec* n = AddedByGuid(g)) { owner = n->name; return true; }
+        return false;
+    }
+
+    Status AddRecord(const NewRecord& nr, AddedRecord& out) {
+        static constexpr std::string_view kPrefix = "libs/foundry/records/", kExt = ".xml";
+        if (nr.name.empty() || nr.name.find('\0') != std::string::npos)
+            return Refuse(Refusal::BadArgument, "a record needs a name, without NUL");
+        const int64_t found = s.FindStruct(nr.type);
+        if (found < 0) return Refuse(Refusal::StructNotFound, "no struct " + Q(nr.type));
+        const auto st = static_cast<uint32_t>(found);
+        if (s.FindRecordByName(nr.name) || AddedByName(nr.name))
+            return Refuse(Refusal::Duplicate, "record name " + Q(nr.name) + " already exists");
+        if (!hasRecords[st]) return Refuse(Refusal::Unsupported, "struct " + Q(nr.type) + " has no records");
+        if (!nr.clone.record)
+            return Refuse(Refusal::BadArgument, "clone must be a record of the same struct (zero-filled records are refused: required sub-objects would be null)");
+        if (!nr.clone.field.empty())
+            return Refuse(Refusal::TypeMismatch, "clone must be a record of the same struct, not a field of one");
+        Target clone;
+        if (Status c = Lookup(*nr.clone.record, clone); !c) return Refuse(c.category, "clone " + Ref(*nr.clone.record) + ": " + c.message);
+        if (clone.st != st)
+            return Refuse(Refusal::TypeMismatch, "clone must be a record of the same struct: " + Q(clone.name) + " is a " + SName(clone.st));
+
+        const std::string path = nr.filePath.empty() ? std::string(kPrefix) + "sco/" + opt.packId + "/" + nr.name + std::string(kExt) : nr.filePath;
+        if (path.size() <= kPrefix.size() + kExt.size() || path.compare(0, kPrefix.size(), kPrefix) != 0 ||
+            path.compare(path.size() - kExt.size(), kExt.size(), kExt) != 0 || path.find('\0') != std::string::npos)
+            return Refuse(Refusal::BadArgument, "bad file path " + Q(path) + ": expected libs/foundry/records/....xml");
+
+        Guid id;
+        std::string owner;
+        if (nr.guid) {
+            id = *nr.guid;
+            if (id == Guid{}) return Refuse(Refusal::BadArgument, "the zero GUID is a null reference");
+            if (GuidTaken(id, owner)) return Refuse(Refusal::Duplicate, "guid " + FormatGuid(id) + " already exists (record " + Q(owner) + ")");
+        } else {
+            int tries = 0;
+            do id = NewGuid();
+            while (GuidTaken(id, owner) && ++tries < 16);
+            if (tries == 16) return Refuse(Refusal::Duplicate, "no free GUID after 16 tries (check PatchOptions::guidSeed)");
+        }
+
+        // Record +8 (R1): the value of the records already in that file, else the clone's.
+        uint32_t team = 0;
+        BuildFiles();
+        const auto use = files.find(path);
+        if (s.recordSize > 32) {
+            if (use != files.end()) {
+                if (!use->second.agree) return Refuse(Refusal::Unsupported, "records in file " + Q(path) + " disagree on record +8");
+                team = use->second.team;
+            } else {
+                if (!NameStart(clone.team))
+                    return Refuse(Refusal::Corrupt, "record +8 of clone " + Q(clone.name) + " is not a name-pool string");
+                team = clone.team;
+            }
+        }
+
+        if (Status c = CanAddInstances(st, 1); !c) return c;
+        if (Instances(st) > 0xFFFF)
+            return Refuse(Refusal::Limit, "struct " + SName(st) + " has 65536 instances: a record's root index is 16 bits");
+        if (SatAdd(s.header.recordCount, added.size() + 1) > kU32) return Refuse(Refusal::Limit, "the record count would pass 2^32");
+        const Region* nreg = Find(namesRank);
+        const uint64_t nameLen = static_cast<uint64_t>(s.header.nameStringLength) + (nreg ? nreg->bytes.size() : 0);
+        if (SatAdd(nameLen, nr.name.size() + 1) > kU32) return Refuse(Refusal::Limit, "the name pool would pass 4 GiB");
+        const Region* sreg = Find(stringsRank);
+        const uint64_t valueLen = static_cast<uint64_t>(s.header.valueStringLength) + (sreg ? sreg->bytes.size() : 0);
+        if (use == files.end() && SatAdd(valueLen, path.size() + 1) > kU32)
+            return Refuse(Refusal::Limit, "the value-string pool would pass 4 GiB");
+        const uint64_t size = s.structInfo[st].size;
+        Bytes root(size), entry(s.recordSize);
+        Loc l;
+        if (!InstanceLoc(clone.st, clone.instance, l) || !Read(l, root.data(), size)) return Refuse(Refusal::Corrupt, "the clone's root instance can't be read");
+        if (!Read(clone.entry, entry.data(), entry.size())) return Refuse(Refusal::Corrupt, "the clone's record entry can't be read");
+
+        // Commit: root instance, name, file path, then the entry (a copy of the clone's, so any
+        // field this layout doesn't name is kept).
+        const uint64_t index = PushInstances(st, root, 1);
+        Region& names = Grow(namesRank, namesEnd);
+        const auto nameOff = static_cast<uint32_t>(nameLen);
+        names.bytes.insert(names.bytes.end(), nr.name.begin(), nr.name.end());
+        names.bytes.push_back(0);
+        uint32_t fileOff = 0;
+        if (use != files.end()) fileOff = use->second.offset;
+        else {
+            Region& strs = Grow(stringsRank, stringsEnd);
+            fileOff = static_cast<uint32_t>(valueLen);
+            strs.bytes.insert(strs.bytes.end(), path.begin(), path.end());
+            strs.bytes.push_back(0);
+            strings.emplace(path, fileOff);
+            files.emplace(path, FileUse{ fileOff, team, true });
+        }
+        uint8_t* e = entry.data();
+        uint8_t* tail = e + s.recordSize - 24;
+        Put(e, nameOff, 4);
+        Put(e + 4, fileOff, 4);
+        if (s.recordSize > 32) Put(e + 8, team, 4);
+        Put(tail, st, 4);
+        std::memcpy(tail + 4, id.bytes.data(), 16);
+        Put(tail + 20, index, 2);
+        Put(tail + 22, size, 2);
+        Region& recs = Grow(recordsRank, recordsEnd);
+        const uint64_t at = recs.bytes.size();
+        recs.bytes.insert(recs.bytes.end(), entry.begin(), entry.end());
+        ++recs.count;
+        addedByName.emplace(nr.name, static_cast<uint32_t>(added.size()));
+        addedByGuid.emplace(GuidKey(id), static_cast<uint32_t>(added.size()));
+        added.push_back({ nr.name, id, st, static_cast<uint32_t>(index), team, at });
+        out = { id, { st, static_cast<uint32_t>(index) }, static_cast<uint32_t>(s.header.recordCount + added.size() - 1) };
+        return {};
+    }
+
     // ---- emit ----------------------------------------------------------------------------------
 
     Status Emit(std::vector<vfs::Splice>& out) const {
@@ -766,6 +975,9 @@ struct Patch::Impl {
                 Put(h + 36 + 4 * k, s.header.values[k] + r->count, 4);
         if (const Region* r = Find(stringsRank); r && !r->bytes.empty())
             Put(h + 112, s.header.valueStringLength + r->bytes.size(), 4);
+        if (const Region* r = Find(recordsRank); r && r->count) Put(h + 32, s.header.recordCount + r->count, 4);
+        if (const Region* r = Find(namesRank); r && !r->bytes.empty())
+            Put(h + 116, s.header.nameStringLength + r->bytes.size(), 4);
         if (std::memcmp(h, f.data(), kHeaderSize) != 0)
             for (uint64_t i = 0; i < kHeaderSize; ++i) w[i] = h[i];
 
@@ -820,6 +1032,22 @@ struct Patch::Impl {
         if (!re.Parse(patched)) {
             out.clear();
             return Refuse(Refusal::Revalidation, "re-validation failed: " + re.error);
+        }
+        // Added records: the count, the entry size, and each one's root instance and size.
+        std::string bad;
+        if (re.recordSize != s.recordSize) bad = Fmt("the record size is %u, not %u", re.recordSize, s.recordSize);
+        else if (re.header.recordCount != s.header.recordCount + added.size())
+            bad = Fmt("%u records, expected %llu", re.header.recordCount, static_cast<ull>(s.header.recordCount + added.size()));
+        for (size_t k = 0; k < added.size() && bad.empty(); ++k) {
+            const NewRec& n = added[k];
+            const Record* r = re.FindRecord(n.id);
+            if (!r || re.Name(r->name) != n.name || r->structIndex != n.st || r->instanceIndex != n.instance ||
+                r->structSize != re.structInfo[n.st].size || r->unknown != n.team)
+                bad = "added record " + Q(n.name) + " doesn't read back";
+        }
+        if (!bad.empty()) {
+            out.clear();
+            return Refuse(Refusal::Revalidation, "re-validation failed: " + bad);
         }
         return {};
     }
@@ -899,11 +1127,10 @@ struct Patch::Impl {
             return (n.dataType == type::kWeakPointer ? "weak -> " : "-> ") + InstName(st, idx);
         }
         case type::kReference: {
+            if (static_cast<uint32_t>(u) == kNull) return "null";
             Guid g;
             std::memcpy(g.bytes.data(), b + 4, 16);
-            std::string t = "ref {" + FormatGuid(g) + "}";
-            if (const Record* r = s.FindRecord(g)) t += " (" + std::string(s.Name(r->name)) + ")";
-            return t;
+            return "{ ref = \"guid:" + FormatGuid(g) + "\" }";
         }
         default: return "(unknown type)";
         }
@@ -1061,6 +1288,15 @@ Status Patch::AddInstance(std::string_view type, const InstanceSource& cloneFrom
     if (!impl_->valid)
         return impl_->Report(op, where, Refuse(Refusal::Layout, "the base file failed validation: " + impl_->s.error));
     return impl_->Report(op, where, impl_->AddInstance(type, cloneFrom, out));
+}
+
+Status Patch::AddRecord(const NewRecord& rec, AddedRecord& out) {
+    out = {};
+    const std::string where = "record " + Q(rec.name);
+    const std::string op = "AddRecord " + where + " (" + rec.type + ")";
+    if (!impl_->valid)
+        return impl_->Report(op, where, Refuse(Refusal::Layout, "the base file failed validation: " + impl_->s.error));
+    return impl_->Report(op, where, impl_->AddRecord(rec, out));
 }
 
 Status Patch::FindInstance(const InstanceSource& source, InstanceId& out) const {

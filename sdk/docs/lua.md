@@ -40,6 +40,8 @@ A disabled script stays listed but does nothing: its event callbacks stop, its c
 | `sco.register_command(t)` | `true`, or `false, err` | Registers a command (below) |
 | `sco.invoke(name, ...)` | `true, reply`, or `false, err[, reply]` | Runs any command, sc-offline's or a plugin's, now. Arguments must match the command's types exactly (`int` takes an integer, not `"2"` or `2.0`). When the command itself fails, the third value is its reply |
 | `sco.list_commands()` | table | `{ {name, title, help, capability, args = { {name, type, help}, ... } }, ... }` |
+| `sco.bind_hotkey(chord, command, ...)` | `true` or `false, why, message` | Binds a key chord (`"ctrl+alt+h"`) to a command with the extra values as its arguments: typed by the command's definition when it is registered, else by their Lua types. `message` names who holds a taken chord. Withdrawn when the script unloads. Needs the host service `sco.ui` (`unavailable` without it). Tabs and overlays from Lua come later |
+| `sco.unbind_hotkey(chord)` | `true` or `false, why, message` | Removes the script's own binding |
 
 `err` is the result name from the C API in lower case: `"bad_arg"`, `"unavailable"`, `"not_found"`, `"too_many"`, `"crashed"`.
 
@@ -82,11 +84,11 @@ for _, r in ipairs(p:report()) do print(r.op, r.state, r.reason) end
 | `p:set(record, field, value)`, `p:append(record, field, value)` | `true`, or `false, err` |
 | `p:add_instance(type [, clone_record [, clone_field]])` | An instance (use it as a value or with `set_pointer`), or `nil, err` |
 | `p:set_pointer(record, field, instance)` | `true`, or `false, err` |
-| `p:add_record(...)` | `false, "unavailable"` (not in 1.0) |
+| `p:add_record(...)` | `false, "unavailable"` (not in 1.0: saved patches have no record operation yet) |
 | `p:commit()`, `p:discard()` | `true`, or `false, err` |
 | `p:report()` | A list of `{ state = "queued" \| "applied" \| "skipped" \| "refused", op = n, reason = "..." }`: one per operation (`op` 1, 2, ...), then the patch's (`op` 0) |
 
-Values: integers, numbers, strings (also enum options), booleans, `nil` (a null pointer), an instance from `add_instance`, `{ guid = "..." }`, `{ enum = "Option" }`. A `record` is a record name or `"guid:..."`. Errors are the same strings as elsewhere (`"bad_arg"`, `"not_found"`, `"unavailable"`, ...). Every call counts against the step budget like other host calls, and the sandbox is unchanged: scripts never touch files; the host writes the saved patch.
+Values: integers, numbers, strings (also enum options), booleans, `nil` (a null pointer), an instance from `add_instance`, `{ guid = "..." }`, `{ enum = "Option" }`, `{ ref = "RecordName" }` (a reference field's target). A `record` is a record name or `"guid:..."`. Errors are the same strings as elsewhere (`"bad_arg"`, `"not_found"`, `"unavailable"`, ...). Every call counts against the step budget like other host calls, and the sandbox is unchanged: scripts never touch files; the host writes the saved patch.
 
 ## Check a script
 

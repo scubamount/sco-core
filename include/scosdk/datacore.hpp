@@ -38,6 +38,7 @@ namespace sco::sdk {
 // Value forms that aren't plain C++ types.
 struct DataCoreGuid { std::string_view text; };     // "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 struct DataCoreEnum { std::string_view option; };   // an enum field's option by name
+struct DataCoreRef { std::string_view record; };    // a reference field's target: a record name or "guid:..."
 
 // An instance a patch added. Usable as a value (pointer fields, arrays of structs) and, through
 // Ref(), as the record argument naming the instance itself.
@@ -96,6 +97,7 @@ public:
     sco_result Set(std::string_view record, std::string_view field, const char* v) noexcept { return Set(record, field, std::string_view(v ? v : "")); }
     sco_result Set(std::string_view record, std::string_view field, DataCoreGuid v) noexcept { return Put(true, record, field, Str(SCO_DC_GUID, v.text)); }
     sco_result Set(std::string_view record, std::string_view field, DataCoreEnum v) noexcept { return Put(true, record, field, Str(SCO_DC_ENUM, v.option)); }
+    sco_result Set(std::string_view record, std::string_view field, DataCoreRef v) noexcept { return Put(true, record, field, Str(SCO_DC_REF, v.record)); }
     sco_result Set(std::string_view record, std::string_view field, const DataCoreInstance& v) noexcept { return Put(true, record, field, Inst(v)); }
     sco_result Set(std::string_view record, std::string_view field, std::nullptr_t) noexcept { return Put(true, record, field, Null()); }
 
@@ -130,7 +132,7 @@ public:
             return SCO_TOO_MANY;
         }
     }
-    // SCO_UNAVAILABLE in sco.datacore 1.0 (AddRecord comes with the patcher's plan PR 4).
+    // SCO_UNAVAILABLE in sco.datacore 1.0 (saved patches have no record operation yet).
     sco_result AddRecord(std::string_view type, std::string_view name, std::string_view guid, std::string_view cloneRecord,
                          std::string_view filePath = {}) noexcept {
         if (!t_) return r_;

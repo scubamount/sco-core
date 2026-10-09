@@ -77,6 +77,7 @@ static Bytes Scene(bool opaque = false, bool corrupt = false) {
         b.mappings.push_back({ static_cast<uint32_t>(b.structs.size() - 1), 1 });
         b.records.push_back({ "OddOne", "libs/foundry/records/test/odd.xml", static_cast<uint32_t>(b.structs.size() - 1),
                               dcb::MakeGuid(0x70), 0, 0 });
+        b.structs.push_back({ "Orphan", -1, { { "v", dcb::t::Int32 } } });   // no data block: nothing can be added
     }
     Bytes f = b.Build();
     if (b.layout.badFills) std::printf("  scene: %d bad fills\n", b.layout.badFills);
@@ -182,7 +183,7 @@ static void TestApplyAll() {
     CHECK(r.status.ok() && r.packs.size() == 1);
     for (const PackOpReport& op : r.packs[0].ops)
         if (!op.status) std::printf("  line %u: %s\n", op.line, op.status.message.c_str());
-    CHECK(r.packs[0].state == PackState::Applied && r.packs[0].skipped == 0 && r.packs[0].applied == 15);
+    CHECK(r.packs[0].state == PackState::Applied && r.packs[0].skipped == 0 && r.packs[0].applied == 16);
     const Bytes f = Applied(base, r);
     CHECK(!f.empty());
     CHECK(Val(f, "ShipA", "speed") == "2.5");
@@ -190,13 +191,14 @@ static void TestApplyAll() {
     CHECK(Val(f, "ShipA", "kind") == "{ enum = \"Small\" }");
     CHECK(Val(f, "ShipA", "id") == "{ guid = \"93929190-9594-9796-9f9e-9d9c9b9a9998\" }");
     CHECK(Val(f, "ShipA", "u64") == "{ uint = \"18446744073709551615\" }");
+    CHECK(Val(f, "ShipB", "maker") == "{ ref = \"guid:17161514-1312-1110-1f1e-1d1c1b1a1918\" }");   // ShipA
     CHECK(Val(f, "ShipB", "engine.weight") == "11.0" && Val(f, "ShipB", "engine.partName") == "\"fresh\"");
     CHECK(Val(f, "PartX", "weight") == "1.0");                  // the clone source is untouched
     CHECK(Val(f, "ShipA", "owner") == "weak -> Base[0]");
     CHECK(Val(f, "ShipA", "counts") == "[3]" && Val(f, "ShipA", "counts[2]") == "30");
     CHECK(Val(f, "ShipA", "parts") == "[3]" && Val(f, "ShipA", "parts[2]") == "null");
     CHECK(Val(f, "ShipA", "path") == "[1]" && Val(f, "ShipA", "path[0].x") == "7.0");
-    CHECK(Summary(r) == "[datacore] 1 pack: p 15/15 applied");
+    CHECK(Summary(r) == "[datacore] 1 pack: p 16/16 applied");
 }
 
 // Plugin order: the later pack wins a field both set; the conflict names both.
@@ -320,7 +322,9 @@ static void TestRefusals() {
         { "[[set]]\nrecord = \"ShipA\"\nfield = \"i8\"\nvalue = 300\n", Refusal::ValueOutOfRange },
         { "[[set]]\nrecord = \"ShipA\"\nfield = \"kind\"\nvalue = { enum = \"Huge\" }\n", Refusal::UnknownEnumOption },
         { "[[set]]\nrecord = \"OddOne\"\nfield = \"y\"\nvalue = 1.0\n", Refusal::Opaque },
-        { "[[set]]\nrecord = \"ShipA\"\nfield = \"maker\"\nvalue = { guid = \"17161514-1312-1110-1f1e-1d1c1b1a1918\" }\n", Refusal::Unsupported },
+        { "[[set]]\nrecord = \"ShipA\"\nfield = \"maker\"\nvalue = { guid = \"17161514-1312-1110-1f1e-1d1c1b1a1918\" }\n", Refusal::TypeMismatch },
+        { "[[set]]\nrecord = \"ShipA\"\nfield = \"maker\"\nvalue = { ref = \"Nope\" }\n", Refusal::RecordNotFound },
+        { "[[instance]]\nid = \"x\"\nstruct = \"Orphan\"\n", Refusal::Unsupported },
         { "[[instance]]\nid = \"x\"\nstruct = \"Part\"\nclone = { record = \"Nope\" }\n[[set]]\nrecord = \"ShipA\"\nfield = \"engine\"\npointer = \"@x\"\n",
           Refusal::RecordNotFound },
         { "[[set]]\nrecord = \"ShipA\"\nfield = \"engine\"\npointer = { record = \"ShipA\", field = \"pos\" }\n", Refusal::TypeMismatch },

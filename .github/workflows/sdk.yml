@@ -33,6 +33,9 @@ jobs:
       # fixture test_datacore_pack writes (the record and field names of 4.10.193 the pack uses).
       # A pack naming a missing field must be refused.
       - name: Check the sample DataCore pack with sco-dcb
+        env:
+          CC: clang
+          CXX: clang++
         run: |
           cmake -S . -B build-dcb -DCMAKE_BUILD_TYPE=Release -DSCO_BUILD_TESTS=ON
           cmake --build build-dcb --parallel --target sco-dcb test_datacore_pack

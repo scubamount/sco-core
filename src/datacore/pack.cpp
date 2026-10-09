@@ -57,6 +57,8 @@ std::string ValueText(const Value& v) {
     case Value::Kind::String: return Q(v.s);
     case Value::Kind::Guid: return "{ guid = \"" + FormatGuid(v.guid) + "\" }";
     case Value::Kind::Enum: return "{ enum = " + Q(v.s) + " }";
+    case Value::Kind::Record:
+        return "{ ref = " + Q(v.record.guid ? "guid:" + FormatGuid(*v.record.guid) : v.record.name) + " }";
     case Value::Kind::Null: case Value::Kind::Instance: break;
     }
     return "\"\"";
@@ -106,6 +108,20 @@ struct Parser {
                 v = Value::OfEnum(s);
                 return true;
             }
+            if (Typed(*t, "ref", s)) {   // a reference field's target record: a name or "guid:..."
+                RecordRef r;
+                if (s.rfind("guid:", 0) == 0) {
+                    Guid g;
+                    if (!ParseGuid(std::string_view(s).substr(5), g)) return Fail(line, where + ": bad guid in ref " + Q(s));
+                    r.guid = g;
+                } else if (!s.empty()) {
+                    r.name = s;
+                } else {
+                    return Fail(line, where + ": empty ref");
+                }
+                v = Value::OfRecord(std::move(r));
+                return true;
+            }
             if (Typed(*t, "uint", s)) {
                 char* end = nullptr;
                 const unsigned long long u = s.empty() || s[0] == '-' ? 0 : std::strtoull(s.c_str(), &end, 10);
@@ -115,7 +131,7 @@ struct Parser {
                 return true;
             }
         }
-        return Fail(line, where + ": a value is a number, a string, true/false, { guid = \"...\" }, { enum = \"...\" } or { uint = \"...\" }");
+        return Fail(line, where + ": a value is a number, a string, true/false, { guid = \"...\" }, { enum = \"...\" }, { ref = \"...\" } or { uint = \"...\" }");
     }
 
     bool String(const toml::table& t, std::string_view key, std::string& s, const std::string& where, bool required) {
@@ -198,7 +214,7 @@ struct Parser {
             const std::string path = prefix.empty() ? std::string(k->str()) : prefix + "." + std::string(k->str());
             const toml::table* sub = v->as_table();
             std::string s;
-            if (sub && !Typed(*sub, "guid", s) && !Typed(*sub, "enum", s) && !Typed(*sub, "uint", s)) {
+            if (sub && !Typed(*sub, "guid", s) && !Typed(*sub, "enum", s) && !Typed(*sub, "uint", s) && !Typed(*sub, "ref", s)) {
                 if (!Sets(*sub, path, sets, where)) return false;
                 continue;
             }

@@ -10,6 +10,7 @@
 #include "sco/plugins.h"
 #include "sco/runtime.h"
 #include "sco/status.h"
+#include "sco/ui.h"
 #include "../plugins/lua/sco_lua.h"
 #include <csignal>
 #include <cstdio>
@@ -172,6 +173,39 @@ static void TestTable() {
     CHECK(Invoke(g_caller, "table.list").text == "Add 2 float second");
     CHECK(Invoke(g_caller, "table.print").r == SCO_OK && Logged("[table] a\t1\tnil"));
     Unload(l);
+}
+
+// ---- sco.ui hotkeys ---------------------------------------------------------------------------
+
+static void TestHotkeys() {
+    CHECK(sco::ui::Start() == Result::Ok);
+    CHECK(sco::ui::ReserveChord("f6") == Result::Ok);
+    Write("keys", R"(
+        sco.register_command{ name = "keys.add", title = "Add",
+          args = {{ name = "a", type = "int" }, { name = "b", type = "float" }},
+          fn = function(a, b) return tostring(a + b) end }
+        assert(sco.bind_hotkey("Ctrl+Alt+K", "keys.add", 40, 2))                 -- 2 is a float: keys.add says so
+        assert(sco.bind_hotkey("ctrl+alt+l", "later.cmd", "x", true, 1.5))      -- not registered: Lua types
+        local ok, why, msg = sco.bind_hotkey("f6", "keys.add", 1, 2)
+        assert(not ok and why == "bad_arg" and msg == "f6 is reserved by the host", tostring(msg))
+        ok, why, msg = sco.bind_hotkey("alt+ctrl+k", "keys.add", 1, 2)
+        assert(not ok and msg == "ctrl+alt+k is bound by 'keys' to keys.add", tostring(msg))
+        assert(select(2, sco.bind_hotkey("ctrl+alt+m", "keys.add", 1)) == "bad_arg")        -- arg count
+        assert(select(2, sco.bind_hotkey("ctrl+alt+m", "keys.add", "1", 2)) == "bad_arg")  -- arg type
+        assert(select(2, sco.bind_hotkey("ctrl+alt+m", "later.cmd", {})) == "bad_arg")    -- a table
+        assert(select(2, sco.bind_hotkey("ctrl++", "keys.add", 1, 2)) == "bad_arg")
+        assert(select(2, sco.unbind_hotkey("f12")) == "not_found")
+        assert(sco.bind_hotkey("f12", "keys.add", 1, 2) and sco.unbind_hotkey("F12"))
+    )");
+    Loaded l = Load("keys");
+    CHECK(l.p && l.p->state == State::Loaded);
+    std::string reply;
+    CHECK(sco::ui::Dispatch("alt+ctrl+k", &reply) == Result::Ok && reply == "42.0");
+    const auto keys = sco::ui::Hotkeys();
+    CHECK(keys.size() == 2 && keys[0].chord == "ctrl+alt+k" && keys[0].owner == "keys" && keys[1].nargs == 3);
+    Unload(l);
+    CHECK(sco::ui::Hotkeys().empty());   // withdrawn with the script
+    sco::ui::Stop();
 }
 
 // ---- the sandbox ------------------------------------------------------------------------------
@@ -441,6 +475,7 @@ local part = assert(p:add_instance("Part", "PartX"))
 assert(p:set_pointer("ShipB", "engine", part))
 assert(p:set("ShipB", "label", "lua"))
 assert(p:set("ShipA", "kind", { enum = "Small" }))
+assert(p:set("ShipA", "maker", { ref = "BaseOne" }))
 assert(p:append("ShipA", "parts", part))
 assert(p:append("ShipA", "parts", nil))
 local ok, err = p:set("ShipA", "speed..x", 1)
@@ -450,7 +485,7 @@ assert(select(2, p:add_record("Ship", "ShipC")) == "unavailable", "add_record")
 assert(p:commit())
 assert(select(2, p:commit()) == "bad_arg", "committed twice")
 local r = p:report()
-assert(#r == 8 and r[1].state == "queued" and r[1].op == 1 and r[8].op == 0, "report before the load")
+assert(#r == 9 and r[1].state == "queued" and r[1].op == 1 and r[9].op == 0, "report before the load")
 local q = assert(dc.begin({ atomic = false }))
 assert(q:discard())
 assert(select(2, q:commit()) == "not_found", "discarded")
@@ -469,7 +504,7 @@ end }
     P::ContentIndex index;
     const svc::LoadResult r = svc::Load(s, l.list, index, data);
     CHECK(r.result.status.ok() && r.result.packs.size() == 1 && r.result.packs[0].state == sco::datacore::PackState::Applied);
-    CHECK(r.result.packs.size() == 1 && r.result.packs[0].applied == 7);
+    CHECK(r.result.packs.size() == 1 && r.result.packs[0].applied == 8);
     const Reply rep = Invoke(g_caller, "dcmod.report");
     CHECK(rep.r == SCO_OK && rep.text == "applied applied loaded");
     Unload(l);
@@ -501,6 +536,7 @@ int main(int argc, char** argv) {
     fs::create_directories(g_root);
     TestGreeterExample(argv[1]);
     TestTable();
+    TestHotkeys();
     TestSandbox();
     TestLimits();
     TestDataCore();

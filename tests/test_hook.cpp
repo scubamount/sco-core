@@ -325,6 +325,89 @@ static void TestTransactionAndRemoveAll() {
     CHECK(std::memcmp(f3, kThree, sizeof kThree) == 0 && std::memcmp(f4, kFour, sizeof kFour) == 0);
     CHECK(H::RemoveAll() == 0);
 }
+
+static int One() { return 1; }
+static int Three() { return 3; }
+
+// A page of data with the protection a vtable has in game (read-only), for SwapSlot.
+static void** SlotPage() {
+#if defined(_WIN32)
+    return static_cast<void**>(VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+#else
+    void* p = mmap(nullptr, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    return p == MAP_FAILED ? nullptr : static_cast<void**>(p);
+#endif
+}
+
+// SwapSlot / RestoreSlot, and slots in a Transaction beside detours.
+static void TestSlots() {
+    void** vt = SlotPage();
+    uint8_t* page = ExecPage();
+    CHECK(vt && page);
+    if (!vt || !page) return;
+    vt[0] = Addr(&One);
+    vt[1] = Addr(&One);
+#if defined(_WIN32)
+    DWORD old = 0;
+    CHECK(VirtualProtect(vt, 4096, PAGE_READONLY, &old));
+#else
+    CHECK(mprotect(vt, 4096, PROT_READ) == 0);
+#endif
+    void* orig = nullptr;
+    CHECK(H::SwapSlot(nullptr, Addr(&Two), &orig) == H::Error::BadArg);
+    CHECK(H::SwapSlot(vt, nullptr, &orig) == H::Error::BadArg);
+    CHECK(H::SwapSlot(vt, Addr(&Two), nullptr) == H::Error::BadArg);
+    void** unaligned;
+    const uintptr_t odd = reinterpret_cast<uintptr_t>(vt) + 1;
+    std::memcpy(&unaligned, &odd, sizeof unaligned);
+    CHECK(H::SwapSlot(unaligned, Addr(&Two), &orig) == H::Error::BadArg && !orig);
+
+    // Swap: the original comes back, the slot calls the new function, one swap per slot.
+    CHECK(H::SwapSlot(vt, Addr(&Two), &orig) == H::Error::None);
+    CHECK(orig == Addr(&One) && vt[0] == Addr(&Two) && H::IsSlotSwapped(vt) && H::SlotCount() == 1);
+    CHECK(Call(vt[0]) == 2 && Call(orig) == 1);
+#if defined(_WIN32)
+    MEMORY_BASIC_INFORMATION mbi{};
+    CHECK(VirtualQuery(vt, &mbi, sizeof mbi) && mbi.Protect == PAGE_READONLY);   // protection restored
+#endif
+    void* again = nullptr;
+    CHECK(H::SwapSlot(vt, Addr(&Three), &again) == H::Error::AlreadyHooked && !again && vt[0] == Addr(&Two));
+    CHECK(H::RestoreSlot(vt) == H::Error::None && vt[0] == Addr(&One) && !H::IsSlotSwapped(vt) && H::SlotCount() == 0);
+    CHECK(H::RestoreSlot(vt) == H::Error::NotHooked);
+    CHECK(H::SwapSlot(vt, Addr(&Three), &orig) == H::Error::None && Call(vt[0]) == 3);   // again after a restore
+    CHECK(H::RestoreSlot(vt) == H::Error::None && Call(vt[0]) == 1);
+
+    static const uint8_t kFive[] = { 0xB8, 0x05, 0x00, 0x00, 0x00, 0xC3 };   // mov eax, 5 ; ret
+    uint8_t* f5 = page + 64;
+    std::memcpy(f5, kFive, sizeof kFive);
+    void* o0 = nullptr;
+    void* o1 = nullptr;
+    void* od = nullptr;
+    {   // A detour and two slots commit together and roll back together.
+        H::Transaction tx;
+        tx.Add(f5, 5, Addr(&Two), &od);
+        tx.AddSlot(vt, Addr(&Two), &o0);
+        tx.AddSlot(vt + 1, Addr(&Three), &o1);
+        CHECK(H::SlotCount() == 0);   // nothing until Commit
+        CHECK(tx.Commit() == H::Error::None);
+        CHECK(H::IsHooked(f5) && Call(f5) == 2 && vt[0] == Addr(&Two) && vt[1] == Addr(&Three));
+        CHECK(o0 == Addr(&One) && o1 == Addr(&One) && H::SlotCount() == 2);
+        CHECK(tx.Rollback() == H::Error::None);
+        CHECK(!H::IsHooked(f5) && Call(f5) == 5 && vt[0] == Addr(&One) && vt[1] == Addr(&One) && H::SlotCount() == 0);
+    }
+    {   // A slot someone else swapped fails the Commit: the earlier items are undone, theirs stays.
+        void* theirs = nullptr;
+        CHECK(H::SwapSlot(vt + 1, Addr(&Three), &theirs) == H::Error::None);
+        H::Transaction tx;
+        tx.Add(f5, 5, Addr(&Two), &od);
+        tx.AddSlot(vt, Addr(&Two), &o0);
+        tx.AddSlot(vt + 1, Addr(&Two), &o1);
+        CHECK(tx.Commit() == H::Error::AlreadyHooked);
+        CHECK(!H::IsHooked(f5) && vt[0] == Addr(&One) && !H::IsSlotSwapped(vt) && vt[1] == Addr(&Three));
+        CHECK(H::RestoreSlot(vt + 1) == H::Error::None && vt[1] == Addr(&One));
+    }
+    CHECK(H::SlotCount() == 0 && H::DetourCount() == 0);
+}
 #endif
 
 int main() {
@@ -335,6 +418,7 @@ int main() {
     TestAutoStolen();
     TestFarPath();
     TestTransactionAndRemoveAll();
+    TestSlots();
     std::printf("sco-core hook tests: %d passed, %d failed\n", g_pass, g_fail);
 #else
     std::printf("sco-core hook tests: skipped (x86-64 Windows/Linux only)\n");

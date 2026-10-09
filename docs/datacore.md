@@ -1,8 +1,8 @@
 # DataCore files and packs: `sco-dcb`
 
-`sco-dcb` reads the game's DataCore database (`Data\Game2.dcb`) with `sco::datacore`. `info` prints what the parser sees: the header, the tables with their offsets and sizes, the derived record size, and whether the layout passes validation. `records` lists every record, the input for research step R1 of the [DataCore design](design/vfs-datacore.md#addrecord). For data packs, `lint` checks `.toml` override files without the game, `check` resolves them against a real `Game2.dcb`, `show` prints a record's fields as the paths overrides use, and `diff` turns the difference between two files into a pack ([Pack format](#pack-format)). It is a host tool, like [`sco-sigcheck`](sigcheck.md): built with sco-core, never shipped to players, read-only on every file.
+`sco-dcb` reads the game's DataCore database (`Data\Game2.dcb`) with `sco::datacore`. `info` prints what the parser sees: the header, the tables with their offsets and sizes, the derived record size, and whether the layout passes validation. `records` lists every record, the input for research step R1 of the [DataCore design](design/vfs-datacore.md#addrecord). For data packs, `lint` checks `.toml` override files without the game, `check` resolves them against a real `Game2.dcb`, `show` prints a record's fields as the paths overrides use, and `diff` turns the difference between two files into a pack ([Pack format](#pack-format)). `patch` applies a batch of patcher operations given on the command line and writes the patched file somewhere else, to check the patcher on a real file. It is a host tool, like [`sco-sigcheck`](sigcheck.md): built with sco-core, never shipped to players, and it only reads the game's file.
 
-The layout and the validation rules are in the design, [section 2](design/vfs-datacore.md#2-the-datacore-binary-layout) and [section 4](design/vfs-datacore.md#validation-all-must-hold-else-the-patcher-refuses-the-file). In short: every size is derived from the header, the record entry size is the one of 32, 36 or 40 bytes for which the tables, pools, string pools and the data the mappings need add up exactly to the file size, records must agree with their struct's computed size, and names must land on string starts. The version number is never trusted.
+The layout and the validation rules are in the design, [section 2](design/vfs-datacore.md#2-the-datacore-binary-layout) and [section 4](design/vfs-datacore.md#validation-all-must-hold-else-the-patcher-refuses-the-file). In short: every size is derived from the header, the record entry size is the one of 32, 36 or 40 bytes for which the tables, pools, string pools and the data the mappings need add up exactly to the file size, records must agree with their struct's computed size, and names (record +8 included, research R1) must land on string starts. The version number is never trusted.
 
 ## Getting `Game2.dcb`
 
@@ -55,6 +55,7 @@ name strings               54324221          -      -      7195714
 data                       61519935       6694      -    270412986
 
 structs: 6694, 0 opaque (a field of unknown type: overrides into them are refused)
+capabilities: datacore.patch on, datacore.add_record on
 layout: OK
 ```
 
@@ -69,9 +70,10 @@ One tab-separated line per record, after a `#` header line:
 | `index` | Position in the record table |
 | `guid` | The record's id, in the string form unp4k prints and `guid\|path` values use |
 | `name`, `struct` | Record name and its struct's name (name pool) |
-| `unknown` | The `u32` at record +8 (36-byte records), in hex: what R1 measures. `0x00000000` for 32-byte records |
+| `unknown` | The `u32` at record +8 (36-byte records), in hex: what R1 measured, a name-pool offset. `0x00000000` for 32-byte records |
 | `instance`, `structSize` | The root instance in the struct's block, and the size the record states |
 | `file` | The record's file path (value pool) |
+| `tag` | The name-pool string at record +8: the team that owns the record's file (`SystemsDesign`, `Unknown`, ...). Empty for 32-byte records |
 
 ## Packs: `lint`, `check`, `show`, `diff`
 
@@ -111,7 +113,7 @@ pack badpack datacore/typo.toml (atomic): REFUSED 0/2
   -> line 8: record "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem" field "Components[SCItemQuantumDriveParams].params.spoolTime": no property "spoolTime" in SQuantumDriveParams
 ```
 
-`show` follows inline structs and strong pointers and lists arrays element by element. Values print in pack syntax (`2.5`, `"text"`, `{ enum = "QuantumDrive" }`, `{ guid = "..." }`), pointers as `-> Struct[index]`, `weak -> ...` or `null`, references as `ref {guid} (record name)`:
+`show` follows inline structs and strong pointers and lists arrays element by element. Values print in pack syntax (`2.5`, `"text"`, `{ enum = "QuantumDrive" }`, `{ guid = "..." }`), pointers as `-> Struct[index]`, `weak -> ...` or `null`, references as `{ ref = "guid:..." }` followed by the record's name as a comment:
 
 ```text
 $ sco-dcb show Game2.dcb EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem "Components[SCItemQuantumDriveParams]"
@@ -162,7 +164,7 @@ value  = { struct = "SEntityEffectSystem_ParticleTagEffect", clone = { record = 
 | `record`, `guid` | `[[set]]`, `[[append]]`, `clone`, `pointer` | The record: by name, by GUID (the form `sco-dcb records` and `show` print), or both (GUID first, name as fallback) |
 | `instance = "@id"` | `[[set]]`, `[[append]]` | Instead of a record: an instance an earlier `[[instance]]` of this file added |
 | `field` | all | A field path: `name`, `name[3]`, `name[Type]` (first element of that struct or a derived one), joined with `.`; through inline structs and strong pointers |
-| `value` | `[[set]]`, `[[append]]` | A number (integer or float; floats and doubles take either), a string (also locales and enums), `true`/`false`, `{ guid = "..." }`, `{ enum = "Option" }`, `{ uint = "18446744073709551615" }` (uint64 past int64) |
+| `value` | `[[set]]`, `[[append]]` | A number (integer or float; floats and doubles take either), a string (also locales and enums), `true`/`false`, `{ guid = "..." }`, `{ enum = "Option" }`, `{ ref = "RecordName" }` or `{ ref = "guid:..." }` (a reference field's target record), `{ uint = "18446744073709551615" }` (uint64 past int64). `pointer = "null"` clears a reference too |
 | `pointer` | `[[set]]`, `[[append]]` | `"@id"`, `"null"`, or `{ record = ..., field = ... }` naming an existing instance |
 | `element` | `[[append]]` | `"@id"`: an added instance copied into an array of structs |
 | `id`, `struct`, `clone`, `set` | `[[instance]]` | Local name (letters, digits, `_`, `-`; used as `"@id"`), the struct, the instance to copy, and field values (`"path" = value`; an unquoted dotted key is a path too) |
@@ -204,12 +206,12 @@ if (api->query_service(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_0, (const void*
 | `add_instance(patch, type, clone_record, clone_field, &id)` | A new instance, cloned or zero-filled |
 | `set_pointer(patch, record, field, id)` | A pointer at an added instance |
 | `append(patch, record, field, value)` | One array element: a value, a pointer, or (arrays of structs) an added instance copied in |
-| `add_record(...)` | `SCO_UNAVAILABLE` in 1.0: the patcher's `AddRecord` (plan PR 4) isn't in yet |
+| `add_record(...)` | `SCO_UNAVAILABLE` in 1.0. The patcher has `AddRecord` (and `sco-dcb patch` exercises it), but saved patches use the pack format, which has no record operation yet; a later minor adds both |
 | `commit(patch)` | Before the load: queued for it. After it: saved (below). No more operations on it |
 | `discard(patch)` | Drops it (open, or queued before the load) |
 | `report(patch, i, &out)` | One entry per operation in call order, then one for the patch (`op_index` `SCO_DC_OP_PATCH`): `SCO_DC_QUEUED`, `APPLIED`, `SKIPPED` (this operation failed) or `REFUSED` (the patch was refused whole), with the reason |
 
-`record` is a record name, `"guid:xxxxxxxx-..."`, or `"@<id>"` for an instance this patch added (its own fields). `field` is a path as in packs. Values: `SCO_DC_BOOL`, `INT`, `UINT`, `FLOAT`, `STRING` (UTF-8; also enums by option name), `GUID`, `ENUM`, `NULL`, `INSTANCE`. Call-time checks need no game file: path and GUID syntax, value shapes, UTF-8, instance ids of the same patch (`SCO_BAD_ARG`; nothing is queued). Names resolve at the load.
+`record` is a record name, `"guid:xxxxxxxx-..."`, or `"@<id>"` for an instance this patch added (its own fields). `field` is a path as in packs. Values: `SCO_DC_BOOL`, `INT`, `UINT`, `FLOAT`, `STRING` (UTF-8; also enums by option name), `GUID`, `ENUM`, `REF` (a reference field's target record, by name or `guid:...`), `NULL`, `INSTANCE`. Call-time checks need no game file: path and GUID syntax, value shapes, UTF-8, instance ids of the same patch (`SCO_BAD_ARG`; nothing is queued). Names resolve at the load.
 
 **Timing (design decision 9).** In sc-offline the game loads DataCore before plugins load, so in practice a plugin's patch is committed after the load. It is never applied late. `commit` validates it, saves it in the pack format as `<dataRoot>/datacore/pending/<plugin id>.toml` (a temporary file renamed over the old one, so a crash leaves the old one), and reports `SCO_DC_QUEUED` with the reason `applies at the next launch`. At every later launch the load reads it right after that plugin's own data pack, with the same per-patch atomicity and report, until the plugin commits another patch after the load (which replaces it; an empty patch clears it) or the file is deleted. The saved patch of a plugin that is no longer installed, or is disabled, off, refused or crashed, is skipped and logged. Patches committed before a load (a product whose plugins load first) apply at it, after the plugin's saved patch.
 
@@ -251,13 +253,57 @@ Details: [C++ SDK § DataCore](sdk-cpp.md#datacore), [Lua § sco.datacore](../sd
 
 | Code | Meaning |
 |---|---|
-| 0 | The layout is valid (`info`, `records`, `show`); every file parses (`lint`); every operation of every pack applies (`check`); everything converted (`diff`) |
-| 1 | The layout is refused (the reason names the first failing check); a pack doesn't parse or doesn't fully apply; a record or field isn't found (`show`); some change couldn't be converted (`diff`) |
-| 2 | Bad arguments, a file or pack folder that can't be read, or a file smaller than the 120-byte header |
+| 0 | The layout is valid (`info`, `records`, `show`); `patch`: the batch emitted, re-validated, and the output was written; every file parses (`lint`); every operation of every pack applies (`check`); everything converted (`diff`) |
+| 1 | The layout is refused (the reason names the first failing check); a pack doesn't parse or doesn't fully apply; a record or field isn't found (`show`); some change couldn't be converted (`diff`); `patch`: an operation or `Emit` was refused, and nothing is written |
+| 2 | Bad arguments, a file or pack folder that can't be read (or, for `patch`, written), or a file smaller than the 120-byte header |
 
 ## Patching
 
-The patcher is a library API, `sco::datacore::Patch` ([api.md](api.md#patching-datacore)); packs reach it through `sco::datacore::ApplyPacks` and `sco-dcb check` ([above](#packs-lint-check-show-diff)). Checked locally on 4.10.193 with a scratch program over the library (read-only, nothing committed), overriding one float field of one record by name:
+The patcher is a library API, `sco::datacore::Patch` ([api.md](api.md#patching-datacore)). Packs reach it through `sco::datacore::ApplyPacks` and `sco-dcb check` ([above](#packs-lint-check-show-diff)). `sco-dcb patch` runs it from the command line, to check it on a real file; it is a developer tool, and packs are the way to ship overrides.
+
+```text
+sco-dcb patch <in.dcb> <out.dcb> [--seed N] [--pack ID] [--non-atomic] <op>...
+  set <record|inst:N> <field> <value>                  OverrideField
+  append <record|inst:N> <field> <value>               AppendElement
+  set-pointer <record|inst:N> <field> inst:N           SetPointer
+  add-instance <struct> <clone record|-> <field|->     AddInstance; the Nth one is inst:N
+  add-record <struct> <name> <clone record> <path|->   AddRecord; - is libs/foundry/records/sco/<pack>/<name>.xml
+value: null, true, false, an integer, a number, record:<name> (a reference), inst:N, else a string or enum option
+```
+
+It prints one line per operation (`OK` or `REFUSED (<category>) <reason>`), then `Emit`, and writes the patched file only when the batch emitted and re-validated. `<out.dcb>` must be another file; the input is only read. `--seed` makes the GUIDs of added records reproducible (default: `std::random_device`), `--pack` sets the pack id of default record paths (default `sco-dcb`), `--non-atomic` emits the accepted operations when some are refused.
+
+On 4.10.193 (`Game2.dcb` from the LIVE `Data.p4k`, 2026-10-09), one float override, one cloned instance, one cloned record, and a reference to the new record, then a refusal:
+
+```text
+$ sco-dcb patch Game2.dcb patched.dcb --seed 20261009 set Character.SHOPKEEP2_Gruff nicknameChance 2.5 add-instance ResourceType ResourceType.Electricity - add-record ResourceType ResourceType.SCO_AddRecordCheck ResourceType.Electricity - set AmmoParams.VehicleCounterMeasureFlares resourceType record:ResourceType.SCO_AddRecordCheck
+base: Game2.dcb (331932921 bytes, 117022 records of 36 bytes)
+capabilities: datacore.patch on, datacore.add_record on
+op 1: OK OverrideField record "Character.SHOPKEEP2_Gruff" field "nicknameChance"
+op 2: OK AddInstance struct "ResourceType": inst:1 = instance 207 of ResourceType
+op 3: OK AddRecord record "ResourceType.SCO_AddRecordCheck" (ResourceType): record 117022, guid 809bb038-b753-41c0-950c-f6cfc73b74ba, root instance 208
+op 4: OK OverrideField record "AmmoParams.VehicleCounterMeasureFlares" field "resourceType"
+Emit: OK, 4 operations (0 refused), 8 splices (148 bytes replaced, 447 bytes written), re-validated
+wrote patched.dcb (331933220 bytes)
+
+$ sco-dcb info patched.dcb
+counts: 6694 structs, 23789 properties, 774 enums, 6694 mappings, 117023 records, 6357 enum options
+...
+layout: OK
+
+$ sco-dcb records patched.dcb      (two lines of 117,024)
+88      bcc8cde9-...-37d4aaa507eb  ResourceType.Electricity           ResourceType  0x000918b3  0    81  libs/foundry/records/resourcetypedatabase/resourcetypedatabase.xml  SystemsDesign
+117022  809bb038-...-f6cfc73b74ba  ResourceType.SCO_AddRecordCheck    ResourceType  0x000918b3  208  81  libs/foundry/records/sco/sco-dcb/ResourceType.SCO_AddRecordCheck.xml   SystemsDesign
+
+$ sco-dcb patch Game2.dcb refused.dcb set Character.SHOPKEEP2_Gruff nicknameChanceX 2.5
+op 1: REFUSED (field not found) record "Character.SHOPKEEP2_Gruff" field "nicknameChanceX": no property "nicknameChanceX" in Character
+Emit: REFUSED (field not found) operation 0 refused, so the batch applies nothing: ...
+nothing written
+```
+
+The new record is the last of the table, its name and path are at the end of their pools, and its record +8 is the clone's `SystemsDesign` (its path is new). The reference holds the new record's root instance (208) and its GUID.
+
+Earlier, with a scratch program over the library (read-only, nothing committed), overriding one float field of one record by name:
 
 ```text
 parsed 331932921 bytes, 117022 records, record size 36 (39 ms)
@@ -268,6 +314,11 @@ splice 0: at 134562223, removes 4, adds 4; patched value reads 2.5
 ```
 
 The same with one float override in each of 1,000 records: 1.9 ms for the operations, `Emit` 89 ms including re-validation (which composes and re-parses the whole patched file in memory), re-parse `layout: OK`.
+
+
+## In game: `sco::game::pak`
+
+`sco-dcb` works on a file on disk. In game, the engine reads `Game2.dcb` through CryPak, and `sco::game::pak` (`sco/game/pak.h`, library `sco_pak`) serves it from a `sco::vfs` mount while the DataCore loader runs. The tracked file gets the virtual bytes on the loader's thread; every other file and thread gets the engine's own. A mount that doesn't apply (expected bytes differ, a transform refuses) leaves the game loading its own data. The product enables it once after `sco::ResolveAll` (sc-offline: plan PR 8), and `sco-sigcheck` checks its `pak.*` rows on patch day. Reference: [API § sco/game/pak.h](api.md#scogamepakh-the-crypak-adapter).
 
 ## Patch-day routine
 

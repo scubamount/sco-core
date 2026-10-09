@@ -133,6 +133,20 @@ bool ValueOf(const PatchRec& p, const sco_dc_value* v, PackOp& op) {
         if (!Text(v->s)) return false;
         op.value = Value::OfEnum(v->s);
         return true;
+    case SCO_DC_REF: {
+        if (!Text(v->s)) return false;
+        RecordRef r;
+        const std::string_view s(v->s);
+        if (s.rfind("guid:", 0) == 0) {
+            Guid g;
+            if (!ParseGuid(s.substr(5), g)) return false;
+            r.guid = g;
+        } else {
+            r.name = std::string(s);
+        }
+        op.value = Value::OfRecord(std::move(r));
+        return true;
+    }
     case SCO_DC_NULL: op.pointer.kind = PackPointer::Kind::Null; return true;
     case SCO_DC_INSTANCE: {
         const auto it = p.instances.find(v->u);
@@ -242,7 +256,7 @@ sco_result T_add_record(uint64_t patch, const char*, const char*, const char*, c
     std::lock_guard<std::mutex> hold(g_lock);
     PatchRec* p = nullptr;
     if (const sco_result r = Open(patch, p); r != SCO_OK) return r;
-    return SCO_UNAVAILABLE;   // the patcher's AddRecord (plan PR 4) isn't in yet
+    return SCO_UNAVAILABLE;   // saved patches are packs, and the pack format has no record operation yet
 }
 
 // Writes the pack text to <id>.toml through a temporary file renamed over it.

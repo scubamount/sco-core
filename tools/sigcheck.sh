@@ -6,7 +6,9 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 OUT=$ROOT/tests/out
 mkdir -p "$OUT"
 CXX=${CXX:-$(command -v clang++ || command -v g++)}
+GAME=()   # the game signature tables, without the CryPak hooks (sco_pak)
+for f in "$ROOT"/src/game/*.cpp; do [ "$(basename "$f")" = pak_hooks.cpp ] || GAME+=("$f"); done
 "$CXX" -std=c++20 -O2 -Wall -Wextra -Werror -I "$ROOT/include" "$ROOT/tools/sco-sigcheck.cpp" \
   "$ROOT"/src/sco_scan.cpp "$ROOT"/src/sco_signatures.cpp "$ROOT"/src/sco_log_status.cpp \
-  "$ROOT"/src/sco_pe_file.cpp "$ROOT"/src/game/*.cpp -o "$OUT/sco-sigcheck"
+  "$ROOT"/src/sco_pe_file.cpp "${GAME[@]}" -o "$OUT/sco-sigcheck"
 exec "$OUT/sco-sigcheck" "$@"
