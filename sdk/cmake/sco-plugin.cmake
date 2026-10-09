@@ -30,7 +30,9 @@ if(NOT EXISTS "${SCO_SDK_INCLUDE_DIR}/sco_api.h")
   message(FATAL_ERROR "sco SDK: sco_api.h not found. Set SCO_SDK_INCLUDE_DIR to the SDK's include folder.")
 endif()
 
-if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+# Only with a compiled language enabled: a pack-only project (project(... NONE), like the Lua
+# and data-pack examples) has no pointer size and builds nothing. sco_add_plugin checks again.
+if(DEFINED CMAKE_SIZEOF_VOID_P AND NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
   message(FATAL_ERROR "sco plugins are 64-bit only. On Windows configure with -A x64.")
 endif()
 
@@ -47,6 +49,9 @@ endfunction()
 function(sco_add_plugin id)
   cmake_parse_arguments(P "" "INI" "SOURCES" ${ARGN})
   _sco_check_id("${id}")
+  if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "sco_add_plugin(${id}): sco plugins are 64-bit only. Enable C, and on Windows configure with -A x64.")
+  endif()
   if(NOT P_SOURCES)
     message(FATAL_ERROR "sco_add_plugin(${id}): SOURCES is empty")
   endif()

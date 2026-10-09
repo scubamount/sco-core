@@ -99,4 +99,12 @@ fi
 cp -R "$ROOT/template" "$WORK/mine"
 cmake -S "$WORK/mine" -B "$WORK/mine/build" -DSCO_SDK="$ROOT" -DCMAKE_BUILD_TYPE=Release
 cmake --build "$WORK/mine/build" --config Release
+
+# The Lua and data-pack examples configure and install on their own too: project(... NONE), so
+# no compiler is enabled and the 64-bit check must not fire.
+for ex in greeter travel_pack; do
+  cmake -S "$ROOT/examples/$ex" -B "$WORK/$ex-build"
+  cmake --install "$WORK/$ex-build" --config Release --prefix "$WORK/$ex-out"
+  "$CHECK" "$WORK/$ex-out/data/plugins/$ex"
+done
 echo "sdk zip: every example built and checked from $(basename "$ZIP")"
