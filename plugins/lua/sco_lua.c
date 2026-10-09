@@ -4,6 +4,8 @@
  * Lua error or an allocation failure never escapes into the game. Each entry has a step budget:
  * the VM's count hook charges HOOK_EVERY steps per HOOK_EVERY instructions, and the patched
  * string/table library loops charge one step per iteration (SCO_LUA_STEP, sco_lua_user.h).
+ * The budget belongs to the outermost entry: a script invoking another script's command spends
+ * from the same budget.
  * Past the budget every further instruction raises, so a script's own pcall can't hold on, and
  * the script is disabled. Finalizers (__gc) are refused: Lua runs them with hooks off. */
 #include "sco_lua.h"
@@ -36,7 +38,6 @@ struct Script {
     const sco_api* api;
     lua_State* L;
     size_t mem;
-    uint64_t steps;
     int over;      /* past the budget in the current entry */
     int depth;     /* entries of this script on the C stack */
     int errors;
@@ -50,7 +51,10 @@ struct Script {
 void sco_lua_event_(const char* event, const void* data, void* ctx);   /* every Lua subscription */
 
 static Script g_scripts[SCO_LUA_MAX_SCRIPTS];
-static int g_depth;   /* entries of any script on the C stack */
+static int g_depth;        /* entries of any script on the C stack */
+static uint64_t g_steps;   /* steps since the outermost entry: one budget for every script it
+                            * reaches, so a script can't multiply it by invoking another's commands */
+static int g_over;         /* that budget ran out: every script still on the stack stops */
 
 static Script* Of(lua_State* L) { return *(Script**)lua_getextraspace(L); }
 
@@ -102,8 +106,9 @@ static void Hook(lua_State* L, lua_Debug* ar);
 void sco_lua_step(lua_State* L, int n) {
     Script* s = Of(L);
     if (!s || !s->depth) return;
-    s->steps += (uint64_t)n;
-    if (!s->over && s->steps <= SCO_LUA_STEP_BUDGET) return;
+    g_steps += (uint64_t)n;
+    if (!g_over && g_steps <= SCO_LUA_STEP_BUDGET) return;
+    g_over = 1;
     if (!s->over) {
         s->over = 1;
         lua_sethook(L, Hook, LUA_MASKCOUNT, 1);   /* from now on every instruction raises */
@@ -122,8 +127,8 @@ static void Hook(lua_State* L, lua_Debug* ar) {
  * on top of the stack. Allocates nothing before the protected call. */
 static int Enter(Script* s, lua_CFunction body, void* ud) {
     lua_State* L = s->L;
+    if (g_depth == 0) { g_steps = 0; g_over = 0; }
     if (s->depth == 0) {
-        s->steps = 0;
         s->over = 0;
         lua_sethook(L, Hook, LUA_MASKCOUNT, HOOK_EVERY);
     }
@@ -136,6 +141,10 @@ static int Enter(Script* s, lua_CFunction body, void* ud) {
     --s->depth;
     return st;
 }
+
+/* Back in script code after calling into the host (sco.invoke can run other scripts): if the
+ * shared budget ran out meanwhile, this script stops too. */
+static void CheckBudget(lua_State* L) { sco_lua_step(L, 0); }
 
 static void Disable(Script* s, const char* why) {
     if (!s->alive) return;
@@ -564,6 +573,7 @@ static int L_invoke(lua_State* L) {
     Done d;
     memset(&d, 0, sizeof(d));
     const sco_result r = s->api->invoke(s->self, name, nargs ? args : NULL, (uint32_t)nargs, DoneCb, &d);
+    CheckBudget(L);
     if (r != SCO_OK && !d.called) return PushResult(L, r);
     if (d.r == SCO_OK) { lua_pushboolean(L, 1); lua_pushstring(L, d.reply); return 2; }
     lua_pushboolean(L, 0);

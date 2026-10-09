@@ -245,6 +245,33 @@ static void TestLimits() {
         Unload(l);
     }
 
+    // One budget per outermost entry: a script can't multiply it by calling another script's
+    // command in a loop (each call alone fits the budget).
+    Write("worker", R"(
+        sco.register_command{ name = "worker.chunk", title = "Chunk",
+          fn = function() local s = 0 for i = 1, 150000 do s = s + i end return "done" end }
+    )");
+    Write("boss", R"(
+        sco.register_command{ name = "boss.run", title = "Run", fn = function()
+          for i = 1, 100 do
+            local ok, why = sco.invoke("worker.chunk")
+            if not ok then return "stopped at " .. i .. ": " .. tostring(why) end
+          end
+          return "ran all 100"
+        end }
+    )");
+    {
+        Loaded w = Load("worker");
+        Loaded bo = Load("boss");
+        CHECK(Invoke(g_caller, "worker.chunk").text == "done");                // alone: fits
+        const Reply r = Invoke(g_caller, "boss.run");
+        CHECK(r.r == SCO_CRASHED && r.text.find("step budget") != std::string::npos);
+        if (r.r != SCO_CRASHED) std::printf("  boss.run -> %d %s\n", r.r, r.text.c_str());
+        CHECK(!sco_lua_alive(bo.p->self));
+        Unload(bo);
+        Unload(w);
+    }
+
     // Memory: the 64 MiB cap fails the allocation; the script is disabled.
     Write("hog", R"(
         sco.register_command{ name = "hog.eat", title = "Eat", fn = function()
