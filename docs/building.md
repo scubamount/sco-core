@@ -122,7 +122,7 @@ add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
 | `test_spatial` | Vector, quaternion and transform math; the zone tree (chains, round trips at 1e11 m, failures, readers beside a writer) |
 | `test_sdk` | The C++20 SDK layer (`include/scosdk/`): two SDK plugins over the real host table |
 | `test_plugins` | `plugin.ini`, discovery, the content index and the native loader against the fake plugins in `<build>/tests/out/plugins/` |
-| `test_lua` | sco-lua through the real loader and host table, including `sdk/examples/greeter` |
+| `test_lua` | sco-lua through the real loader and host table, including `sdk/examples/greeter`, and `sco.store` over a real `sco.storage` with `sdk/examples/notebook` |
 | `test_app` | The host kit (`sco::app`) and built-in plugins: load order, `game.ready`, tick, a faulting built-in contained, `game.exit` before unload, unload order, restart |
 | `host_sim_examples` | `sco-host-sim <build>/tests/out/sim/plugins --ticks 3 --invoke hello.wave "Pilot One"` over `hello` (built by CMake), `greeter` and `travel_pack`: exit 0 and the reply (`tests/host_sim.cmake`) |
 
