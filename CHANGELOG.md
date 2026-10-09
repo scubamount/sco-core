@@ -4,6 +4,8 @@ What each change means for plugin authors and for products built on sco-core (sc
 
 ## Unreleased
 
+- **`teleport.to_camera` survives Star Citizen 4.10.196** (the 2026-10-09 patch, `StarCitizen.exe` 4.10.196.36804): the row failed with "layout changed at +0x17a" because the four camera fields the handler loads at +0x17A..+0x1BD moved by 8 bytes (`0x6D3C` -> `0x6D44`, ...); the code around them was unchanged. Those checks now pin the instructions (`vmovss`/`vmovups`/`vmovsd` from `[rax+disp32]`) and wildcard the field offset, which nothing reads. `sco-sigcheck`: 8/8 OK on both 4.10.193.11644 and 4.10.196.36804 (the three dependent `teleport.*` rows resolve again).
+
 ## sdk-v1.1.0 (2026-10-09)
 
 The first SDK release. The plugin ABI is version 1.1 and stable from here on: version 1 only grows at the end of structs, so plugins built with this SDK keep loading in later 1.x hosts.
