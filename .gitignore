@@ -1,4 +1,5 @@
 /tests/out/
+/build/
 .vs/
 x64/
 *.obj
