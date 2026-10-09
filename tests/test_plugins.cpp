@@ -186,6 +186,21 @@ static void TestDiscover() {
     g_log.clear();
     P::LogReport(list, true);
     CHECK(g_log.size() == 12 && g_log[0] == "[plugin] 11 found, 0 loaded (plugins = on)");
+
+    // A folder whose id belongs to a built-in is refused, whatever its kind (#11); a disabled one
+    // stays disabled.
+    P::Options withBuiltins;
+    withBuiltins.enabled = true;
+    withBuiltins.has = HasAll;
+    const P::Builtin builtins[] = { { "hello", nullptr, nullptr, nullptr }, { "pack", nullptr, nullptr, nullptr },
+                                    { "offswitch", nullptr, nullptr, nullptr } };
+    withBuiltins.builtins = builtins;
+    withBuiltins.nBuiltins = 3;
+    list = P::Discover(tree, withBuiltins);
+    CHECK(state("hello") == State::Refused && reason("hello") == "the id belongs to a built-in plugin");
+    CHECK(state("pack") == State::Refused && reason("pack") == "the id belongs to a built-in plugin");
+    CHECK(state("offswitch") == State::Disabled);
+    CHECK(state("needcap") == State::Ready);
 }
 
 // Duplicate ids and the plugin cap need generated trees.

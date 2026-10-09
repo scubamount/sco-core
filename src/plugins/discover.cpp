@@ -43,6 +43,14 @@ static bool ReadCapped(const fs::path& p, std::string& out) {
     return !f.bad();
 }
 
+// True when one of the host's built-ins has this id: the built-in owns it (its command prefix,
+// its services), so a folder may not take it, whatever its kind.
+static bool BuiltinId(const Options& opts, const std::string& id) {
+    for (size_t i = 0; opts.builtins && i < opts.nBuiltins; ++i)
+        if (opts.builtins[i].id && id == opts.builtins[i].id) return true;
+    return false;
+}
+
 static void Refuse(Plugin& p, std::string reason) {
     p.state = State::Refused;
     p.reason = std::move(reason);
@@ -88,6 +96,8 @@ std::vector<Plugin> Discover(const fs::path& root, const Options& opts) {
             Refuse(p, "plugin.ini: " + error);
         } else if (p.manifest.id != p.folder) {
             Refuse(p, "id '" + p.manifest.id + "' does not match folder '" + p.folder + "'");
+        } else if (BuiltinId(opts, p.manifest.id)) {
+            Refuse(p, "the id belongs to a built-in plugin");
         } else if (p.manifest.apiMajor != opts.hostMajor || p.manifest.apiMinor > opts.hostMinor) {
             char buf[48];
             std::snprintf(buf, sizeof(buf), "built for api %u.%u", p.manifest.apiMajor, p.manifest.apiMinor);
