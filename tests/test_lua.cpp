@@ -146,7 +146,8 @@ static void TestTable() {
             local ok, reply = sco.invoke("table.add", 2, 0.5)
             local bad, why = sco.invoke("table.add", "2", 0.5)
             local none, nf = sco.invoke("nope.nope")
-            return table.concat({ tostring(ok), reply, tostring(bad), why, tostring(none), nf }, " ")
+            local float, fw = sco.invoke("table.add", 2.0, 0.5)              -- int takes no float
+            return table.concat({ tostring(ok), reply, tostring(bad), why, tostring(none), nf, tostring(float), fw }, " ")
           end }
         sco.register_command{ name = "table.list", title = "List",
           fn = function()
@@ -165,7 +166,7 @@ static void TestTable() {
     sco::GameThreadTick(1200);                                                // unsubscribed after 2
     CHECK(Invoke(g_caller, "table.state").text == "ticks=2 last=1100 tasks=1");
     CHECK(Invoke(g_caller, "table.add", { Int(40), sco_arg{ SCO_ARG_FLOAT, 0, { .f = 2.5 } } }).text == "42.5");
-    CHECK(Invoke(g_caller, "table.call").text == "true 2.5 false bad_arg false not_found");
+    CHECK(Invoke(g_caller, "table.call").text == "true 2.5 false bad_arg false not_found false bad_arg");
     CHECK(Invoke(g_caller, "table.list").text == "Add 2 float second");
     CHECK(Invoke(g_caller, "table.print").r == SCO_OK && Logged("[table] a\t1\tnil"));
     Unload(l);
@@ -208,6 +209,22 @@ static void TestSandbox() {
     l = Load("halfway");
     CHECK(l.p && l.p->state == State::Refused && l.p->reason.find("stop here") != std::string::npos);
     CHECK(!HasCommand("halfway.a") && sco::SubscriptionCount() == subs);
+
+    // Disabled during load (three errors in its own command, reached through sco.invoke): the
+    // load chunk keeps running, but sco.* mutators answer unavailable and the load fails.
+    Write("selfkill", R"(
+        sco.register_command{ name = "selfkill.boom", title = "Boom", fn = function() error("boom") end }
+        for _ = 1, 3 do sco.invoke("selfkill.boom") end
+        local _, a = sco.subscribe("tick", print)
+        local _, b = sco.run_on_game_thread(print)
+        local _, c = sco.register_command{ name = "selfkill.more", title = "More", fn = print }
+        sco.log("info", table.concat({ tostring(a), tostring(b), tostring(c) }, " "))
+    )");
+    l = Load("selfkill");
+    CHECK(l.p && l.p->state == State::Refused && l.p->reason.find("disabled") != std::string::npos);
+    if (l.p && l.p->state != State::Refused) std::printf("  selfkill: loaded\n");
+    CHECK(Logged("[selfkill] unavailable unavailable unavailable"));
+    CHECK(!HasCommand("selfkill.more") && sco::SubscriptionCount() == subs);
 }
 
 // ---- limits -----------------------------------------------------------------------------------

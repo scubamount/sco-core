@@ -394,6 +394,7 @@ static void PushSubs(lua_State* L, const char* event, int create) {
 
 static int L_subscribe(lua_State* L) {
     Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);   /* disabled, an outer frame still running */
     const char* event = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
     if (strlen(event) >= NAME_MAX_ || !*event) return PushResult(L, SCO_BAD_ARG);
@@ -454,6 +455,7 @@ static int L_unsubscribe(lua_State* L) {
 
 static int L_run_on_game_thread(lua_State* L) {
     Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);
     luaL_checktype(L, 1, LUA_TFUNCTION);
     if (s->ntasks >= SCO_LUA_MAX_TASKS) return PushResult(L, SCO_TOO_MANY);
     Task* t = (Task*)malloc(sizeof(Task));
@@ -490,6 +492,7 @@ static int TypeOf(const char* name) {
 
 static int L_register_command(lua_State* L) {
     Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);
     luaL_checktype(L, 1, LUA_TTABLE);
     luaL_checkstack(L, 8 + 4 * MAX_ARGS, "register_command");
     int bad = 0;
@@ -582,7 +585,7 @@ static int L_invoke(lua_State* L) {
         a->type = d->type;
         int ok = 0;
         switch (d->type) {
-            case SCO_ARG_INT:    { int isint = 0; a->v.i = lua_tointegerx(L, v, &isint); ok = isint && lua_type(L, v) == LUA_TNUMBER; break; }
+            case SCO_ARG_INT:    { int isint = 0; a->v.i = lua_tointegerx(L, v, &isint); ok = isint && lua_isinteger(L, v); break; }   /* 2.0 is a float */
             case SCO_ARG_FLOAT:  ok = lua_type(L, v) == LUA_TNUMBER; a->v.f = lua_tonumber(L, v); break;
             case SCO_ARG_STRING: ok = lua_type(L, v) == LUA_TSTRING; a->v.s = lua_tostring(L, v); break;
             case SCO_ARG_BOOL:   ok = lua_type(L, v) == LUA_TBOOLEAN; a->v.i = lua_toboolean(L, v); break;
@@ -753,10 +756,15 @@ sco_result sco_lua_load(const sco_api* api, sco_plugin* self, const char* chunkn
     s->alive = 1;
     LoadCall k = { source, size, s->chunk };
     const int st = Enter(s, SetupBody, &k);
-    if (st == LUA_OK) return SCO_OK;
-    char num[48];
-    Copy(err, err_size, ErrorText(s->L, num, sizeof(num)));
-    const sco_result r = st == LUA_ERRMEM ? SCO_TOO_MANY : SCO_BAD_ARG;
+    if (st == LUA_OK && s->alive) return SCO_OK;
+    sco_result r = SCO_BAD_ARG;
+    if (st == LUA_OK) {
+        Copy(err, err_size, "script disabled while loading");   /* the log says why */
+    } else {
+        char num[48];
+        Copy(err, err_size, ErrorText(s->L, num, sizeof(num)));
+        if (st == LUA_ERRMEM) r = SCO_TOO_MANY;
+    }
     for (int i = 0; i < SCO_LUA_MAX_EVENTS; ++i)
         if (s->events[i].live) api->unsubscribe(self, s->events[i].name, sco_lua_event_);
     Close(s);

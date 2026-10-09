@@ -19,12 +19,12 @@ There is no `io`, `os`, `package`, `require`, `debug`, `dofile`, `loadfile` or F
 Limits, per script:
 
 - **Steps**: loading the script, and each event callback, command or `run_on_game_thread` task, may take 1 million steps (a step is about one VM instruction; long `string.rep`, `find`, `gsub`, `table.sort` and `table.concat` calls count per item, and `string.byte`, `string.char`, `table.pack`, `table.unpack`, long `find` needles and long `[...]` classes count by size). Past that the call fails and the script is disabled; `pcall` can't catch it.
-- **Memory**: 64 MiB. An allocation past it fails with `not enough memory` and the script is disabled.
+- **Memory**: 64 MiB. An allocation past it fails with a `not enough memory` error. A `pcall` in the script can catch that error; when it reaches the callback, command, task or load, the script is disabled.
 - **Tasks**: 16 `run_on_game_thread` calls waiting at once. Past that it returns `false, "too_many"`.
 - **Subscriptions**: 64 functions per event name, 16 event names. Past that `sco.subscribe` returns `false, "too_many"`.
 - **Errors**: an error raised in a callback is caught and logged; a command that raises fails with the error text as its reply. After 3 errors the script is disabled.
 
-A disabled script stays listed but does nothing: its event callbacks stop and its commands answer `unavailable`. `mod.log` gets `[<id>] error: script disabled: <why>`.
+A disabled script stays listed but does nothing: its event callbacks stop, its commands answer `unavailable`, and `sco.subscribe`, `sco.register_command` and `sco.run_on_game_thread` return `false, "unavailable"` (a script disabled while it loads is refused). `mod.log` gets `[<id>] error: script disabled: <why>`.
 
 ## `sco` functions
 
@@ -38,7 +38,7 @@ A disabled script stays listed but does nothing: its event callbacks stop and it
 | `sco.unsubscribe(event, fn)` | `true`, or `false, err` | Removes that subscription |
 | `sco.run_on_game_thread(fn)` | `true`, or `false, err` | Runs `fn()` on the next tick. At most 16 can wait at once (`too_many`) |
 | `sco.register_command(t)` | `true`, or `false, err` | Registers a command (below) |
-| `sco.invoke(name, ...)` | `true, reply`, or `false, err[, reply]` | Runs any command, sc-offline's or a plugin's, now. Arguments must match the command's types exactly (`int` takes an integer, not `"2"`). When the command itself fails, the third value is its reply |
+| `sco.invoke(name, ...)` | `true, reply`, or `false, err[, reply]` | Runs any command, sc-offline's or a plugin's, now. Arguments must match the command's types exactly (`int` takes an integer, not `"2"` or `2.0`). When the command itself fails, the third value is its reply |
 | `sco.list_commands()` | table | `{ {name, title, help, capability, args = { {name, type, help}, ... } }, ... }` |
 
 `err` is the result name from the C API in lower case: `"bad_arg"`, `"unavailable"`, `"not_found"`, `"too_many"`, `"crashed"`.
