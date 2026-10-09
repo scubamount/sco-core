@@ -101,6 +101,10 @@ bool ParseManifest(std::string_view text, Manifest& out, std::string& error) {
 static bool ParseInto(std::string_view text, Manifest& out, std::string& error) {
     error.clear();
     if (text.size() > kMaxManifestBytes) return Fail(error, 0, "too big");
+    // A UTF-16 BOM (FF FE or FE FF): every key would hold NULs and the error would be a confusing
+    // "missing key 'id'".
+    if (text.size() >= 2 && ((text[0] == '\xFF' && text[1] == '\xFE') || (text[0] == '\xFE' && text[1] == '\xFF')))
+        return Fail(error, 0, "plugin.ini must be UTF-8");
     if (text.size() >= 3 && std::memcmp(text.data(), "\xEF\xBB\xBF", 3) == 0) text.remove_prefix(3);
 
     enum Key { kId, kName, kVersion, kAuthor, kApi, kKind, kEntry, kRequires, kCount };

@@ -41,30 +41,46 @@ static std::atomic<CapabilityCheck> g_capCheck{ nullptr };
 
 void SetCapabilityCheck(CapabilityCheck check) { g_capCheck.store(check); }
 
-// "<x>.<y>": lowercase letters, digits, '_' and '.'; no empty part.
-static bool ValidName(const char* n) {
+// Segments of lowercase letters, digits and '_' joined by '.'; no empty segment. The capability
+// name rule (caps::Set). `dot` is set when there is more than one segment.
+static bool Segments(const char* n, bool* dot) {
+    *dot = false;
     if (!n || !*n) return false;
-    bool dot = false;
     char prev = '.';
     for (const char* p = n; *p; ++p) {
         const char c = *p;
         if (c == '.') {
             if (prev == '.') return false;
-            dot = true;
+            *dot = true;
         } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
             return false;
         }
         prev = c;
     }
-    return dot && prev != '.';
+    return prev != '.';
+}
+
+// "<x>.<y>": lowercase letters, digits, '_' and '.'; no empty part.
+static bool ValidName(const char* n) {
+    bool dot = false;
+    return Segments(n, &dot) && dot;
+}
+
+static bool ValidCapability(const char* n) {
+    bool dot = false;
+    return Segments(n, &dot);
 }
 
 static bool Fits(const char* s, size_t max) { return !s || strnlen(s, max + 1) <= max; }
 
-// nullptr in -> nullptr out; otherwise copies into buf (length already checked).
-static const char* Copy(char* buf, const char* s) {
+// nullptr in -> nullptr out; otherwise copies into buf. Bounded by buf even though the length was
+// checked: a racing writer may lengthen the caller's string after the check.
+template <size_t N>
+static const char* Copy(char (&buf)[N], const char* s) {
     if (!s) return nullptr;
-    memcpy(buf, s, strlen(s) + 1);
+    const size_t len = strnlen(s, N - 1);
+    memcpy(buf, s, len);
+    buf[len] = 0;
     return buf;
 }
 
@@ -93,6 +109,7 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
     if (!cmd.fn || !ValidName(cmd.name) || !Fits(cmd.name, kMaxNameLen)) return Result::BadArg;
     if (!Fits(cmd.title, kMaxTitleLen) || !Fits(cmd.help, kMaxHelpLen) || !Fits(cmd.capability, kMaxCapabilityLen))
         return Result::BadArg;
+    if (cmd.capability && !ValidCapability(cmd.capability)) return Result::BadArg;   // could never be granted
     size_t prefixLen = 0;
     if (prefix) {
         prefixLen = strlen(prefix);

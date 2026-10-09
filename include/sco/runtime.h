@@ -129,8 +129,9 @@ constexpr const char* kReservedPrefixes[] = { "sco", "host", "menu", "game" };
 // "<prefix>.", the prefix may not be reserved, and no other owner may hold live commands
 // whose first segment is the prefix. nullptr for host features (any "<x>.<y>" name).
 // BadArg: null fn, name not "<x>.<y>" (lowercase letters, digits, '_' and '.'), a prefix rule
-// broken, a string too long, nargs > kMaxCommandArgs, an arg def with a null name or unknown
-// type, a live command with the same name, or owner released.
+// broken, a string too long, a capability that isn't a capability name (lowercase letters,
+// digits and '_' segments joined by '.', as caps::Set requires), nargs > kMaxCommandArgs, an arg
+// def with a null name or unknown type, a live command with the same name, or owner released.
 // TooMany: kMaxCommands registrations used (released ones still count: slots never move), or
 // out of memory.
 Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd);

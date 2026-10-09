@@ -303,6 +303,9 @@ bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRun
     if (const uint32_t code = Guarded(ScriptThunk, &k)) { Crash(p, "the script runtime", code); return false; }
     if (p.state != State::Ready) return false;   // a nested fault already marked it
     if (k.result != SCO_OK) {
+        // Release first, then free the script (as UnloadScript does): until Release the runtime
+        // holds callbacks into the script state.
+        if (const Result r = ReleaseOwner(p); r != Result::Ok) return ReleaseFailed(p, r);   // script kept
         runtime.unload(self);
         return refuse(k.err[0] ? std::string(k.err) : std::string("script load returned ") +
                       sco::ResultName(static_cast<Result>(k.result)));

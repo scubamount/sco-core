@@ -306,6 +306,12 @@ static void TestCommands() {
     CHECK(sco::RegisterCommand(&kOwnerH, "hell", cHello) == Result::BadArg);
     CHECK(sco::RegisterCommand(&kOwnerH, "hello.wave", cHello) == Result::BadArg);
     CHECK(sco::RegisterCommand(nullptr, "hello", cHello) == Result::BadArg);   // a prefix needs an owner
+    // A capability must be a capability name (caps::Set's rule), or it could never be granted.
+    for (const char* cap : { "", "Teleport", "a..b", ".a", "a.", "tele port" }) {
+        sco::Command badCap = cHello;
+        badCap.capability = cap;
+        CHECK(sco::RegisterCommand(&kOwnerH, "hello", badCap) == Result::BadArg);
+    }
     CHECK(sco::ListCommands(nullptr, 0) == 0);   // nothing registered by the failures
 
     CHECK(sco::RegisterCommand(nullptr, nullptr, cSpawn) == Result::Ok);

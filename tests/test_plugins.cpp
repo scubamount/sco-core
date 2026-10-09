@@ -112,6 +112,9 @@ static void TestManifest() {
     CHECK(ParseError(big.c_str()) == "<ok>");
     big += "\n";
     CHECK(ParseError(big.c_str()) == "too big");
+    // UTF-16 (either byte order) is refused with a clear message, not "missing key 'id'".
+    CHECK(!P::ParseManifest(std::string_view("\xFF\xFEi\0d\0=\0a\0", 10), m, err) && err == "plugin.ini must be UTF-8");
+    CHECK(!P::ParseManifest(std::string_view("\xFE\xFF\0i\0d", 6), m, err) && err == "plugin.ini must be UTF-8");
     // A failed parse leaves no half-filled manifest behind.
     CHECK(!Parse("id=keep\nname=", m, err) && m.id.empty());
 }
@@ -205,6 +208,9 @@ static void TestDiscoverLimits() {
     CHECK(list.size() == P::kMaxPlugins + 2);
     CHECK(list[P::kMaxPlugins - 1].state == State::Ready);
     CHECK(list[P::kMaxPlugins].state == State::Refused && list[P::kMaxPlugins].reason == "too many plugins");
+    // With plugins off every folder is listed Off, past the cap too.
+    const auto offList = P::Discover(root, P::Options{});
+    CHECK(offList.size() == P::kMaxPlugins + 2 && offList.back().state == State::Off);
 
     // Oversized plugin.ini and a symlinked folder.
     fs::remove_all(root);
@@ -217,6 +223,10 @@ static void TestDiscoverLimits() {
     else CHECK(list.size() == 2);   // "link" skipped
     CHECK(Find(list, "big") && Find(list, "big")->reason == "plugin.ini: too big");
     CHECK(Find(list, "real") && Find(list, "real")->state == State::Ready);
+    // Any entry named "disabled" switches a plugin off, a folder too.
+    fs::create_directories(root / "real" / "disabled");
+    list = P::Discover(root, on);
+    CHECK(Find(list, "real") && Find(list, "real")->state == State::Disabled);
     fs::remove_all(root);
 }
 

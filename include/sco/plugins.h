@@ -60,14 +60,15 @@ struct Manifest {
 // <major>.<minor>") for: a line without '=', a duplicate key, a missing required key (id, name,
 // version, api, kind), a value that breaks its rule (see the constants above), entry on a data
 // pack or missing on native/lua, entry not a bare file name, text over kMaxManifestBytes ("too
-// big"), a reserved id (sco, host, menu, game). On failure `out` is left empty.
+// big"), a reserved id (sco, host, menu, game), text starting with a UTF-16 BOM ("plugin.ini must
+// be UTF-8"). On failure `out` is left empty.
 bool ParseManifest(std::string_view text, Manifest& out, std::string& error);
 
 // ---- discovery ------------------------------------------------------------------------------
 
 enum class State : uint32_t {
     Off,        // plugins = off in sc-offline.ini; listed, never parsed past the manifest
-    Disabled,   // data/plugins/<id>/disabled exists (or the menu switched it off)
+    Disabled,   // data/plugins/<id>/disabled exists, of any type (or the menu switched it off)
     Refused,    // a check failed; `reason` says which
     Ready,      // passed discovery; LoadNative (native), LoadScript (lua) or Build (data) takes it
     Loaded,     // native: sco_plugin_load returned OK; lua: the entry script ran; data: indexed
@@ -110,7 +111,8 @@ constexpr size_t kMaxPlugins = 128;               // folders beyond this are lis
 // Lists every subfolder of root (sorted by name, byte order) that holds a plugin.ini; folders
 // without one and plain files are skipped. root missing or not a folder: empty list.
 // Symlinked folders are skipped. Each entry ends Off, Disabled, Refused or Ready. Refused
-// reasons, in check order: "too many plugins" (past kMaxPlugins), "plugin.ini: unreadable",
+// reasons, in check order: "too many plugins" (past kMaxPlugins; with opts.enabled false those
+// folders are Off like the rest), "plugin.ini: unreadable",
 // "plugin.ini: <parse error>" (incl. "plugin.ini: too big"), "id 'x' does not match folder 'y'"
 // (so ids are unique), "built for api M.m" (major differs or minor newer than the host),
 // "entry 'x' not found", "missing capability 'x'".
