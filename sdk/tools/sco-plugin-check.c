@@ -789,7 +789,11 @@ int main(int argc, char** argv) {
         if (!failures && !strcmp(m.kind, "data")) {
             int n = list_content(dir, "missions", ".cwmission", 0) + list_content(dir, "rules", ".rules", 0) +
                     list_content(dir, "scripts", ".xml", 1) + list_content(dir, "lists", ".txt", 0);
-            if (n == 0) fail("data pack has no content (missions/*.cwmission, rules/*.rules, scripts/**.xml, lists/*.txt)");
+            /* .toml files in datacore: indexed here; their syntax and names are checked by sco-dcb lint and check. */
+            int dcb = list_content(dir, "datacore", ".toml", 0);
+            if (dcb) printf("  datacore %d file(s) indexed; check them with sco-dcb lint (syntax) and sco-dcb check (against Game2.dcb)\n", dcb);
+            n += dcb;
+            if (n == 0) fail("data pack has no content (missions/*.cwmission, rules/*.rules, scripts/**.xml, lists/*.txt, datacore/*.toml)");
             else if (n > MAX_PACK_FILES) fail("data pack has %d content files; the host refuses more than %d", n, MAX_PACK_FILES);
             else printf("  pack    %d file(s)\n", n);
         } else if (!failures && !strcmp(m.kind, "native")) {

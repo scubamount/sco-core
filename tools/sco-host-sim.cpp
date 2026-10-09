@@ -6,7 +6,9 @@
 // Loads the built-in demo plugin `sim` (command sim.ping) and every plugin under <plugin root>
 // with plugins on, runs N ticks (default 1, 100 ms apart), invokes one command (arguments parsed
 // against its arg defs: int, float, string, bool as 1/0/true/false), then stops: game.exit and
-// unload. Log lines go to stdout as they would to mod.log.
+// unload. Log lines go to stdout as they would to mod.log. Every datacore/*.toml the content index
+// holds is parsed as sco-dcb lint does (names need a Game2.dcb: sco-dcb check); a file that doesn't
+// parse fails the run.
 //   --exe    resolve the signature tables against a StarCitizen.exe on disk (as sco-sigcheck)
 //   --cap    set a capability ready (after the signatures, as a product would)
 //   --no-lua no script runtime: lua plugins are refused
@@ -15,6 +17,7 @@
 // --exe.
 #include "sco/app.h"
 #include "sco/caps.h"
+#include "sco/datacore_pack.h"
 #include "sco/log.h"
 #include "sco/pe_file.h"
 #include "sco/runtime.h"
@@ -23,6 +26,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -132,6 +137,25 @@ int Usage() {
     return 2;
 }
 
+// The pack lint for every indexed datacore/*.toml. False if one doesn't parse.
+bool LintDataCore() {
+    bool ok = true;
+    for (const P::ContentItem* item : sco::app::Content().Items(P::ContentKind::DataCore)) {
+        std::ifstream in(item->path, std::ios::binary);
+        std::stringstream text;
+        text << in.rdbuf();
+        sco::datacore::Pack pack;
+        std::string error;
+        if (in && sco::datacore::ParsePack(text.str(), pack, error)) {
+            std::printf("[sim] datacore %s %s: OK, %zu operations\n", item->plugin.c_str(), item->name.c_str(), pack.ops.size());
+        } else {
+            std::printf("[sim] datacore %s %s: %s\n", item->plugin.c_str(), item->name.c_str(), in ? error.c_str() : "unreadable");
+            ok = false;
+        }
+    }
+    return ok;
+}
+
 // Every plugin loaded, off or disabled (at start); none refused or crashed (at stop: unloaded
 // counts too). Prints the ones that aren't.
 bool AllHealthy(bool stopped) {
@@ -190,6 +214,7 @@ int main(int argc, char** argv) {
     if (!sco::app::Start(pf)) return 1;
 
     bool ok = AllHealthy(false);
+    ok = LintDataCore() && ok;
     for (long t = 1; t <= ticks; ++t) sco::app::Tick(static_cast<uint32_t>(t * 100));
     if (invokeName && !RunInvoke(invokeName, invokeArgs, nInvokeArgs)) ok = false;
     sco::app::Stop();
