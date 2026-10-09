@@ -213,7 +213,8 @@ static void TestDiscoverLimits() {
     std::error_code ec;
     fs::create_directory_symlink(root / "real", root / "link", ec);
     list = P::Discover(root, on);
-    CHECK(list.size() == 2);   // "link" skipped
+    if (ec) std::printf("SKIP: symlinked plugin folder (cannot create symlink: %s)\n", ec.message().c_str());
+    else CHECK(list.size() == 2);   // "link" skipped
     CHECK(Find(list, "big") && Find(list, "big")->reason == "plugin.ini: too big");
     CHECK(Find(list, "real") && Find(list, "real")->state == State::Ready);
     fs::remove_all(root);
@@ -272,13 +273,19 @@ static void TestContentIndex() {
     WriteFile(root / "sly" / "plugin.ini", "id=sly\nname=N\nversion=1\napi=1.0\nkind=data\n");
     WriteFile(root / "outside" / "secret.xml", "<x/>");
     WriteFile(root / "sly" / "scripts" / "own.xml", "<x/>");
-    std::error_code ec;
-    fs::create_directory_symlink(root / "outside", root / "sly" / "scripts" / "linked", ec);
-    fs::create_symlink(root / "outside" / "secret.xml", root / "sly" / "scripts" / "file_link.xml", ec);
+    std::error_code dirLink, fileLink;
+    fs::create_directory_symlink(root / "outside", root / "sly" / "scripts" / "linked", dirLink);
+    fs::create_symlink(root / "outside" / "secret.xml", root / "sly" / "scripts" / "file_link.xml", fileLink);
     list = P::Discover(root, on);
-    CHECK(index.Build(list) == 1);
+    const size_t built = index.Build(list);
     CHECK(Find(list, "big")->state == State::Refused && Find(list, "big")->reason == "too many files");
-    CHECK((Names(index.Items(P::ContentKind::Script)) == std::vector<std::string>{ "sly:scripts/own.xml" }));
+    CHECK(index.Find(P::ContentKind::Script, "scripts/own.xml").size() == 1);
+    if (dirLink) std::printf("SKIP: symlinked pack folder (cannot create symlink: %s)\n", dirLink.message().c_str());
+    if (fileLink) std::printf("SKIP: symlinked pack file (cannot create symlink: %s)\n", fileLink.message().c_str());
+    if (!dirLink && !fileLink) {   // both links skipped: only the pack's own file is indexed
+        CHECK(built == 1);
+        CHECK((Names(index.Items(P::ContentKind::Script)) == std::vector<std::string>{ "sly:scripts/own.xml" }));
+    }
     fs::remove_all(root);
 
     // scripts/** goes kMaxScriptDepth folders deep; deeper files are ignored.
