@@ -94,6 +94,7 @@ CI packages it as `sco-sdk-<version>.zip`. Start with the [SDK README](sdk/READM
 | Path | What |
 |---|---|
 | [`include/sco_api.h`](include/sco_api.h) | The plugin ABI: the only header a plugin includes |
+| [`include/scosdk/`](docs/sdk-cpp.md) | The C++20 SDK layer over `sco_api.h` (header-only) |
 | [`include/sco/`](include/sco/) | Internal C++ API used by sc-offline: signatures, scanners, runtime, caps, host, plugins |
 | `src/` | The core (`sco_*.cpp`), the runtime (`api/`), the host table (`host/`), the host kit (`app/`), the plugin loader (`plugins/`), game tables (`game/`) |
 | [`plugins/lua/`](plugins/lua/README.md) | sco-lua: Lua 5.4.8 (vendored, MIT) in a sandbox, built only on `sco_api.h` |
