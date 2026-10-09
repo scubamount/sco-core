@@ -10,6 +10,7 @@ const char* KindName(Kind k) {
         case Kind::Native: return "native";
         case Kind::Lua:    return "lua";
         case Kind::Data:   return "data";
+        case Kind::Builtin: return "builtin";
     }
     return "?";
 }

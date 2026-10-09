@@ -39,8 +39,9 @@ namespace fs = std::filesystem;
 
 // ---- manifest -------------------------------------------------------------------------------
 
-enum class Kind : uint32_t { Native = 0, Lua = 1, Data = 2 };
-const char* KindName(Kind k);                     // "native", "lua", "data"
+// Builtin: compiled into the host (FromBuiltin); never comes from a plugin.ini.
+enum class Kind : uint32_t { Native = 0, Lua = 1, Data = 2, Builtin = 3 };
+const char* KindName(Kind k);                     // "native", "lua", "data", "builtin"
 
 constexpr size_t kMaxIdLen = 31, kMaxNameLen = 63, kMaxVersionLen = 31, kMaxAuthorLen = 63;
 constexpr size_t kMaxCapabilityLen = 63, kMaxRequires = 16, kMaxEntryLen = 63;
@@ -71,7 +72,7 @@ enum class State : uint32_t {
     Disabled,   // data/plugins/<id>/disabled exists, of any type (or the menu switched it off)
     Refused,    // a check failed; `reason` says which
     Ready,      // passed discovery; LoadNative (native), LoadScript (lua) or Build (data) takes it
-    Loaded,     // native: sco_plugin_load returned OK; lua: the entry script ran; data: indexed
+    Loaded,     // native, builtin: sco_plugin_load returned OK; lua: the entry script ran; data: indexed
     Crashed,    // faulted in plugin code, or couldn't be released; never called again, DLL kept mapped
     Unloaded,   // unloaded cleanly; DLL closed
 };
@@ -91,11 +92,11 @@ struct Plugin {
     bool        manifestOk = false;               // plugin.ini parsed (state may still be Refused)
     State       state = State::Refused;
     std::string reason;                           // why Refused / Disabled / Crashed
-    // native only
-    void*         module = nullptr;               // module handle while mapped
-    sco_plugin*   self = nullptr;                 // the owner handle the host passed to load (native, lua)
+    // native (module, exports), builtin (exports), lua (self)
+    void*         module = nullptr;               // module handle while mapped; always null for a builtin
+    sco_plugin*   self = nullptr;                 // the owner handle the host passed to load
     NativeExports exports;
-    uint32_t      loadOrder = 0;                  // 1-based among loaded natives and scripts; 0 = never
+    uint32_t      loadOrder = 0;                  // 1-based among loaded natives, builtins and scripts; 0 = never
 };
 
 using CapabilityCheck = int (*)(const char* capability);
@@ -180,6 +181,31 @@ void ContainCallouts(std::vector<Plugin>* list);
 // "release failed: <RESULT>". Game thread only. No-op unless Loaded.
 void UnloadNative(Plugin& p, const ModuleOps& ops = PlatformModuleOps());
 
+// ---- built-in plugins -----------------------------------------------------------------------
+
+// A feature compiled into the host that is a plugin all the same: the same three functions a
+// plugin DLL exports, listed in a table instead of loaded from a folder. It talks to other
+// plugins only through sco_api, runs under the same crash guard and shows as `builtin` in the
+// report. It needs no plugin.ini: its manifest comes from sco_plugin_query.
+struct Builtin {
+    const char*          id;                      // [a-z0-9_], 1-31 chars, not reserved; == info.name
+    sco_plugin_query_fn  query;
+    sco_plugin_load_fn   load;
+    sco_plugin_unload_fn unload;
+};
+
+// A list entry for a built-in: kind Builtin, folder and manifest.id = id, dir empty, state
+// Ready, exports set. Refused ("built-in id 'x' is not valid", "built-in x has no
+// sco_plugin_load", ...) for a bad id or a null function. name, version, author and api are
+// filled from sco_plugin_query by LoadBuiltin.
+Plugin FromBuiltin(const Builtin& b);
+
+// Loads one Ready built-in, as LoadNative does without a module: query() (guarded; the same
+// info checks: size, api major/minor, name == id), then load(api, self) (guarded). Loaded (true);
+// Refused (released) on a failed check or a non-OK load; Crashed when query or load faults (or
+// Release fails after a non-OK load). Game thread only.
+bool LoadBuiltin(Plugin& p, const sco_api* api, sco_plugin* self, const Options& opts);
+
 // ---- script loader (kind = lua) --------------------------------------------------------------
 
 // The script runtime the host links in (sc-offline: sco-lua, plugins/lua/sco_lua.h). The loader
@@ -201,16 +227,20 @@ constexpr size_t kMaxScriptBytes = 1024 * 1024;   // entry script size
 // "script too big", "main.lua:3: ..." from the runtime). A fault in the runtime: Crashed.
 bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRuntime& runtime);
 
-// Unloads every Loaded plugin, last loaded first: natives as UnloadNative; scripts by
-// sco::Release(self) then runtime.unload(self) (state Unloaded; if Release fails the script is
-// kept and the plugin Crashed, as for natives). runtime may be null when no script was loaded.
+// Unloads every Loaded plugin, last loaded first, built-ins after every other plugin (they are
+// the host's own features, which other plugins may still call while unloading): natives as
+// UnloadNative; built-ins the same without a module to close; scripts by sco::Release(self)
+// then runtime.unload(self) (state Unloaded; if Release fails the script is kept and the
+// plugin Crashed, as for natives). runtime may be null when no script was loaded. Data packs
+// stay as they are.
 void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops = PlatformModuleOps(),
                const ScriptRuntime* runtime = nullptr);
 
 // ---- status ---------------------------------------------------------------------------------
 
 // "hello 1.0.0 native loaded", "pack 1.0.0 data refused: built for api 2.0",
-// "broken ? ? refused: plugin.ini: line 2: ..." (unknown fields shown as '?').
+// "teleport 1.0.0 builtin loaded", "broken ? ? refused: plugin.ini: line 2: ..." (unknown
+// fields shown as '?'; a built-in refused before its query shows version '?').
 std::string Describe(const Plugin& p);
 // "[plugin] <Describe>" per plugin, in list order, plus a first line
 // "[plugin] N found, L loaded (plugins = on|off)".
