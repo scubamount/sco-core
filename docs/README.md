@@ -1,6 +1,6 @@
 # sco-core documentation
 
-Start with the [README](../README.md) for what sco-core is. Pick your path below.
+Start with the [README](../README.md) for what sco-core is. Pick your path below. Where sco-core and sc-offline are heading: [Framework plan](framework.md).
 
 ## Writing a plugin
 
