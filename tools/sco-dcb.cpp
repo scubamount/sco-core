@@ -569,10 +569,7 @@ struct Differ {
         using namespace sco::datacore;
         const dc::Record* ra = a.FindRecord(rb.id);
         const std::string rname(b.Name(rb.name));
-        if (!ra) {
-            Note("record " + rname + " {" + FormatGuid(rb.id) + "} is new in b (AddRecord isn't supported yet)");
-            return;
-        }
+        if (!ra) return;   // Added
         RecordRef ref;
         ref.guid = rb.id;
         std::vector<FieldView> va, vb;
@@ -585,6 +582,67 @@ struct Differ {
         const std::string target = RecordLines(rb, b);
         const std::string where = "record " + rname;
         Compare(va, vb, at, 0, vb.size(), target, rb, where);
+    }
+    // The entries of b's view that a's lacks or has another value for (a clone's distance).
+    static size_t Distance(const std::vector<dc::FieldView>& va, const std::vector<dc::FieldView>& vb) {
+        std::map<std::string, const std::string*> at;
+        for (const dc::FieldView& f : va) at.emplace(f.path, &f.text);
+        size_t n = 0;
+        for (const dc::FieldView& f : vb) {
+            const auto it = at.find(f.path);
+            n += it == at.end() || *it->second != f.text;
+        }
+        return n;
+    }
+    // A record only in b: a [[record]] cloned from the record of a, of the same struct, whose values
+    // differ least (those in the same file first, up to 256 tried), then the values that differ.
+    void Added(const dc::Record& rb) {
+        using namespace sco::datacore;
+        const std::string rname(b.Name(rb.name));
+        const std::string where = "record " + rname;
+        RecordRef ref;
+        ref.guid = rb.id;
+        std::vector<FieldView> vb;
+        if (!pb.ReadFields(ref, "", vb, 32)) {
+            Note(where + ": can't be read");
+            return;
+        }
+        const std::string_view file = b.ValueString(rb.fileName);
+        std::vector<const dc::Record*> candidates, others;
+        for (const dc::Record& r : a.records)
+            if (r.structIndex == rb.structIndex) (a.ValueString(r.fileName) == file ? candidates : others).push_back(&r);
+        candidates.insert(candidates.end(), others.begin(), others.end());
+        if (candidates.size() > 256) candidates.resize(256);
+        const dc::Record* best = nullptr;
+        std::vector<FieldView> bestA;
+        size_t bestDistance = SIZE_MAX;
+        for (const dc::Record* c : candidates) {
+            RecordRef cr;
+            cr.guid = c->id;
+            std::vector<FieldView> va;
+            if (!pa.ReadFields(cr, "", va, 32)) continue;
+            const size_t d = Distance(va, vb);
+            if (d < bestDistance) {
+                best = c;
+                bestA = std::move(va);
+                bestDistance = d;
+                if (d == 0) break;
+            }
+        }
+        if (!best) {
+            Note(where + " {" + FormatGuid(rb.id) + "} is new in b, and a has no record of struct " + std::string(b.StructName(rb.structIndex)) +
+                 " to clone it from");
+            return;
+        }
+        const std::string id = "new" + std::to_string(++next);
+        made[std::make_pair(rb.structIndex, static_cast<uint32_t>(rb.instanceIndex))] = id;
+        out += "\n[[record]]\nid = " + Q(id) + "\nstruct = " + Q(std::string(b.StructName(rb.structIndex))) + "\nname = " + Q(rname) +
+               "\nguid = " + Q(FormatGuid(rb.id)) + "\nclone = { record = " + Q(std::string(a.Name(best->name))) + ", guid = " +
+               Q(FormatGuid(best->id)) + " }\nfile = " + Q(std::string(file)) + "\n";
+        ++changes;
+        std::map<std::string, size_t> at;
+        for (size_t i = 0; i < bestA.size(); ++i) at.emplace(bestA[i].path, i);
+        Compare(bestA, vb, at, 0, vb.size(), RecordLines(rb, b), *best, where);
     }
     // Compares b's entries [from, to) with a's by path; returns where it stopped (past `to` when an
     // entry's subtree runs beyond it).
@@ -676,6 +734,9 @@ static int Diff(int, char** argv) {
         return 1;
     }
     Differ d(a, b);
+    // New records first: later operations may point at them, and they clone a's values as they were.
+    for (const dc::Record& r : b.records)
+        if (!a.FindRecord(r.id)) d.Added(r);
     for (const dc::Record& r : b.records) d.Record(r);
     std::string text = "# sco-dcb diff: the changes from " + std::string(argv[2]) + " to " + std::string(argv[3]) + "\n";
     for (const std::string& n : d.notes) text += "# not converted: " + n + "\n";

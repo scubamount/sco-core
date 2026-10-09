@@ -26,6 +26,7 @@ PIN(sizeof(void*) == 8);
 
 /* ---- name, version, constants ---- */
 PIN(SCO_DATACORE_VERSION_1_0 == 0x00010000u);
+PIN(SCO_DATACORE_VERSION_1_1 == 0x00010001u);
 PIN(sizeof(SCO_DATACORE_NAME) == 13); /* "sco.datacore" */
 PIN(sizeof(SCO_DC_APPLIED_EVENT) == 17); /* "datacore.applied" */
 PIN(SCO_DC_OPEN == 1u);

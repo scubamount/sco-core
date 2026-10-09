@@ -182,7 +182,7 @@ The first additions to the ABI: `sco_api` 1.1. **Landed early (sco_api 1.1):** `
 - **SQL is synchronous**, with a time budget per call (1 s, then interrupted), instead of a storage thread with `row` / `done` callbacks. Calls work from any thread and are serialized per plugin; a query returns a cursor id, never a pointer. An asynchronous form can be added as a later minor if a plugin needs long queries off the game thread.
 - **Where data lives:** `<dataRoot>/storage/<plugin id>.db` (sc-offline: `data/storage/`), set by `Platform::dataRoot`. Still outside the plugin's folder.
 - **Durability:** WAL and `synchronous = FULL`; a child process killed mid-transaction keeps the last committed state (`tests/test_storage.cpp`).
-- **Lua** has no service bindings yet; `sco.store.*` for scripts is a follow-up (G018).
+- **Lua:** `sco.store` in sco-lua (`get`, `put`, `delete`, `keys`, `begin` / `commit` / `rollback`, `exec`, `sql(sql, params[, fn])`) over the same service, with rows as tables and each call and row counted against the step budget ([Lua reference](../sdk/docs/lua.md#scostore)).
 
 The original plan, kept as written:
 

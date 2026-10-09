@@ -1,0 +1,8 @@
+# expect: 8: [[record]]: clone must be a record of the same struct, not a field of one
+# A record clones another record's root, never a field.
+format = 1
+
+[[record]]
+struct = "Part"
+name = "PartZ"
+clone = { record = "ShipA", field = "engine" }

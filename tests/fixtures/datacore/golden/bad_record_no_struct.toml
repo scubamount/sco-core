@@ -1,0 +1,7 @@
+# expect: 5: [[record]]: missing struct
+# A [[record]] names the struct (type) of the new record.
+format = 1
+
+[[record]]
+name = "ShipC"
+clone = { record = "ShipA" }

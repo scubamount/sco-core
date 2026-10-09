@@ -329,6 +329,17 @@ static void TestRefusals() {
           Refusal::RecordNotFound },
         { "[[set]]\nrecord = \"ShipA\"\nfield = \"engine\"\npointer = { record = \"ShipA\", field = \"pos\" }\n", Refusal::TypeMismatch },
         { "[[set]]\nrecord = \"ShipB\"\nfield = \"counts[0]\"\nvalue = 1\n", Refusal::Corrupt },
+        // [[record]] (design "AddRecord"): every rule that needs the file.
+        { "[[record]]\nstruct = \"Nope\"\nname = \"N\"\nclone = { record = \"ShipA\" }\n", Refusal::StructNotFound },
+        { "[[record]]\nstruct = \"Ship\"\nname = \"ShipB\"\nclone = { record = \"ShipA\" }\n", Refusal::Duplicate },
+        { "[[record]]\nstruct = \"Ship\"\nname = \"N\"\nguid = \"17161514-1312-1110-1f1e-1d1c1b1a1918\"\nclone = { record = \"ShipA\" }\n",
+          Refusal::Duplicate },
+        { "[[record]]\nstruct = \"Ship\"\nname = \"N\"\nclone = { record = \"PartX\" }\n", Refusal::TypeMismatch },
+        { "[[record]]\nstruct = \"Ship\"\nname = \"N\"\nclone = { record = \"Nope\" }\n", Refusal::RecordNotFound },
+        { "[[record]]\nstruct = \"Vec2\"\nname = \"N\"\nclone = { record = \"ShipA\" }\n", Refusal::Unsupported },
+        { "[[record]]\nstruct = \"Ship\"\nname = \"N\"\nclone = { record = \"ShipA\" }\nset = { \"nope\" = 1.0 }\n", Refusal::FieldNotFound },
+        { "[[record]]\nid = \"n\"\nstruct = \"Ship\"\nname = \"ShipA\"\nclone = { record = \"ShipA\" }\n[[set]]\ninstance = \"@n\"\nfield = \"speed\"\nvalue = 1.0\n",
+          Refusal::Duplicate },
     };
     for (const Case& c : cases) {
         const Pack p = Parse(std::string("format = 1\n") + c.body, "r");
@@ -363,6 +374,70 @@ static void TestRefusals() {
         const PackResult r = ApplyPacks(s, std::vector<Pack>{});
         CHECK(r.status.ok() && r.splices.empty() && Summary(r) == "[datacore] 0 packs: none");
     }
+}
+
+// [[record]]: good_record.toml applied, read back through a fresh parse; the defaults (a GUID
+// derived from plugin and name, libs/foundry/records/sco/<plugin>/<name>.xml); a later pack adding
+// the same name is refused; atomic = false drops what depends on a refused record.
+static void TestRecords() {
+    const Bytes base = Scene();
+    Schema s;
+    CHECK(s.Parse(base));
+    const Pack pack = Parse(ReadText(g_root / "tests" / "fixtures" / "datacore" / "golden" / "good_record.toml"), "recs");
+    PackResult r = ApplyPacks(s, std::vector<Pack>{ pack });
+    for (const PackOpReport& op : r.packs[0].ops)
+        if (!op.status) std::printf("  line %u: %s\n", op.line, op.status.message.c_str());
+    CHECK(r.status.ok() && r.packs[0].state == PackState::Applied && r.packs[0].applied == 6);
+    const Bytes f = Applied(base, r);
+    Schema p;
+    CHECK(p.Parse(f) && p.records.size() == s.records.size() + 2);
+    const Guid cGuid = PackRecordGuid("recs", "ShipC");
+    const Record* c = p.FindRecordByName("ShipC");
+    const Record* z = p.FindRecordByName("PartZ");
+    CHECK(c && c->id == cGuid && p.ValueString(c->fileName) == "libs/foundry/records/sco/recs/ShipC.xml" && c->structIndex == dcb::kShip);
+    CHECK(z && FormatGuid(z->id) == "d4c3b2a1-0001-4000-8000-000000000001" && p.ValueString(z->fileName) == "libs/foundry/records/test/part_z.xml");
+    CHECK(Val(f, "ShipC", "speed") == "7.5" && Val(f, "ShipA", "speed") == "100.0");   // set = { } on the new record only
+    CHECK(Val(f, "ShipC", "label") == "\"new ship\"" && Val(f, "ShipA", "label") == "\"hello\"");
+    CHECK(Val(f, "ShipC", "kind") == "{ enum = \"Large\" }");                         // cloned from ShipA
+    CHECK(Val(f, "ShipB", "maker") == "{ ref = \"guid:" + FormatGuid(cGuid) + "\" }");
+    if (z) CHECK(Val(f, "ShipC", "engine") == "-> Part[" + std::to_string(z->instanceIndex) + "]");
+    CHECK(Summary(r) == "[datacore] 1 pack: recs 6/6 applied");
+
+    // The derived GUID: stable, per plugin and name, version 4 in FormatGuid's form.
+    CHECK(PackRecordGuid("recs", "ShipC") == cGuid && !(PackRecordGuid("other", "ShipC") == cGuid) && !(PackRecordGuid("recs", "ShipD") == cGuid));
+    CHECK(!(PackRecordGuid("ab", "c") == PackRecordGuid("a", "bc")));
+    const std::string g = FormatGuid(cGuid);
+    CHECK(g[14] == '4' && std::string("89ab").find(g[19]) != std::string::npos);
+    CHECK(PackRecordFile("recs", "ShipC") == "libs/foundry/records/sco/recs/ShipC.xml");
+    CHECK(PackRecordFileOk("libs/foundry/records/a.xml") && !PackRecordFileOk("libs/foundry/records/.xml") &&
+          !PackRecordFileOk("libs/foundry/a.xml") && !PackRecordFileOk(std::string("libs/foundry/records/a\0.xml", 27)));
+
+    // Two packs adding one name: the later one is refused, the first applies.
+    const std::string one = "format = 1\n[[record]]\nstruct = \"Ship\"\nname = \"ShipN\"\nclone = { record = \"ShipA\" }\n";
+    r = ApplyPacks(s, std::vector<Pack>{ Parse(one, "first"), Parse(one, "second") });
+    CHECK(r.status.ok() && r.packs[0].state == PackState::Applied && r.packs[1].state == PackState::Refused);
+    CHECK(r.packs[1].ops.size() == 1 && r.packs[1].ops[0].status.category == Refusal::Duplicate);
+    Schema two;
+    CHECK(two.Parse(Applied(base, r)) && two.records.size() == s.records.size() + 1 && two.FindRecordByName("ShipN") &&
+          two.FindRecordByName("ShipN")->id == PackRecordGuid("first", "ShipN"));
+
+    // atomic = false: a refused record takes what uses its "@id" with it; the rest applies.
+    const Pack loose = Parse(R"(format = 1
+atomic = false
+[[record]]
+id = "bad"
+struct = "Ship"
+name = "ShipA"
+clone = { record = "ShipA" }
+[[set]]
+instance = "@bad"
+field = "speed"
+value = 3.0
+)" + Set("ShipB", "speed", "4.0"), "loose");
+    r = ApplyPacks(s, std::vector<Pack>{ loose });
+    CHECK(r.packs[0].state == PackState::Partial && r.packs[0].applied == 1 && r.packs[0].skipped == 2);
+    CHECK(r.packs[0].ops.size() == 3 && r.packs[0].ops[1].status.category == Refusal::DependencyFailed);
+    CHECK(Val(Applied(base, r), "ShipB", "speed") == "4.0");
 }
 
 // ---- the sample pack's fixture -----------------------------------------------------------------
@@ -460,6 +535,16 @@ static void TestSamplePack() {
     std::ofstream(g_out / "quantum_fixture.dcb", std::ios::binary).write(reinterpret_cast<const char*>(base.data()), static_cast<std::streamsize>(base.size()));
     std::ofstream(g_out / "quantum_fixture_patched.dcb", std::ios::binary).write(reinterpret_cast<const char*>(f.data()), static_cast<std::streamsize>(f.size()));
     CHECK(fs::file_size(g_out / "quantum_fixture.dcb") == base.size() && fs::file_size(g_out / "quantum_fixture_patched.dcb") == f.size());
+
+    // tests/fixtures/datacore/new_record: a [[record]] (sco-dcb show and diff run on the result).
+    std::vector<Pack> rec;
+    CHECK(LoadPackDir(g_root / "tests" / "fixtures" / "datacore" / "new_record", rec));
+    const PackResult rr = ApplyPacks(s, rec);
+    CHECK(rr.status.ok() && rr.packs.size() == 1 && rr.packs[0].state == PackState::Applied);
+    const Bytes fr = Applied(base, rr);
+    CHECK(!fr.empty());
+    std::ofstream(g_out / "quantum_fixture_record.dcb", std::ios::binary).write(reinterpret_cast<const char*>(fr.data()), static_cast<std::streamsize>(fr.size()));
+    CHECK(fs::file_size(g_out / "quantum_fixture_record.dcb") == fr.size());
 }
 
 int main(int argc, char** argv) {
@@ -475,6 +560,7 @@ int main(int argc, char** argv) {
     TestOrder();
     TestAtomicity();
     TestRefusals();
+    TestRecords();
     TestSamplePack();
     std::printf("sco-core datacore pack tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

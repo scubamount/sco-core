@@ -1,0 +1,9 @@
+# expect: 8: [[record]]: the zero guid is a null reference
+# The zero GUID is what a null reference holds.
+format = 1
+
+[[record]]
+struct = "Ship"
+name = "ShipC"
+guid = "00000000-0000-0000-0000-000000000000"
+clone = { record = "ShipA" }

@@ -1,0 +1,8 @@
+# A new record cloned from an existing one (tests/dcb_pack.cmake runs sco-dcb lint, check, show
+# and diff on it against test_datacore_pack's quantum fixture).
+format = 1
+
+[[record]]
+struct = "EntityClassDefinition"
+name   = "EntityClassDefinition.QDRV_SCO_Test_SCItem"
+clone  = { record = "EntityClassDefinition.QDRV_WETK_S01_Beacon_SCItem" }

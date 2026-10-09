@@ -486,6 +486,15 @@ pointer = "@new_params"
 record = "..."
 field  = "effects"
 value  = { struct = "SEntityEffectSystem_ParticleTagEffect", clone = { ... } }
+
+# New records (decision 3, "AddRecord"): named by name, guid or "@id" in later operations
+[[record]]
+id     = "new_drive"
+struct = "EntityClassDefinition"
+name   = "SCItem_QuantumDrive_SCO_Example"
+clone  = { record = "SCItem_QuantumDrive_S1_Example" }   # required, a record of the same struct
+# guid = "..."                                 # default: derived from the pack id and name, stable
+# file = "libs/foundry/records/...xml"         # default: libs/foundry/records/sco/<pack id>/<name>.xml
 ```
 
 (Record and field names above are illustrative.)

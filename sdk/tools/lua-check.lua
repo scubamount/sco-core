@@ -167,6 +167,70 @@ function sco.list_commands()
   return out
 end
 
+-- sco.store: the plugin's storage (the host service sco.storage), key-value in memory here and
+-- forgotten at exit. SQL needs SQLite, which a stock Lua doesn't have: exec and sql answer
+-- nil, "unavailable" (test SQL in the game). Errors are nil, err, message, as in the runtime.
+local kv, kv_saved = {}, nil
+local function store_bad(msg) return nil, "bad_arg", msg end
+local function key_ok(k) return type(k) == "string" and #k >= 1 and #k <= 255 and not k:find("\0", 1, true) end
+local function str_arg(v, fname)
+  if type(v) ~= "string" then error("bad argument #1 to '" .. fname .. "' (string expected, got " .. type(v) .. ")", 3) end
+end
+local store = {}
+function store.available() return true end
+function store.get(key)
+  str_arg(key, "get")
+  if not key_ok(key) then return store_bad("keys are 1-255 bytes") end
+  return kv[key]
+end
+function store.put(key, value)
+  str_arg(key, "put")
+  if type(value) ~= "string" then error("bad argument #2 to 'put' (string expected, got " .. type(value) .. ")", 2) end
+  if not key_ok(key) then return store_bad("keys are 1-255 bytes") end
+  if #value > 1048576 then return store_bad("values are at most 1 MiB") end
+  kv[key] = value
+  return true
+end
+function store.delete(key)
+  str_arg(key, "delete")
+  if not key_ok(key) then return store_bad("keys are 1-255 bytes") end
+  local had = kv[key] ~= nil
+  kv[key] = nil
+  return had
+end
+function store.keys(prefix, after, limit)
+  limit = limit or 1000
+  if math.type(limit) ~= "integer" or limit < 1 or limit > 1000 then return store_bad("limit is 1-1000") end
+  prefix = prefix or ""
+  local all = {}
+  for k in pairs(kv) do
+    if k:sub(1, #prefix) == prefix and (after == nil or k > after) then all[#all + 1] = k end
+  end
+  table.sort(all)
+  local out = {}
+  for i = 1, math.min(limit, #all) do out[i] = all[i] end
+  return out
+end
+function store.begin()
+  if kv_saved then return nil, "bad_arg", "a transaction is already open" end
+  kv_saved = {}
+  for k, v in pairs(kv) do kv_saved[k] = v end
+  return true
+end
+function store.commit()
+  if not kv_saved then return nil, "bad_arg", "no transaction is open" end
+  kv_saved = nil
+  return true
+end
+function store.rollback()
+  if not kv_saved then return nil, "bad_arg", "no transaction is open" end
+  kv, kv_saved = kv_saved, nil
+  return true
+end
+function store.exec(sql) str_arg(sql, "exec") return nil, "unavailable", "lua-check has no SQLite" end
+function store.sql(sql) str_arg(sql, "sql") return nil, "unavailable", "lua-check has no SQLite" end
+sco.store = store
+
 -- ---- sandbox ----------------------------------------------------------------------------
 
 local function copy(t) local r = {} for k, v in pairs(t) do r[k] = v end return r end
