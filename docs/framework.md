@@ -171,7 +171,7 @@ When the last tab is done, `dllmain.cpp` is the bootstrap only, and plugins' com
 
 ## Phase 5: services and storage
 
-The first additions to the ABI: `sco_api` 1.1. Additions follow [Plugin API v1 § Compatibility](api-v1.md#compatibility): new functions at the end of `sco_api`, `SCO_API_MINOR` up by one, `tests/abi_v1.c` extended, each with its own design review before code.
+The first additions to the ABI: `sco_api` 1.1. **Landed early (sco_api 1.1):** `SCO_FAILED` (issue #12), `provide_service` / `query_service` with direct tables (see [API v1 § Services](api-v1.md#services-11)), and outside the ABI `sco/hook.h`, the detour engine sc-offline's hooks move onto. Storage and settings are still to come. Additions follow [Plugin API v1 § Compatibility](api-v1.md#compatibility): new functions at the end of `sco_api`, `SCO_API_MINOR` up by one, `tests/abi_v1.c` extended, each with its own design review before code.
 
 ### Storage
 
@@ -276,7 +276,6 @@ sc-offline adds sco-core with `add_subdirectory(external/sco-core EXCLUDE_FROM_A
 Answered since the plan was written: the `game.exit` signal (the game's quit path, [lesson 1](#1-the-game-quits-without-wm_quit)) and where host features' command prefixes are reserved (by the built-in plugins, which load and register first; see [Decisions taken](#decisions-taken)).
 
 - Release PDBs: keep none (today) or upload `dinput8.pdb` as a separate release asset for crash reports?
-- Whether discovery should refuse a plugin folder whose id matches a built-in outright (today only the command prefix is protected, while the built-in is loaded).
 - Whether the launcher grows the mod manager or a separate tool does.
 - Storage: whether plugins may share data (a read-only view of another plugin's keys, granted in `plugin.ini`) or only through services.
-- Services: host-interposed trampolines (crash attributed to the provider, a small cost per call) or direct tables (faster, attributed to the caller).
+- Services: decided for 1.1, direct tables (faster; a fault in the provider is attributed to the caller). Host-interposed trampolines can be added later as an opt-in per service.

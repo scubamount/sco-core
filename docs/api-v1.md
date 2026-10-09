@@ -16,6 +16,7 @@ Plugins are native DLLs and run with the game's full rights. Only install plugin
 - [Commands](#commands)
 - [Events](#events)
 - [Capabilities](#capabilities)
+- [Services (1.1)](#services-11)
 - [Threading](#threading)
 - [Compatibility](#compatibility)
 - [Layout](#layout)
@@ -44,7 +45,8 @@ Plugins are native DLLs and run with the game's full rights. Only install plugin
 ```c
 typedef enum sco_result {
     SCO_OK = 0, SCO_UNAVAILABLE = 1, SCO_NOT_FOUND = 2, SCO_BAD_ARG = 3,
-    SCO_CRASHED = 4, SCO_WRONG_THREAD = 5, SCO_TOO_MANY = 6
+    SCO_CRASHED = 4, SCO_WRONG_THREAD = 5, SCO_TOO_MANY = 6,
+    SCO_FAILED = 7   /* 1.1 */
 } sco_result;
 
 typedef enum sco_log_level { SCO_LOG_INFO = 0, SCO_LOG_WARN = 1, SCO_LOG_ERROR = 2 } sco_log_level;
@@ -59,6 +61,7 @@ typedef enum sco_log_level { SCO_LOG_INFO = 0, SCO_LOG_WARN = 1, SCO_LOG_ERROR =
 | `SCO_CRASHED` | The call faulted inside game or plugin code; the host survived |
 | `SCO_WRONG_THREAD` | Called from a thread the function doesn't allow |
 | `SCO_TOO_MANY` | A queue or table is full |
+| `SCO_FAILED` | 1.1. The command or service ran but couldn't do its job (no saved spot, a file it couldn't write); the reply says why. A command built for 1.0 answers `SCO_UNAVAILABLE` for this, so treat both as "didn't happen" |
 
 ## The plugin's exports
 
@@ -134,7 +137,18 @@ typedef struct sco_api {
     sco_result (*invoke)(sco_plugin* self, const char* name, const sco_arg* args, uint32_t nargs,
                          sco_invoke_done done, void* ctx);
     uint32_t   (*list_commands)(const sco_command** out, uint32_t max);
+    /* 1.1 */
+    sco_result (*provide_service)(sco_plugin* self, const sco_service_def* service);
+    sco_result (*query_service)(sco_plugin* self, const char* name, uint32_t min_version,
+                                const void** out_table);
 } sco_api;
+
+typedef struct sco_service_def {   /* 1.1 */
+    uint32_t    size;      /* sizeof(sco_service_def) */
+    const char* name;      /* "<plugin id>" or "<plugin id>.<name>" */
+    uint32_t    version;   /* (major << 16) | minor */
+    const void* vtable;    /* the provider's function table */
+} sco_service_def;
 
 typedef void (*sco_task_fn)(void* ctx);
 typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
@@ -153,6 +167,8 @@ typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
 | `log(self, level, message)` | Any | Writes `[hello] message` to `mod.log` |
 | `register_command(self, cmd)` | Any | Adds a command; see [Commands](#commands) |
 | `invoke(self, name, args, nargs, done, ctx)` | Any | Runs a command; see [Commands](#commands) |
+| `provide_service(self, service)` | Any | 1.1. Publishes a function table for other plugins; see [Services](#services-11) |
+| `query_service(self, name, min_version, out_table)` | Any | 1.1. Finds a published table; see [Services](#services-11) |
 | `list_commands(out, max)` | Any | Writes up to `max` command pointers to `out` and returns the number of live commands. Call with `max = 0` to get the count. The pointers stay valid until their owner unloads |
 
 ## Commands
@@ -229,6 +245,28 @@ After `unsubscribe` the host never calls `fn(…, ctx)` again, but a call may al
 
 `has()` answers from sco-core's signature registry and sc-offline's feature readiness: one name per feature that logs `[+] ... ready` today, such as `"teleport"`, `"spawn.ship"`, `"console"`, `"outfits"` and `"contracts"`. Unknown names return 0. In v1 plugins reach features only through commands; `has()` lets a plugin grey out its own UI and say why.
 
+## Services (1.1)
+
+A service is a C function table one plugin publishes for others to call directly, without
+parsing a reply string. The table's layout is the provider's contract; start it with a
+`uint32_t size` like every struct here, so it can grow.
+
+```c
+static const my_spatial_v1 kTable = { sizeof(my_spatial_v1), get_position, set_position };
+sco_service_def def = { sizeof(sco_service_def), "nav.spatial", 0x00010000, &kTable };
+api->provide_service(self, &def);
+
+const my_spatial_v1* s = NULL;   /* in another plugin */
+if (api->size > offsetof(sco_api, query_service) &&
+    api->query_service(self, "nav.spatial", 0x00010000, (const void**)&s) == SCO_OK) { ... }
+```
+
+- **Names** are `[a-z0-9_.]`, 1-63 characters, with no leading, trailing or doubled `.`, and must be the plugin's id or start with `<id>.`, like command names. A name already published is `SCO_BAD_ARG`.
+- **Versions** are `(major << 16) | minor`. `query_service` answers `SCO_OK` when the service has the same major as `min_version` and is at least as new; `SCO_UNAVAILABLE` when the major differs or it is older; `SCO_NOT_FOUND` when nothing is published under that name. `out_table` is `NULL` unless `SCO_OK`.
+- **Lifetime:** the host keeps the name, version and pointer, never the table's contents, and never calls into it. When the provider unloads or crashes its services are withdrawn. A table from a built-in plugin stays valid for as long as any other plugin is loaded (built-ins unload last); a table from another plugin may go away when that plugin does, so query it when you need it rather than keeping it across ticks.
+- **Faults:** a call into another plugin's table runs under the caller's crash guard, so a fault in the provider's code marks the caller crashed.
+- Threads: both functions work from any thread; what thread the table's own functions may be called from is part of the provider's contract.
+
 ## Threading
 
 - `tick` callbacks, `run_on_game_thread` tasks and commands run on the game's main thread, from sc-offline's `WH_GETMESSAGE` hook.
@@ -262,5 +300,6 @@ On x64 (all sizes in bytes). `tests/abi_v1.c` is the source of truth.
 | `sco_arg` | 16 | `type` 0, `_pad` 4, `v` 8 |
 | `sco_arg_def` | 24 | `name` 0, `type` 8, `_pad` 12, `help` 16 |
 | `sco_command` | 72 | `size` 0, `_pad0` 4, `name` 8, `title` 16, `help` 24, `capability` 32, `args` 40, `nargs` 48, `arg_def_size` 52, `fn` 56, `ctx` 64 |
-| `sco_api` | 88 | `size` 0, `major` 4, `minor` 6, `host_version` 8, `has` 16, `run_on_game_thread` 24, `subscribe` 32, `unsubscribe` 40, `status` 48, `log` 56, `register_command` 64, `invoke` 72, `list_commands` 80 |
+| `sco_api` | 104 | `size` 0, `major` 4, `minor` 6, `host_version` 8, `has` 16, `run_on_game_thread` 24, `subscribe` 32, `unsubscribe` 40, `status` 48, `log` 56, `register_command` 64, `invoke` 72, `list_commands` 80, `provide_service` 88, `query_service` 96 (1.0 hosts: 88) |
+| `sco_service_def` | 32 | `size` 0, `name` 8, `version` 16, `vtable` 24 |
 | `sco_plugin_info` | 32 | `size` 0, `api_major` 4, `api_minor` 6, `name` 8, `version` 16, `author` 24 |

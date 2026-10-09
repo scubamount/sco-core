@@ -92,6 +92,7 @@ static const char* ResultName(sco_result r) {
         case SCO_CRASHED:      return "crashed";
         case SCO_WRONG_THREAD: return "wrong_thread";
         case SCO_TOO_MANY:     return "too_many";
+        case SCO_FAILED:       return "failed";
         default:               return "error";
     }
 }

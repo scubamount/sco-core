@@ -37,7 +37,7 @@ extern "C" {
 #endif
 
 #define SCO_API_MAJOR 1
-#define SCO_API_MINOR 0
+#define SCO_API_MINOR 1
 
 #if defined(_WIN32)
 #define SCO_EXPORT __declspec(dllexport)
@@ -57,6 +57,7 @@ typedef enum sco_result {
     SCO_CRASHED      = 4, /* the call faulted inside game or plugin code */
     SCO_WRONG_THREAD = 5, /* called from a thread the function forbids */
     SCO_TOO_MANY     = 6, /* queue or table full, or out of memory */
+    SCO_FAILED       = 7, /* the command or service ran, but failed; see reply or error */
     SCO_RESULT_FORCE32 = 0x7fffffff
 } sco_result;
 
@@ -133,6 +134,14 @@ typedef struct sco_command {
 
 /* ---- the host's function table ----------------------------------------- */
 
+/* 1.1. A function table one plugin publishes for others (provide_service). */
+typedef struct sco_service_def {
+    uint32_t    size;           /* sizeof(sco_service_def) */
+    const char* name;           /* "<plugin id>" or "<plugin id>.<name>", [a-z0-9_.], 1-63 chars */
+    uint32_t    version;        /* (major << 16) | minor */
+    const void* vtable;         /* the provider's table; start it with a uint32_t size */
+} sco_service_def;
+
 typedef struct sco_api {
     uint32_t size; /* sizeof(sco_api) as the host built it */
     uint16_t major, minor;
@@ -174,6 +183,20 @@ typedef struct sco_api {
     /* Writes up to max command pointers to out; returns the number of live
      * commands. The pointers stay valid until their owning plugin unloads. */
     uint32_t (*list_commands)(const sco_command** out, uint32_t max);
+
+    /* ---- 1.1: check size > offsetof(sco_api, provide_service) first ---- */
+
+    /* Any thread. Publishes service->vtable under service->name (copied).
+     * SCO_BAD_ARG: a bad or taken name, or a name outside this plugin's id.
+     * The host withdraws it when this plugin unloads or crashes. */
+    sco_result (*provide_service)(sco_plugin* self, const sco_service_def* service);
+
+    /* Any thread. SCO_OK: *out_vtable = the table of the service with this
+     * name, same major as min_version and at least as new. SCO_UNAVAILABLE:
+     * another major, or older. SCO_NOT_FOUND: none. *out_vtable is NULL unless
+     * SCO_OK. A plugin's table goes away when it unloads: query when needed. */
+    sco_result (*query_service)(sco_plugin* self, const char* name, uint32_t min_version,
+                                const void** out_vtable);
 } sco_api;
 
 /* ---- what a plugin exports --------------------------------------------- */

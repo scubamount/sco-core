@@ -42,5 +42,6 @@ Result InvokeOwned(const char* name, const Arg* args, uint32_t nargs, InvokeDone
 long ReleaseTasks(const void* owner);
 long ReleaseSubscriptions(const void* owner);
 long ReleaseCommands(const void* owner);
+long ReleaseServices(const void* owner);
 
 }  // namespace sco::detail

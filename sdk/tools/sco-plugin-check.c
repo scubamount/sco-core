@@ -552,6 +552,20 @@ static uint32_t list_commands(const sco_command** out, uint32_t max) {
     return (uint32_t)ncmds;
 }
 
+/* 1.1. The checker loads one plugin, so a service is only listed and nothing can be found. */
+static sco_result provide_service(sco_plugin* self, const sco_service_def* def) {
+    (void)self;
+    if (!def || def->size < sizeof(sco_service_def) || !def->name || !def->vtable) return SCO_BAD_ARG;
+    printf("  service %s %u.%u\n", def->name, def->version >> 16, def->version & 0xFFFFu);
+    return SCO_OK;
+}
+
+static sco_result query_service(sco_plugin* self, const char* name, uint32_t min_version, const void** out) {
+    (void)self; (void)min_version;
+    if (out) *out = NULL;
+    return name && out ? SCO_NOT_FOUND : SCO_BAD_ARG;
+}
+
 static void dispatch(const char* event, const void* data) {
     int i;
     for (i = 0; i < MAX_SUBS; ++i)
@@ -575,6 +589,7 @@ static const char* result_name(sco_result r) {
         case SCO_CRASHED: return "crashed";
         case SCO_WRONG_THREAD: return "wrong_thread";
         case SCO_TOO_MANY: return "too_many";
+        case SCO_FAILED: return "failed";
         default: return "?";
     }
 }
@@ -671,6 +686,8 @@ static void check_native(const char* dir, const manifest* m, const char* invoke_
     api.register_command = register_command;
     api.invoke = invoke;
     api.list_commands = list_commands;
+    api.provide_service = provide_service;
+    api.query_service = query_service;
 
     r = load(&api, &the_plugin);
     if (r != SCO_OK) { fail("sco_plugin_load returned %s", result_name(r)); unload(); return; }

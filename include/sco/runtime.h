@@ -24,7 +24,8 @@ namespace sco {
 
 // Values match sco_result in sco_api.h.
 enum class Result : uint32_t {
-    Ok = 0, Unavailable = 1, NotFound = 2, BadArg = 3, Crashed = 4, WrongThread = 5, TooMany = 6
+    Ok = 0, Unavailable = 1, NotFound = 2, BadArg = 3, Crashed = 4, WrongThread = 5, TooMany = 6,
+    Failed = 7,   // ran, but couldn't do its job; the reply says why
 };
 const char* ResultName(Result r);   // "OK", "UNAVAILABLE", ...
 
@@ -48,6 +49,30 @@ Result GameThreadTick(uint32_t nowMs);
 // TooMany when out of memory (nothing removed; retry). The released-owner list has no limit.
 // `removed` (optional) gets the number of items removed.
 Result Release(const void* owner, size_t* removed = nullptr);
+
+// ---- services (any thread) -------------------------------------------------------------------
+//
+// A service is a function table one owner publishes under a name for others to call directly
+// (sco_api 1.1 provide_service / query_service). The runtime only keeps the name, version and
+// table pointer; it never calls into the table. Release(owner) withdraws the owner's services.
+// A caller that holds a table must stop using it when its provider unloads: query it when
+// needed rather than caching it across ticks (built-in plugins unload after every other plugin,
+// so a table from a built-in stays valid for the life of any plugin that queried it).
+
+constexpr size_t kMaxServiceNameLen = 63;
+
+// Publishes `table` under `name` for owner. name: [a-z0-9_.], 1-63 characters, no leading,
+// trailing or doubled '.'; with a non-null prefix it must equal the prefix or start with
+// "<prefix>." (a plugin publishes under its own id). version: (major << 16) | minor.
+// BadArg: null owner or table, a bad name, a name already published, or owner released.
+// TooMany: out of memory.
+Result ProvideService(const void* owner, const char* prefix, const char* name, uint32_t version,
+                      const void* table);
+
+// Finds a published service. Ok: *out = its table. NotFound: no service by that name.
+// Unavailable: its major version differs from minVersion's, or it is older than minVersion.
+// BadArg: null name or out. *out is null unless Ok.
+Result QueryService(const char* name, uint32_t minVersion, const void** out);
 
 // ---- task queue -----------------------------------------------------------------------------
 

@@ -22,7 +22,7 @@ namespace sco::host {
 
 namespace {
 
-static_assert(static_cast<uint32_t>(Result::TooMany) == SCO_TOO_MANY, "Result != sco_result");
+static_assert(static_cast<uint32_t>(Result::TooMany) == SCO_TOO_MANY && static_cast<uint32_t>(Result::Failed) == SCO_FAILED, "Result != sco_result");
 
 sco_result C(Result r) { return static_cast<sco_result>(static_cast<uint32_t>(r)); }
 
@@ -184,6 +184,21 @@ uint32_t ListCommandsC(const sco_command** out, uint32_t max) {
     return static_cast<uint32_t>(n);
 }
 
+// ---- services (1.1) ------------------------------------------------------------------------
+
+// Reads the caller's sco_service_def only up to its size (1.1 needs all of it). The name must be
+// the plugin's id or start with "<id>.".
+sco_result ProvideServiceC(sco_plugin* self, const sco_service_def* def) {
+    if (!Valid(self) || !def || def->size < sizeof(sco_service_def)) return SCO_BAD_ARG;
+    return C(ProvideService(self, self->id, def->name, def->version, def->vtable));
+}
+
+sco_result QueryServiceC(sco_plugin* self, const char* name, uint32_t minVersion, const void** out) {
+    if (out) *out = nullptr;
+    if (!Valid(self)) return SCO_BAD_ARG;
+    return C(QueryService(name, minVersion, out));
+}
+
 }  // namespace
 
 const sco_api* BuildApi(const HostInfo& info) {
@@ -203,6 +218,8 @@ const sco_api* BuildApi(const HostInfo& info) {
         g_api.register_command = RegisterCommandC;
         g_api.invoke = InvokeC;
         g_api.list_commands = ListCommandsC;
+        g_api.provide_service = ProvideServiceC;
+        g_api.query_service = QueryServiceC;
         SetCapabilityCheck(caps::Has);
     });
     return &g_api;

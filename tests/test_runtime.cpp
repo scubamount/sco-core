@@ -30,6 +30,7 @@ static void TestBeforeGameThread() {
     std::thread([&] { other = sco::OnGameThread(); }).join();
     CHECK(!other);
     CHECK(strcmp(sco::ResultName(Result::TooMany), "TOO_MANY") == 0);
+    CHECK(strcmp(sco::ResultName(Result::Failed), "FAILED") == 0);
 }
 
 // ---- task queue -----------------------------------------------------------------------------
@@ -719,6 +720,49 @@ static void TestDoneAfterRelease() {
     CHECK(sco::Release(&kRel) == Result::Ok);
 }
 
+// ---- services -------------------------------------------------------------------------------
+
+static void TestServices() {
+    static int a, b;
+    struct Table { int x; };
+    static const Table ta{ 1 }, tb{ 2 };
+    const void* out = &ta;
+    CHECK(sco::QueryService("a.svc", 0x00010000, &out) == Result::NotFound && out == nullptr);
+
+    // Names: [a-z0-9_.], 1-63, the owner's prefix; no duplicates.
+    CHECK(sco::ProvideService(&a, "a", "a.svc", 0x00010002, &ta) == Result::Ok);
+    CHECK(sco::ProvideService(&a, "a", "a", 0x00010000, &ta) == Result::Ok);           // the bare id
+    CHECK(sco::ProvideService(&b, "b", "a.other", 0x00010000, &tb) == Result::BadArg);  // another's prefix
+    CHECK(sco::ProvideService(&b, "b", "bb.svc", 0x00010000, &tb) == Result::BadArg);   // "bb" is not "b."
+    CHECK(sco::ProvideService(&b, nullptr, "a.svc", 0x00010000, &tb) == Result::BadArg); // taken
+    for (const char* bad : { "", ".b", "b.", "b..c", "B", "b c", "b-c" })
+        CHECK(sco::ProvideService(&b, nullptr, bad, 1, &tb) == Result::BadArg);
+    CHECK(sco::ProvideService(&b, nullptr, std::string(64, 'b').c_str(), 1, &tb) == Result::BadArg);
+    CHECK(sco::ProvideService(&b, nullptr, std::string(63, 'b').c_str(), 1, &tb) == Result::Ok);
+    CHECK(sco::ProvideService(&b, nullptr, nullptr, 1, &tb) == Result::BadArg);
+    CHECK(sco::ProvideService(&b, nullptr, "b.null", 1, nullptr) == Result::BadArg);
+    CHECK(sco::ProvideService(nullptr, nullptr, "b.noowner", 1, &tb) == Result::BadArg);
+    CHECK(sco::ProvideService(&b, "b", "b.svc", 0x00020000, &tb) == Result::Ok);
+
+    // Versions: same major, at least the minor asked for.
+    CHECK(sco::QueryService("a.svc", 0x00010000, &out) == Result::Ok && out == &ta);
+    CHECK(sco::QueryService("a.svc", 0x00010002, &out) == Result::Ok && out == &ta);
+    CHECK(sco::QueryService("a.svc", 0x00010003, &out) == Result::Unavailable && out == nullptr);
+    CHECK(sco::QueryService("b.svc", 0x00010000, &out) == Result::Unavailable && out == nullptr);
+    CHECK(sco::QueryService("b.svc", 0x00020000, &out) == Result::Ok && out == &tb);
+    CHECK(sco::QueryService(nullptr, 1, &out) == Result::BadArg);
+    CHECK(sco::QueryService("a.svc", 1, nullptr) == Result::BadArg);
+
+    // Release withdraws the owner's services and refuses new ones; others keep theirs.
+    size_t removed = 0;
+    CHECK(sco::Release(&a, &removed) == Result::Ok && removed == 2);
+    CHECK(sco::QueryService("a.svc", 0x00010000, &out) == Result::NotFound);
+    CHECK(sco::ProvideService(&a, "a", "a.again", 1, &ta) == Result::BadArg);
+    CHECK(sco::QueryService("b.svc", 0x00020000, &out) == Result::Ok);
+    CHECK(sco::Release(&b, &removed) == Result::Ok && removed == 2);
+    CHECK(sco::QueryService("b.svc", 0x00020000, &out) == Result::NotFound);
+}
+
 int main() {
     TestBeforeGameThread();   // first: checks the "no game thread yet" state
     TestTaskQueue();
@@ -726,6 +770,7 @@ int main() {
     TestOverlap();    // before TestCommands, which fills every command slot
     TestCalloutGuard();
     TestDoneAfterRelease();
+    TestServices();
     TestCommands();
     std::printf("sco-core runtime tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
