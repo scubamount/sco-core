@@ -13,6 +13,8 @@
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
+#include "sco_ui.h"
+#include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -642,6 +644,86 @@ static int L_list_commands(lua_State* L) {
     return 1;
 }
 
+/* ---- sco.ui hotkeys (tabs and overlays need draw callbacks from Lua: G018) ------------------ */
+
+static const sco_ui_v1* UiTable(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service)) return NULL;
+    if (s->api->query_service(SCO_UI_NAME, SCO_UI_VERSION_1_0, &t) != SCO_OK) return NULL;
+    return (const sco_ui_v1*)t;
+}
+
+/* true, or false, the result's name and the host's message when it left one. */
+static int PushUiResult(lua_State* L, const Script* s, const sco_ui_v1* ui, sco_result r) {
+    char msg[256];
+    uint32_t size = sizeof(msg);
+    if (r == SCO_OK) return PushResult(L, r);
+    lua_pushboolean(L, 0);
+    lua_pushstring(L, ResultName(r));
+    if (ui->last_error(s->self, msg, &size) == SCO_OK && msg[0]) {
+        lua_pushstring(L, msg);
+        return 3;
+    }
+    return 2;
+}
+
+/* sco.bind_hotkey(chord, command, ...): the extra values are the command's arguments, typed by
+ * the command's arg defs when it is registered, else by their Lua types (integer, float, string,
+ * boolean). */
+static int L_bind_hotkey(lua_State* L) {
+    Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);
+    const char* chord = luaL_checkstring(L, 1);
+    const char* name = luaL_checkstring(L, 2);
+    const int nargs = lua_gettop(L) - 2;
+    const sco_ui_v1* ui = UiTable(s);
+    if (!ui) return PushResult(L, SCO_UNAVAILABLE);
+    if (nargs > MAX_ARGS) return PushResult(L, SCO_BAD_ARG);
+    const sco_command* c = FindCommand(s->api, name);
+    if (c && (uint32_t)nargs != c->nargs) return PushResult(L, SCO_BAD_ARG);
+    sco_arg args[MAX_ARGS];
+    const unsigned char* at = c ? (const unsigned char*)c->args : NULL;
+    for (int i = 0; i < nargs; ++i) {
+        const int v = i + 3;
+        sco_arg* a = &args[i];
+        memset(a, 0, sizeof(*a));
+        uint32_t type = SCO_ARG_INT;
+        if (c) {
+            type = ((const sco_arg_def*)at)->type;
+            at += c->arg_def_size;
+        } else {
+            switch (lua_type(L, v)) {
+                case LUA_TNUMBER:  type = lua_isinteger(L, v) ? SCO_ARG_INT : SCO_ARG_FLOAT; break;
+                case LUA_TSTRING:  type = SCO_ARG_STRING; break;
+                case LUA_TBOOLEAN: type = SCO_ARG_BOOL; break;
+                default: return PushResult(L, SCO_BAD_ARG);
+            }
+        }
+        a->type = type;
+        int ok = 0;
+        switch (type) {
+            case SCO_ARG_INT:    ok = lua_isinteger(L, v); a->v.i = lua_tointeger(L, v); break;
+            case SCO_ARG_FLOAT:  ok = lua_type(L, v) == LUA_TNUMBER; a->v.f = lua_tonumber(L, v); break;
+            case SCO_ARG_STRING: ok = lua_type(L, v) == LUA_TSTRING; a->v.s = lua_tostring(L, v); break;
+            case SCO_ARG_BOOL:   ok = lua_type(L, v) == LUA_TBOOLEAN; a->v.i = lua_toboolean(L, v); break;
+            default: break;
+        }
+        if (!ok) return PushResult(L, SCO_BAD_ARG);
+    }
+    const sco_result r = ui->bind_hotkey(s->self, chord, name, nargs ? args : NULL, (uint32_t)nargs);
+    return PushUiResult(L, s, ui, r);
+}
+
+/* sco.unbind_hotkey(chord) */
+static int L_unbind_hotkey(lua_State* L) {
+    Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);
+    const char* chord = luaL_checkstring(L, 1);
+    const sco_ui_v1* ui = UiTable(s);
+    if (!ui) return PushResult(L, SCO_UNAVAILABLE);
+    return PushUiResult(L, s, ui, ui->unbind_hotkey(s->self, chord));
+}
+
 /* setmetatable without finalizers: Lua runs __gc with hooks off, out of the budget's reach. */
 static int L_setmetatable(lua_State* L) {
     if (lua_istable(L, 2)) {
@@ -713,7 +795,8 @@ static int SetupBody(lua_State* L) {
         { "host_version", L_host_version }, { "has", L_has }, { "status", L_status },
         { "log", L_log }, { "subscribe", L_subscribe }, { "unsubscribe", L_unsubscribe },
         { "run_on_game_thread", L_run_on_game_thread }, { "register_command", L_register_command },
-        { "invoke", L_invoke }, { "list_commands", L_list_commands }, { NULL, NULL } };
+        { "invoke", L_invoke }, { "list_commands", L_list_commands },
+        { "bind_hotkey", L_bind_hotkey }, { "unbind_hotkey", L_unbind_hotkey }, { NULL, NULL } };
     luaL_newlib(L, fns);
     lua_pushinteger(L, s->api->major);
     lua_setfield(L, -2, "api_major");
