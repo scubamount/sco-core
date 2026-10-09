@@ -4,7 +4,7 @@ What each change means for plugin authors and for products built on sco-core (sc
 
 ## Unreleased
 
-- **Design: multiplayer and cross-game bridges** ([`docs/design/multiplayer.md`](docs/design/multiplayer.md)), for review, no code: the scope change of 2026-10-09 (sessions between players running sc-offline, local links to other games), what the fork's multiplayer code does, the `sco.net` and `sco.ipc` host services, the `sco::game::net` rows, and the PR plan.
+- **Design: co-presence multiplayer and cross-game bridges** ([`docs/design/multiplayer.md`](docs/design/multiplayer.md)), for review, no code: the scope change of 2026-10-09 (sessions between players running sc-offline, local links to other games), updated to the maintainer's directive — co-presence by ghost replication (no dedicated server, the excluded patches named and never ported), the `sco.net` channel service and the `sco.ipc` / MIT `sc_ipc.h` bridge wire, a vendored SHA-256/HMAC/PBKDF2, `spawn.entities` 1.2, and the 7-PR plan.
 - **`teleport.to_camera` survives Star Citizen 4.10.196** (the 2026-10-09 patch, `StarCitizen.exe` 4.10.196.36804): the row failed with "layout changed at +0x17a" because the four camera fields the handler loads at +0x17A..+0x1BD moved by 8 bytes (`0x6D3C` -> `0x6D44`, ...); the code around them was unchanged. Those checks now pin the instructions (`vmovss`/`vmovups`/`vmovsd` from `[rax+disp32]`) and wildcard the field offset, which nothing reads. `sco-sigcheck`: 8/8 OK on both 4.10.193.11644 and 4.10.196.36804 (the three dependent `teleport.*` rows resolve again).
 
 ## sdk-v1.1.0 (2026-10-09)

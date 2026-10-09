@@ -1,6 +1,6 @@
-# Design: multiplayer and cross-game bridges on the SDK (`sco.net`, `sco.ipc`, `sco::game::net`)
+# Design: co-presence multiplayer and cross-game bridges on the SDK (`sco.net`, `sc_ipc.h`, `sco::game::net`)
 
-**Status: design for review. No code yet.** Phase 6 item ([Framework plan](../framework.md#phase-6-the-framework-grows)). This changes sco-core's and sc-offline's scope: the maintainer decided it on 2026-10-09 ([section 1](#1-scope-what-changes-and-what-doesnt)). Every PR in the plan ([section 6](#6-plan-pull-requests-in-order)) gets its own review.
+**Status: design for review, updated to the maintainer's directive of 2026-10-09. No code yet.** Phase 6 item ([Framework plan](../framework.md#phase-6-the-framework-grows)). This changes sco-core's and sc-offline's scope, which the maintainer reviewed and decided to proceed with on 2026-10-09 ([section 1](#1-scope-what-changes-and-what-doesnt)). The **co-presence** model below replaces the fork's dedicated-server approach, which depended on patches this project now permanently excludes ([section 2](#permanent-exclusions-never-ported)). Every PR in the plan ([section 6](#6-plan-pull-requests-in-order)) gets its own review.
 
 ## Why
 
@@ -12,12 +12,18 @@ That's the pattern sco-core exists to replace. Every mod that wants co-op would 
 2. **The bridges become optional plugins:** Titanfall 2 (TitanLink) and Minecraft.
 3. **Everything is built as SDK services and abstractions in sco-core** for plugins to use. sc-offline's multiplayer becomes a built-in plugin on top of them.
 
+The directive of 2026-10-09 then fixed the model. The fork's approach — a second game process booted as a dedicated server, joined with the game's own `connect` — is **dropped**: it depended on the patches this project now permanently excludes ([section 2](#permanent-exclusions-never-ported)). The model is **co-presence by ghost replication**:
+
+- Each player runs their own ordinary offline game. No process is booted as a server, and the game's netcode, server and matchmaking are neither used nor altered.
+- One player's client **hosts the session** (pure peer-to-peer; a headless broker is deferred to a v1.x release).
+- Poses and spawn announcements travel over `sco.net`. Remote players and ships are spawned **locally as ghost entities** and moved with a new transform primitive (`spawn.entities` 1.2, section 3.4). Nothing of another player's game is trusted as code or pointers; only semantic fields cross the wire.
+
 This document reads the fork's code (section 2), then designs:
 
 - the sco-core side (section 3): a game-agnostic `sco.net` host service, the game-specific network rows and hooks (`sco::game::net`), a `sco.ipc` service for the bridges, and the engine helpers;
 - the sc-offline side (section 4): `builtins/multiplayer`, how the domain features use it without hard dependencies, and the bridges as optional built-ins.
 
-Sections 5 and 6 cover the risks and the plan. The open questions are at the end.
+Section 5 covers the risks and section 6 the plan; the maintainer's directive resolved the earlier open questions, recorded at the end.
 
 **Sources.** The fork is at `sc-offline-source-2026-10-09` (untrusted download, read only; nothing built or run). `F:` below means its `sc-offline/src/` folder. Lines are 1-based, from the files as downloaded. sco-core is at `main` `2196c5a`; sc-offline is at `main` `1f634c0`. A third-party handoff described the fork, and parts of it are wrong. It names `ExpectPlayer` and `net_staging`, which don't appear in `multiplayer.cpp`: the hooked function is the game's `CNetNub::ExpectIncomingConnection` and the variables are `pl_staging.*`. It also names `HookEngine::Instance`, `ZoneManager`, `SCO_PLUGIN_DEFINE` and `GetPluginSdk().QueryService`, none of which exist in sco-core. This design works from the code only.
 
@@ -29,7 +35,7 @@ Proposed wording. It replaces the scope paragraphs of sco-core's `README.md` (§
 
 > **Scope.** sco-core and sc-offline are for playing Star Citizen offline: alone, or **with other players who also run sc-offline, in a session one of them hosts**. Since 2026-10-09 (maintainer's decision) this is allowed:
 >
-> - **Private sessions between sc-offline players.** One player hosts a session on their own PC (sc-offline's dedicated server process or their own game); others join it by address over a LAN or a VPN they choose. Every peer runs sc-offline with the game offline. Sessions go through sco-core's `sco.net` service and its rules (an explicit join, a session passphrase, limits).
+> - **Private sessions between sc-offline players.** One player hosts a session on their own PC (their own running game; no dedicated server process is booted); others join it by address over a LAN or a VPN they choose. Every peer runs sc-offline with the game offline. Sessions go through sco-core's `sco.net` service and its rules (an explicit join, a session passphrase, limits).
 > - **Local links to other programs on the same PC,** such as another game for a cross-game bridge, through sco-core's `sco.ipc` service (named shared memory in the user's own session, nothing over the network).
 >
 > This stays out of scope, and PRs or plugins that do it are closed:
@@ -44,13 +50,15 @@ Plugin rules gain three lines: a plugin may use `sco.net` and `sco.ipc`, and onl
 
 ### Risks this decision brings (for the maintainer to weigh)
 
-- **Game-patch fragility.** The fork needs about 30 game addresses for networking, many of them mid-function patches with hand-assembled code stubs (section 2, "Hook points"). They sit deeper in the engine than anything sco-core resolves today, and session code changes with server meshing work. Holding across a build or two proves nothing: `teleport.to_camera` held for several builds and still moved in 4.10.196. Expect `FAILED` rows on patch days, as with every other table. Mitigation: rows with layout checks, `sco-sigcheck` on every build, and a capability per piece so a broken piece switches only itself off (section 3.2).
-- **Terms of service.** Running the game client as a server, and letting players connect their offline games to each other, may raise questions under CIG's terms that offline single-player didn't. This doc gives no legal assessment. The maintainer judges it, and may want advice before shipping (open question 13). Where code lives (sco-core, a built-in, an optional plugin, another repository) is an architecture boundary only: it changes nothing about the terms-of-service question or about what the scope rules allow.
+- **Game-patch fragility.** Co-presence needs only a few **benign** engine points (session connect, the main tick, the fly-mode validation toggle for the local player's own noclip), far fewer and shallower than the fork's ~30, and none of the excluded patches. They still move: `teleport.to_camera` held for several builds and still moved in 4.10.196. So they are signature rows kept honest by `sco-sigcheck` **each patch**, never assumed stable, and a broken row switches off only its own capability (section 3.2).
+- **Terms of service.** Letting players connect their offline games to each other may raise questions under CIG's terms that offline single-player didn't. The maintainer reviewed this and **decided to proceed**; this document takes no legal position. Where code lives (sco-core, a built-in, an optional plugin, another repository) is an architecture boundary only: it changes nothing about the terms-of-service question or about what the scope rules allow.
 - **Security exposure.** sc-offline today never listens on a port. With multiplayer, a player's PC accepts packets, and the fork's protocol has no authentication (section 2, "Security findings"). That is the main reason for a host-owned service with secure defaults instead of per-mod sockets.
-- **Anti-cheat adjacency.** One fork patch skips an anti-cheat step on the dedicated server (section 2). It isn't ported. If joining doesn't work without it, the server-based join is blocked (open question 1). Nothing in this design works around that.
+- **Permanent exclusions.** The fork's dedicated-server path relied on patches touching anti-cheat, account entitlement, host-type and network context, plus an unauthenticated remote console. These are **permanently excluded** from every repo, header and official plugin, named in [section 2](#permanent-exclusions-never-ported). The co-presence model does not need them; nothing here restores or works around them.
 - **Support load.** Multiplayer bugs need two or more machines and logs from each.
 
 ## 2. What the fork's `multiplayer.cpp` does
+
+*This section documents the fork for reference. The design in section 3 does not reproduce its dedicated-server model, and section 2's [Permanent exclusions](#permanent-exclusions-never-ported) are never ported.*
 
 ### Session model
 
@@ -84,10 +92,10 @@ Every one is found by a string in `.rdata` plus a prologue check, or by a unique
 | Dedicated boot | `FF 15 ?? ?? ?? ?? 4C 8D 05 ...`, then the startup-settings filler with `C6 41 38 01` | 10-byte detour; sets the dedicated flag | `:476-485` | Server |
 | Stand-in services hub | `FindServicesObject` (`F:services.cpp:153`) | Detour on its first user; swaps in the hub slot of sc-offline's existing offline stand-in | `:407-417` | Server |
 | Server-only features | `"CSCPlayerMarkerSubscription::RestoreMarkerStates"`, `"AddMarkerToSubscriptionService"`, a quantum-travel-group pattern, two mission-entity class-switch patterns | Jumps over dedicated-server checks; one detour (markers become streamable) | `SkipServerFeatures`, `:448-474`; `:428-437` | Server |
-| Joiners as players | `49 8B 51 10 44 8B 40 28 48 85 D2 0F 84 ...` | Mid-function code stub: connection type 1 is treated as 3 | `ServeJoinersAsPlayers`, `:1366-1388` | Server |
-| Game context | `48 8B 01 FF 50 18 48 8B C8 48 8B 00 FF 90 B8 00 00 00 ...` | Code stub: skips a context lookup | `ShareContextFromCVars`, `:1399-1411` | Server |
-| **Anti-cheat step** | (named only) | Code stub | `SkipAntiCheatWithoutService`, `:1415-1432` | Server. **Not ported** (below) |
-| Joiner account | `4D 8B 40 08 FF 50 38 49 8B 55 10 ...` | Code stub calls `FixJoinerAccount`, which writes the joiner's own player id, account number and nickname into the local server's account record | `:1436-1471` | Server |
+| Host-type forcing | — | **Permanently excluded** ([see exclusions](#permanent-exclusions-never-ported)); not described here | `:1366` | Server |
+| Network-context override | — | **Permanently excluded** ([see exclusions](#permanent-exclusions-never-ported)); not described here | `:1399` | Server |
+| Anti-cheat step | — | **Permanently excluded** ([see exclusions](#permanent-exclusions-never-ported)); not described here | `:1417` | Server |
+| Joiner entitlement/account | — | **Permanently excluded** ([see exclusions](#permanent-exclusions-never-ported)); not described here | `:1434` | Server |
 | Layout send | `80 3D ?? ?? ?? ?? 00 48 8B DA 48 8B D1 75 45 ...` and three calls found inside the send function | Code stub; packs the server's universe graph | `SendLayoutToJoiners`, `:1712-1756`; `PackLayout`, `:1504-1547` | Server |
 | Layout receive | `"...CStandaloneEntityGraph::HandleSvRecvUniverseHierarchyData(...)"`, `"CStandaloneEntityGraph::RequestOCHierarchyData"` | Two detours | `:1769-1781` | Client |
 | Loading wait | `48 8B C8 E8 ?? ?? ?? ?? 84 C0 74 23 48 8B 0D ...` | Code stub; gives up waiting after 20 s | `RelaxJoinerLoadingWait`, `:1806-1831`; `:1786-1804` | Client |
@@ -100,7 +108,19 @@ Every one is found by a string in `.rdata` plus a prologue check, or by a unique
 
 `ResolveMultiplayerApi` (`:2094-2142`) wires them per role. `LogMultiplayer` (`:2144-2165`) prints one `[!]` line for each piece that's missing and says what fails because of it. The code stubs are written into `VirtualAlloc(PAGE_EXECUTE_READWRITE)` pages (`NewStub`, `:1390-1394`).
 
-**The anti-cheat step is out of scope** under both the old and the new rules, and is not ported. This document names it and doesn't describe it. The fork's own log says the server crashes when a player joins without it (`:2148`). Whether that holds on 4.10.196 is research item R1 in the plan; R1 only tests the join without the step and does nothing more.
+### Permanent exclusions (never ported)
+
+These fork pieces are **permanently excluded** from every sco-core and sc-offline repository, every shipped header, and every official plugin. They are named here with their fork location so a reviewer can recognise and reject them; this document does **not** describe how any of them work, and no PR in the plan touches them. There is no research task to make a dedicated-server join work without them: that path is dropped with the dedicated-server model.
+
+| Excluded | Fork location |
+|---|---|
+| Skipping the anti-cheat step | `F:multiplayer.cpp:1417` |
+| Joiner entitlement / account tampering | `F:multiplayer.cpp:1434` |
+| Host-type forcing | `F:multiplayer.cpp:1366` |
+| Network-context override | `F:multiplayer.cpp:1399` |
+| Unauthenticated remote console (`Cmd_Console`) | `F:multiplayer.cpp:980-1043`, dispatch at `:1032-1036` |
+
+The co-presence model (section 3) reaches none of these: it never boots the client as a server, never alters the game's connection, host-type or account handling, and carries no remote-command channel. A plugin or PR that reintroduces any of them is out of scope and closed.
 
 ### Transport and packets
 
@@ -172,383 +192,310 @@ Player and ship transforms are not sent by the mod. **The game's own netcode rep
 
 ## 3. sco-core design
 
-### 3.1 `sco.net` 1.0: sessions and messages, game-agnostic
+### 3.1 `sco.net` 1.0: a session and typed channels, game-agnostic
 
-A host-owned service like `sco.storage`: published under the reserved id `sco`, found with `query_service`, `sco_api.h` unchanged. The table is in `include/sco_net.h` and pinned by `tests/abi_net.c`. It follows the rules of `sco_api.h`: 4-byte enums, `size` first, results instead of exceptions, ids instead of pointers ([lesson 6](../framework.md#6-services-hand-out-ids-never-pointers)).
+A host-owned service like `sco.storage`: published under the reserved id `sco`, found with `query_service`, `sco_api.h` unchanged. The table is `sco_net_v1` in `include/sco_net.h`, pinned by `tests/abi_net.c`. It follows our conventions, not a C++ class: first field `uint32_t size`, plain C function pointers (**no virtuals, no `IScoNetService`**), `int` returns rather than `bool`, `uint32_t` sizes rather than `size_t`, and **ids, never pointers** ([lesson 6](../framework.md#6-services-hand-out-ids-never-pointers)). A blueprint that suggested a virtual `class IScoNetService` with an inline `char name[32]` and `size_t` is **not** used: that would break the ABI. The peer name comes from a sized copy (`get_peer_name`), not an inline array.
 
-**Who controls the session.** Hosting, joining and leaving are **the product's** decisions, made from the launcher or the menu. They go through the host-side C++ API `sco/net.h`, not through the plugin table. sc-offline's `builtins/multiplayer` calls it; built-ins may read internal headers. Plugins see the session, its peers and their own message types, and can't open or join sessions. That's least privilege: a third-party plugin can't make a player's PC listen. A product that wants to expose session control to plugins can wrap it in its own commands.
+**Capability.** The host sets the capability `sco.net` (through `caps::Set`) whenever the service is published, so a plugin manifest with `requires = sco.net` validates in discovery (`src/plugins/discover.cpp:118-119` checks each `requires` against `opts.has`). A plugin that needs multiplayer is refused with a clear reason on a build without it, instead of querying a NULL table.
+
+**Who controls the session.** Hosting, joining and leaving are **the product's** decisions, from the launcher or the menu, through the host-side C++ API `sco/net.h` — not the plugin table. sc-offline's `builtins/multiplayer` calls it; built-ins may read internal headers. Plugins see whether a session is active, its peers, and their own channels, and cannot open or join one. That is least privilege: a third-party plugin can't make a player's PC listen.
 
 ```cpp
-// include/sco/net.h (host side, C++; sketch)
+// include/sco/net.h (host side, C++; sketch). Co-presence: no dedicated server.
 namespace sco::net {
-struct HostOptions {
-    uint16_t    port = 64091;               // UDP; one port for everything sco.net carries
-    std::string passphrase;                 // required; shown to the host player to share
-    std::string playerName;
-    uint32_t    maxPeers = 8;               // at most SCO_NET_MAX_PEERS
-    bool        dedicated = false;          // no local player in this process
-    BindScope   bind = BindScope::Lan;      // Lan: refuse handshakes from non-private addresses; Any: opt-in
-};
+struct HostOptions { uint16_t port = 64091; std::string passphrase, playerName;
+                     uint32_t maxPeers = 8; BindScope bind = BindScope::Lan; };
 struct JoinOptions { std::string address; uint16_t port = 64091; std::string passphrase, playerName; };
-// The product's game adapter answers here, on the game thread, before a peer is admitted
-// (sc-offline: expect the joiner in the game's netcode and return the game port).
-using AdmitFn = Result (*)(PeerId peer, std::span<const uint8_t> hello, std::vector<uint8_t>& welcome, void* ctx);
-Result Host(const HostOptions&, AdmitFn, void* ctx);
-Result Join(const JoinOptions&, void (*welcomed)(std::span<const uint8_t> welcome, void* ctx), void* ctx);
+Result Host(const HostOptions&);     // this player's own game becomes the session host (P2P)
+Result Join(const JoinOptions&);     // join another player's game by address
 void   Leave(const char* reason);
-void   SetPeerEntity(PeerId, uint64_t entityId);   // the game's id for that peer's player (section 3.4)
+void   SetPeerEntity(PeerId, uint64_t entityId);   // the ghost entity this product spawned for a peer
 }
 ```
 
-**The plugin table** (sketch):
+**The plugin table.**
 
 ```c
 /* include/sco_net.h: service "sco.net", version 1.0 */
-#define SCO_NET_NAME            "sco.net"
-#define SCO_NET_VERSION_1_0     0x00010000u
-#define SCO_NET_MAX_PEERS       16u
-#define SCO_NET_MAX_UNRELIABLE  1200u           /* bytes: one datagram, no fragmentation */
-#define SCO_NET_MAX_RELIABLE    (256u * 1024u)  /* bytes: fragmented and reassembled */
-#define SCO_NET_MAX_TYPES       64u             /* message types per plugin */
-#define SCO_NET_BROADCAST       0u              /* "to": every other peer */
+#define SCO_NET_NAME          "sco.net"
+#define SCO_NET_VERSION_1_0   0x00010000u
+#define SCO_NET_MAX_PEERS     16u
+#define SCO_NET_MAX_UNREL     1200u           /* bytes in one unreliable datagram (poses) */
+#define SCO_NET_MAX_RELIABLE  (256u * 1024u)  /* bytes in one reliable message (announcements) */
 
-typedef enum sco_net_state { SCO_NET_IDLE = 0, SCO_NET_HOSTING = 1, SCO_NET_JOINING = 2,
-                             SCO_NET_JOINED = 3, SCO_NET_STATE_FORCE32 = 0x7fffffff } sco_net_state;
+/* register_channel flags */
+#define SCO_NET_RELIABLE   0x1u   /* default is unreliable; set for spawn/announce channels */
+#define SCO_NET_FROM_HOST  0x2u   /* accept only when the sender is the session host */
+#define SCO_NET_TO_HOST    0x4u   /* send only to the host */
 
-/* Type flags: delivery, and who may send it (checked by the host before any handler runs). */
-#define SCO_NET_RELIABLE   0x1u   /* acknowledged, resent, in order per type and peer */
-#define SCO_NET_FROM_HOST  0x2u   /* accepted only when the sender is the session host */
-#define SCO_NET_TO_HOST    0x4u   /* accepted only by the session host */
+/* A peer in the session. Ids are opaque; entity_id is session-scoped, 0 if streamed out. */
+typedef struct sco_net_peer { uint64_t peer_id; uint64_t entity_id; } sco_net_peer;
 
-/* Peer flags */
-#define SCO_NET_PEER_SELF      0x1u
-#define SCO_NET_PEER_HOST      0x2u
-#define SCO_NET_PEER_DEDICATED 0x4u   /* the host process has no local player */
-
-typedef struct sco_net_peer_info {
-    uint32_t size;
-    uint32_t flags;
-    uint64_t peer;        /* opaque, unique for the session; 0 is never a peer */
-    uint64_t entity;      /* the game's id of this peer's player entity, 0 until known */
-    uint32_t rtt_ms;
-    uint32_t name_size;   /* bytes of the peer's name including the NUL; read it with peer_name */
-} sco_net_peer_info;
-
-typedef struct sco_net_message {
-    uint32_t    size;
-    uint32_t    type;     /* the handle register_type returned */
-    uint64_t    from;     /* peer id */
-    const void* data;     /* valid during the handler only */
-    uint32_t    data_size;
-    uint32_t    _pad;
-} sco_net_message;
-
-typedef void (*sco_net_handler)(const sco_net_message* msg, void* ctx);   /* game thread */
-
-typedef struct sco_net_stats {
-    uint32_t size;
-    uint32_t queued_bytes;          /* reliable bytes waiting for this plugin and peer */
-    uint64_t sent, received, dropped_unreliable, refused;   /* messages */
-} sco_net_stats;
+/* Channel callback: runs on the game thread during the host-kit tick. buf valid for the call only. */
+typedef void (*sco_net_on_message)(uint64_t sender_peer_id, const void* buf, uint32_t len, void* ctx);
 
 typedef struct sco_net_v1 {
-    uint32_t size;
+    uint32_t size;   /* sizeof(sco_net_v1) as the host built it */
     uint32_t _pad;
-    /* Any thread. The session state; SCO_NET_IDLE when there is none (offline play). */
-    uint32_t   (*state)(void);
-    /* Any thread. This process's peer id and the host's; 0 when idle. */
-    uint64_t   (*self_peer)(void);
-    uint64_t   (*host_peer)(void);
-    /* Any thread. Peer ids with the size handshake (*inout_count: capacity in, count out). */
-    sco_result (*peers)(uint64_t* out, uint32_t* inout_count);
-    /* Any thread. SCO_NOT_FOUND: no such peer (left, or never was). */
-    sco_result (*peer_info)(uint64_t peer, sco_net_peer_info* out);
-    /* Any thread. The name the player chose (UTF-8, at most 63 bytes), NUL-terminated, with the
-     * size handshake. SCO_NOT_FOUND: no such peer. */
-    sco_result (*peer_name)(uint64_t peer, char* out, uint32_t* inout_size);
-    /* Any thread, idle or in a session. Registers "<plugin id>.<name>" with flags and a
-     * per-message size limit (at most SCO_NET_MAX_RELIABLE or _UNRELIABLE); fn runs on the game
-     * thread for every accepted message of this type. SCO_BAD_ARG: bad or taken name, bad flags. */
-    sco_result (*register_type)(sco_plugin* self, const char* name, uint32_t flags,
-                                uint32_t max_size, sco_net_handler fn, void* ctx, uint32_t* out_type);
-    /* Any thread. Copies data and queues it to one peer or SCO_NET_BROADCAST.
-     * SCO_UNAVAILABLE: no session, or the peer lacks this type (its plugin isn't installed there).
-     * SCO_TOO_MANY: this plugin's queue for that peer is full (reliable), or it is over its
-     * bandwidth share (unreliable: the message is dropped and counted).
-     * SCO_BAD_ARG: too big, wrong direction (a FROM_HOST type from a non-host, TO_HOST to a non-host). */
-    sco_result (*send)(sco_plugin* self, uint32_t type, uint64_t to, const void* data, uint32_t size);
-    /* Any thread. Counters for this plugin and peer (0: all peers). */
-    sco_result (*stats)(sco_plugin* self, uint64_t peer, sco_net_stats* out);
+    /* 1 while a session is up (hosting or joined), else 0. Any thread. */
+    int (*is_active)(void);
+    /* Writes up to max peers (self included) to out and returns the count, or the count needed
+     * when max is too small (out NULL with max 0 asks the count). Any thread. */
+    int (*get_peers)(sco_net_peer* out, uint32_t max);
+    /* Copies the peer's chosen name into buf, UTF-8, NUL-terminated, cut to cap. 1 on success,
+     * 0 for an unknown peer or a NULL/zero buffer. Any thread. */
+    int (*get_peer_name)(uint64_t peer_id, char* buf, uint32_t cap);
+    /* Sends len bytes on channel_fqn ("<this plugin id>.<channel>") to the other peers (or only
+     * the host when the channel has SCO_NET_TO_HOST). 1 when queued; 0 for no session, a channel
+     * outside this plugin's id, len over the channel limit, or the plugin's send-rate quota hit.
+     * Copies buf. Any thread. */
+    int (*send_channel)(sco_plugin* self, const char* channel_fqn, const void* buf, uint32_t len);
+    /* Registers "<this plugin id>.<channel>" with flags and a per-message byte limit; cb runs on
+     * the game thread for each delivered message. 1, or 0 for a bad/taken name, a name outside
+     * this plugin's id, or bad flags. Any thread. */
+    int (*register_channel)(sco_plugin* self, const char* channel_fqn, uint32_t flags,
+                            uint32_t max_len, sco_net_on_message cb, void* ctx);
 } sco_net_v1;
 ```
 
-**Events** on the existing bus, posted on the game thread. Each data struct starts with `size`:
+`self` is passed to `send_channel` and `register_channel` the way every `sco_api` self-call is, so the host can enforce ownership and quotas.
 
-- `net.state`: `{ size, state, reason[128] }`. Join refused, the host left, timed out, kicked.
-- `net.peer`: `{ size, what (JOINED, LEFT, ENTITY), peer }`. `ENTITY` fires when the product sets a peer's game entity id.
+**Channels.** A channel name is `"<plugin id>.<channel>"`. The host **refuses a channel outside the caller's plugin id**, so one plugin can't send or register on another's. Names need no central numbering; at join the host and peer exchange the channels each has registered, and `send_channel` to a channel the other side hasn't registered is a no-op counted as refused. Each plugin has a **send-rate quota** per peer (bytes/s and messages/s); over it, `send_channel` returns 0 and the message is dropped. Every received length is checked against the channel's `max_len` before any reassembly allocates.
 
-**Message types.** Types are names, `"<plugin id>.<name>"`, so they need no central numbering. At admission the host sends each joiner its table: name -> 16-bit wire id, flags, size limit. The joiner sends back the names it has registered. A type only one side has is "missing" for that peer: `send` answers `SCO_UNAVAILABLE`, and a handler never sees it. Plugin lists can therefore differ between peers, and each feature says "the host doesn't have X". A type registered after admission is announced with an internal reliable control message. Handlers get only the bytes of their own type. The payload layout is the plugin's contract; the header recommends a leading `uint16_t version`.
+**Co-presence traffic.** `builtins/multiplayer` registers `multiplayer.pose` (unreliable, the local player's zone-relative pose, sent a few times a second) and `multiplayer.spawn` / `multiplayer.despawn` (reliable announcements: a ghost class and its session-scoped entity id). A receiver spawns the announced entity **locally as a ghost** and moves it each pose with the new transform primitive (section 3.4). Domain built-ins register their own channels the same way (section 4.2). No raw game objects, pointers or code addresses ever cross the wire.
 
-**Delivery.**
+**Delivery and limits.**
 
-- **Unreliable:** at most 1,200 bytes, may be lost, duplicated or reordered. For state that's resent anyway.
-- **Reliable:** at most 256 KiB, fragmented. Delivered exactly once and in order per type and peer. Acks are piggybacked, with resend on RTT-based timeouts.
-- **Ordering:** none between types; a plugin that needs it uses one type.
+- **Unreliable** (default): at most 1,200 bytes, one datagram, may be lost or reordered; for poses, which are resent anyway.
+- **Reliable** (`SCO_NET_RELIABLE`): at most 256 KiB, fragmented, exactly once and in order per channel and peer; for announcements.
+- Peers: 16 per session cap, `maxPeers` default 8. Per-plugin, per-peer reliable queue capped (then `send_channel` returns 0). A peer over its receive rate or sending unknown channels past a threshold is disconnected with a reason.
 
-**Limits.**
+**Events** on the existing bus, game thread, each `data` starting with `size`: `net.state` `{ size, active, reason[128] }` and `net.peer` `{ size, what (JOINED|LEFT|ENTITY), peer }`.
 
-- Peers: 16 per session (the fork's cap), `maxPeers` default 8.
-- Send queue: at most 4 MiB of queued reliable bytes per plugin and peer, then `SCO_TOO_MANY`.
-- Bandwidth: a share per plugin and peer. Default: 512 KiB/s for the whole session to each peer, split evenly between the plugins sending. The product can set the total.
-- Receiving: a peer that sends more than 2 MiB/s, or unknown or refused types above a threshold, is disconnected with a reason.
-- Every received length is checked against the type's `max_size` before reassembly allocates.
+**Threads.** The host owns the one UDP socket and one network thread (receive, acks, resends, keepalive, 30 s peer timeout), the handshake, the channel tables, queues and quotas. It hands delivered messages to the game thread, drained in `sco::app::Tick` before `tick` subscribers, as guarded callouts per plugin (a faulting callback disables only that plugin). `send_channel` works from any thread and copies. On unload or crash the host drops the plugin's channels and queued messages.
 
-**Threads: what the host owns, what plugins own.**
+**Transport.** One UDP port (64091 by default) carries everything; there is no second TCP channel and no universe-layout transfer (the co-presence model doesn't move the game's universe graph). The packet framing, authentication and the passphrase handshake are in [section 3.5](#35-session-crypto-d4). `BindScope::Lan` refuses handshakes from public addresses (RFC 1918, link-local, loopback, and CGNAT `100.64.0.0/10` for VPNs are allowed); `Any` is an explicit opt-in. sc-offline's firewall rule is `remoteip=localsubnet` by default, with VPN ranges added when the player picks "VPN". Nothing discovers or reports sessions.
 
-| Host (`src/net/`) | Plugins |
-|---|---|
-| The one UDP socket, one network thread (receive, acks, resends, keepalive every 1 s, peer timeout 30 s), the handshake, the type table, queues and limits | Their message types, payload formats, handlers and the game work handlers do |
-| Hands received messages to the game thread: a queue drained in `sco::app::Tick` before `tick` subscribers, as guarded callouts per plugin (a faulting handler disables only that plugin) | `send` from any thread (copies); handlers run on the game thread and must stay short (the `tick` rule) |
-| On unload or crash: drops the plugin's queued messages and types, never calls its handlers again | Nothing to clean up |
+**Language layers.** All four wrap the one C table.
 
-**Transport and handshake.** One UDP port (64091 by default) replaces the fork's UDP and TCP pair. Bulk data such as the universe layout goes through the reliable channel's internal bulk path. That path is available to the game adapter in `sco::game::net`, not to plugins in 1.0: windowed, up to 512 MiB, with progress.
+- **`scosdk/net.hpp`:** a `Net` handle over `ServiceRef<sco_net_v1>`; `Channel<T>` registered with a lambda, `Send(const T&)` for trivially copyable `T` and `Send(std::span<const std::byte>)`; `Peers()` as a small vector. `noexcept`, `sco_result`-returning, like the rest of the SDK.
+- **`Sco.Sdk` (C#):** a `Net` class with `RegisterChannel(name, flags, maxLen, Action<ulong, ReadOnlySpan<byte>>)` and `SendChannel(name, ReadOnlySpan<byte>)`; AOT-safe, pinned in `Pins.cs`.
+- **sco-lua:** `sco.net` in the sandbox **only when the manifest `requires = sco.net`**, and limited to the **peer list and pub/sub**: `is_active()`, `peers()` (a list of `{peer_id, entity_id, name}`), `register(channel, {reliable, from_host, to_host, max_len}, fn)` with `fn(sender, bytes)`, and `send(channel, bytes)`. No session control. Calls and delivered messages count against the step budget; the sandbox stays closed (typed messages in a product-opened session only, never a socket or address).
 
-- **Packet header:** magic `SCN1`, protocol version, 64-bit session id, sender peer, sequence, ack and ack bits, and a 16-byte truncated HMAC-SHA-256.
-- **Handshake:** the client sends `HELLO` (protocol version, name, client nonce, its type names). The host answers `CHALLENGE` (host nonce). The client replies `PROOF`: an HMAC over both nonces with a key derived from the passphrase. Then the product's `AdmitFn` runs on the game thread, and the host sends `WELCOME` with the peer id, the type table, the peers, and the adapter's welcome bytes (the game port).
-- **Authentication:** every later packet is authenticated with the session key. A packet from an address that doesn't match its peer is dropped. A session needs a passphrase; there's no open mode.
-- **No encryption in 1.0.** Contents can be read on the path, so this is for LAN or a trusted VPN. TLS-grade encryption would need a crypto dependency (open question 4). HMAC-SHA-256 is a small implementation in sco-core, tested against the RFC 4231 vectors, so no new dependency.
+**Tests.** `sco::net::Core` is a class with no globals, so one binary runs **two or more cores in one process** on `127.0.0.1` with ephemeral ports, plus an in-memory transport that drops, duplicates and reorders from a fixed seed, driven by `Pump(nowMs)` with a virtual clock (no sleeps): handshake (right/wrong passphrase, wrong protocol version, address spoofing), exactly-once ordered reliable delivery under loss, fragmentation at the limits, quotas, peer timeout, channel-ownership refusal, direction flags, and `send` from 8 threads under TSan. The service binding is tested with **two `sco-host-sim` processes on loopback** (new `--net-host` / `--net-join` / `--net-pass` / `--until-event --timeout-ms` options and a `sdk/examples/net_echo` plugin). `tests/abi_net.c` pins the table; a C# pin goes in `Pins.cs`. The socket layer is `src/net/socket_win.cpp` and `src/net/socket_posix.cpp`; CONTRIBUTING's Windows-headers list grows by the first in the same PR.
 
-**Defaults.** `BindScope::Lan` refuses handshakes from public addresses. RFC 1918, link-local and loopback are allowed, plus CGNAT space (100.64.0.0/10), which some VPNs use. Allowing any address is an explicit host option. sc-offline's firewall rule moves to `remoteip=localsubnet` by default, with VPN ranges added when the player picks "VPN" (open question 3). Nothing in sco.net discovers sessions, reports them, or talks to anything but the address a player typed.
+### 3.2 `sco::game::net`: a few benign engine points
 
-**Language layers.**
+Co-presence needs almost nothing from the engine's networking: each player's own game runs normally, ghosts are spawned locally and moved locally, so the fork's dedicated-server, universe-layout, visibility-binding and joiner rows are **not** ported — they belong to the dropped model and to the [permanent exclusions](#permanent-exclusions-never-ported). What remains is a short, benign set in `src/game/net_sigs.cpp` (hooks in `src/game/net_hooks.cpp`, accessor and switches in `include/sco/game/net.h`), following the `sco::game::pak` decision that the engine adapter lives in sco-core. Rows move byte for byte from the fork in a first commit, then any 4.10.196 fix in a second ([Adding a signature](../adding-signatures.md)).
 
-- **`scosdk/net.hpp`:** a `Net` handle over `ServiceRef<sco_net_v1>`; `MessageType<T>` registered with a lambda, with `Send(peer, const T&)` for trivially copyable `T` and `Send(peer, std::span<const std::byte>)`; `Peers()` returning a small vector of `PeerInfo`. Every call is `noexcept` and returns `sco_result`, as in the rest of the SDK.
-- **`Sco.Sdk` (C#):** a `Net` class with `RegisterType(name, flags, maxSize, Action<NetMessage>)`, where the message exposes `ReadOnlySpan<byte>` during the callback. It's AOT-safe like the `Storage` layer and pinned in `Pins.cs`.
-- **sco-lua:** `sco.net` in the sandbox, over the same table. It has `state()`, `self_peer()`, `host_peer()` and `peers()` (a list of `{peer, entity, name, host, self, dedicated}`), `register(name, {reliable, from_host, to_host, max_size}, fn)` with `fn(from, bytes)` as a string, and `send(type, to, bytes)`. Calls and every delivered message count against the step budget. The sandbox stays closed: a script can only reach other machines through typed messages in a session the product opened, never a socket or an address. Open question 6 asks whether that's the right line.
+| Capability | Row | What it is for | From |
+|---|---|---|---|
+| `game.frame` | `game.post_update` (`CCryAction::PostUpdate`, prologue check) | A per-frame tick, so ghost poses interpolate smoothly between the 10 Hz `tick`; read-only | `:1261-1265` |
+| `net.session` | `session_state` (the `CSessionManager` state read, `connect_cmd` anchor), `local_params` (the local player's own session id, entity id `+0x18` and name `+0x28`) | Reads the **local** player's in-world state and identity to drive presence. It observes only; it starts no connection and accepts none | `:126-136`, `:1267-1273`, `:2134-2141` |
+| `net.flymode` | `fly_mode_check` | Lets the **local** player's own noclip (an existing offline feature) work while a session is active | `:2121-2126` |
 
-All four layers wrap the one C table. Nothing above `sco_net.h` adds wire behavior of its own, so a C# plugin and a Lua plugin can exchange messages if they agree on the payload.
+That is three capabilities, not the fork's ~35. `net.flymode` is **off** unless a session is active and the anti-cheat-absent check has passed (`AntiCheatPresent`, `F:dllmain.cpp:92`, which sc-offline keeps): it relaxes only the local player's own movement, the same relaxation noclip already makes offline, and nothing on another peer. No excluded patch sits under any of these capabilities.
 
-**Tests.**
+**Honesty, not stability.** None of these rows is assumed stable. `sco-sigcheck` runs them against `StarCitizen.exe` **every patch** (acceptance for the PR: the `net.*` and `game.post_update` rows `OK` on 4.10.196, pasted into the PR), each resolver checks the bytes it relies on and fails with a static reason, and a failed row disables only its own capability — presence keeps working when `net.flymode` breaks, and so on. CI runs the registry rules against a synthetic image, as today.
 
-- **The core, no service:** `sco::net::Core` is a class with no globals, so one test binary runs **two or more cores in one process**: a host and clients on `127.0.0.1` with ephemeral ports. For the reliable layer there's also an in-memory transport that drops, duplicates and reorders from a fixed seed, driven by `Pump(nowMs)` with a virtual clock, with no sleeps and no real time. Coverage: handshake (right and wrong passphrase, wrong protocol version, address spoofing), exactly-once in-order delivery under loss, fragmentation at the limits, queue and bandwidth limits, peer timeout, type tables with missing types, direction flags. Under TSan: `send` from 8 threads while the network thread runs.
-- **The service through `sco-host-sim`:** the runtime is one per process (`sco/runtime.h`), so the service binding is tested with **two `sco-host-sim` processes on loopback**. New options: `--net-host <port> --net-pass <p>`, `--net-join 127.0.0.1:<port> --net-pass <p>`, and `--until-event <name> --timeout-ms <n>`, which ticks until the event, so there are no fixed sleeps. A CTest fixture starts the host, then the joiner. A new example `sdk/examples/net_echo` (C) registers `net_echo.ping` and `net_echo.pong`; the joiner pings, and the test passes when the joiner's log shows the pong. Run on Linux and Windows CI.
-- **`tests/abi_net.c`:** pins the table, constants and signatures like `abi_storage.c`. A C# pin goes in `Pins.cs`.
-
-**Portability.** The socket layer is `src/net/socket_win.cpp` (Winsock) and `src/net/socket_posix.cpp`. CONTRIBUTING's list of files allowed to include Windows headers grows by the first one in the same PR.
-
-### 3.2 `sco::game::net`: the game-specific rows and hooks
-
-Following the `sco::game::pak` decision ([vfs-datacore decision 1](vfs-datacore.md#decisions-maintainer-2026-10-09)), the engine adapter lives in sco-core. That means rows in `src/game/net_sigs.cpp`, hooks in `src/game/net_hooks.cpp`, and the accessor and switches in `include/sco/game/net.h`. sc-offline only enables the pieces it uses and supplies its callbacks. The rows move **byte for byte** from the fork ([Adding a signature](../adding-signatures.md) rule 1), in a separate commit from any fix.
-
-The rows, grouped into capabilities so a broken group switches only itself off:
-
-| Capability | Rows (`net.*` unless noted) | From |
-|---|---|---|
-| `game.frame` | `game.post_update` (`CCryAction::PostUpdate`, prologue check) | `:1261-1265` |
-| `net.session` | `expect_incoming`, `expect_copy_params`, `connect_cmd`, `framework`, `session_mgr`, `inactivity_cvars` | `:1348-1356`, `:2134-2141`, `:1178-1184` |
-| `net.dedicated` | `startup_filler`, `services_first_user` (reuses sc-offline's stand-in hub), `create_socket_groups`, `marker_restore`, `qt_groups`, `add_marker`, `mission_class_switch`, `mission_spawn_class_switch`, `host_type_site`, `context_site`, `account_site` | `:476-485`, `:407-417`, `:1357-1361`, `:448-474`, `:428-437`, `:1366-1411`, `:1451-1471` |
-| `net.layout` | `layout_send_site`, `layout_root`, `layout_gather`, `layout_destroy`, `layout_free`, `layout_recv`, `layout_request` | `:1712-1756`, `:1769-1781` |
-| `net.join` | `loading_wait_site`, `staging_log`, `staging_cvars`, `actor_cvars`, `validation_config`, `player_name_slot` | `:1806-1917`, `:358-385` |
-| `net.visibility` | `bind_to_player`, `lookup_record`, `repl_net_tick`, `streamable_reg` | `:2076-2092` |
-| `net.flymode` | `fly_mode_check` | `:2121-2126` |
-
-That's about 35 rows. Not ported, under any capability: the anti-cheat step (`:1415-1432`).
-
-**Acceptance.** `sco-sigcheck` on **4.10.196** (`StarCitizen.exe` of the current LIVE build) reports every `net.*` row and `game.post_update` `OK`, run locally and pasted into the PR. The fork was written against an earlier build, so rows that fail on 4.10.196 are fixed in a second commit with the reason, per the rules. Every resolver checks the bytes it relies on and fails with a static reason. CI runs the rows against a synthetic image for the registry rules, as today.
-
-**Hooks.** They go through `sco::hook` (`Transaction`, detours) instead of the fork's `HookFunction`. Each enable is one transaction per capability, and a capability whose rows fail installs nothing. The fork's hand-assembled stubs (six of them, `:1366-1471`, `:1712-1756`, `:1806-1831`) become a new `sco::hook` facility (section 3.4), not byte arrays in the adapter.
-
-**Switches** (`include/sco/game/net.h`, sketch):
+**Hooks** go through `sco::hook` (`Transaction`, detours; the `MidHook` facility of section 3.4), never hand-assembled RWX stubs. Switches (`include/sco/game/net.h`, sketch):
 
 ```cpp
 namespace sco::game::net {
-enum class Role { Client, DedicatedServer };
-struct Callbacks {
-    void (*joinerExpected)(uint64_t entityId, void* ctx);           // server: a joiner is in the game's netcode
-    void (*layoutProgress)(uint64_t done, uint64_t total, void* ctx);
-    void* ctx;
-};
-bool Enable(Role, const Callbacks&);      // installs every capability whose rows are OK; logs the rest
+struct Callbacks { void (*frame)(uint32_t ms, void* ctx); void* ctx; };
+int  Enable(const Callbacks&);   // installs each capability whose rows are OK; logs the rest. 1 if any came up
 void Disable();
-// Server: register a joiner with the game (ExpectIncomingConnection with params built from the hello).
-Result ExpectJoiner(const JoinerParams&);
-// Client: run the game's connect to address:port once the session's welcome came.
-Result Connect(const char* address, uint16_t gamePort);
-// Visibility: the adapter binds noted entities and ready players to each joiner on the game's tick.
-void NoteStreamable(uint64_t entityId);
+int  LocalPlayer(uint64_t* out_entity, char* name, uint32_t cap);   // the local player's own id and name
+int  SetLocalNoclip(int on);     // gated on net.flymode + anti-cheat-absent + an active session
 }
 ```
 
-**What needs the maintainer's judgment before it's ported** (open question 2): `net.flymode` and the `net.join` validation pieces. These are `pl_staging.forceClientValidation`, the 60 s to 15 s validation wait, and skipping the fly-mode mismatch check. They relax the game's own movement validation between a client and the server it joined. In a session hosted by an sc-offline player that's the host's choice (noclip is already an offline feature), and sc-offline never runs alongside anti-cheat (`AntiCheatPresent`, `F:dllmain.cpp:80`, `:190-200`, unchanged in sc-offline `main`). They are still validation relaxations in a public library. The proposal:
+### 3.3 `sc_ipc.h` (the wire, MIT) and the `sco.ipc` service (the in-game wrapper)
 
-- They're separate capabilities, off unless the session host allows them. The host's setting is sent in the welcome.
-- They're enabled only while a `sco.net` session is joined. They're never enabled without the anti-cheat-absent check passing.
-- `net.dedicated`'s account row (`FixJoinerAccount`) writes only the local server's own account record, never anything of CIG's. The doc names it so the reviewer can confirm that.
+Both fork bridges share a shape: a named mapping, a header with magic/version/pids/heartbeat (`F:build.cpp:2823-2845`, `:1285-1305`), seqlock snapshot blocks (`TfPublish` `:2859-2877`; `TfReadTf` `:2846-2857`; TitanLink `plugin.cpp:189-201`), and single-producer rings (`McColWrite` `:1307-1329`; `McInput` `:1331-1343`). Two pieces, with two licenses:
 
-Putting any of these behind a capability, in the adapter or in sc-offline's built-in, is an architecture boundary that keeps them switchable and reviewable. It isn't a legal or terms-of-service safeguard, and the doc doesn't treat it as one. The terms-of-service question for the whole feature, including the joiner-account row, stays with the maintainer (open question 13).
+**`include/sc_ipc.h` — the wire format, MIT.** A single header-only C file, no sco-core dependency, that **both** sides of a bridge include: sc-offline's built-in on one side, and the other program (a Northstar plugin, a voxel-game mod) on the other. Because that other side isn't a GPL plugin, the header carries a per-file `SPDX-License-Identifier: MIT`, and `LICENSE` and `CONTRIBUTING.md` note the **interface exception**: `sc_ipc.h` is MIT so a non-GPL program may speak the protocol, while everything else stays GPL-3.0. It defines:
 
-### 3.3 `sco.ipc` 1.0: local shared-memory channels for bridges
+- the channel header (magic `SCO_*`, version, both pids, a monotonic **epoch** and heartbeat);
+- a **single-producer single-consumer lock-free ring** (head and tail on separate cache lines, `memcpy` payloads, power-of-two wrap, the padding case from `McColWrite`);
+- `static_assert`s on every struct's size and offset, so a layout drift is a compile error on both sides;
+- **epoch/sequence validation** (a reader rejects a torn or stale snapshot and re-reads; a consumer ignores a ring that re-opened under a new epoch);
+- **hostile-peer bounds checks**: every offset and length read from shared memory is checked against the mapping size before use, since the other process can write anything.
 
-**Choice: a host service, not just a library.** Both fork bridges already share a protocol shape:
+```c
+/* include/sc_ipc.h */
+/* SPDX-License-Identifier: MIT */
+/* Shared-memory wire for sco.ipc bridges. MIT so the non-GPL side of a bridge may include it;
+ * see LICENSE (interface exception). No sco-core dependency. */
+#define SC_IPC_MAGIC   0x5343494Fu  /* "SCIO" */  /* mapping name: Local\SCO_<plugin>.<channel> */
+typedef struct sc_ipc_hdr {
+    uint32_t magic, version;
+    uint32_t producer_pid, consumer_pid;
+    uint64_t epoch;            /* bumped each time a side (re)creates the mapping */
+    uint64_t heartbeat_ms;     /* GetTickCount64 of the last writer touch */
+    uint64_t bytes;            /* total mapping size, for bounds checks */
+} sc_ipc_hdr;
+_Static_assert(sizeof(sc_ipc_hdr) == 40, "sc_ipc_hdr");
+/* sc_ipc_ring_push / sc_ipc_ring_pop: SPSC, bounds-checked against hdr->bytes; return 0 on a
+ * full ring (push) or empty/torn ring (pop). sc_ipc_block_write / sc_ipc_block_read: seqlock
+ * snapshots validated by sequence. */
+```
 
-- a named mapping in `Local\`;
-- a header with magic, version, both processes' pids and a heartbeat (`F:build.cpp:2823-2845`, `:1285-1305`);
-- seqlock snapshot blocks, where an odd sequence number means "writing" (`TfPublish`, `:2859-2877`; `TfReadTf`, `:2846-2857`; TitanLink `plugin.cpp:189-201`, `:277-282`);
-- single-producer rings (`McColWrite`, `:1307-1329`; `McInput`, `:1331-1343`).
-
-A library would give each bridge the same code. A service also gives the host what the new scope needs to enforce:
-
-- **The namespace.** Channels are always `Local\sco.<plugin id>.<name>`: never `Global\`, never another plugin's prefix, never an arbitrary name (the fork used `SCTitanLink_v1` and `SkyCraft_v1`).
-- **Access.** Mappings get a security descriptor for the current user only, instead of the default DACL.
-- **Limits.** At most 256 MiB per channel and 512 MiB per plugin. The Minecraft bridge maps about 196 MiB: 3 x 4K frame slots, 32 MiB collision and 64 MiB render rings, `:640-646`.
-- **Lifetime.** Channels are closed and unmapped when the plugin unloads or crashes, and the host stops their heartbeat, so the other side sees the link drop within its timeout.
-- **One wire format,** versioned in one place. Bridges for other games reuse it.
-
-The library half stays: **`include/sco_ipc_wire.h`**, a header-only C file with no sco-core dependency. It holds the header layout, the seqlock read/write and the ring push/pop. The other side (a Northstar plugin, a game mod) includes only that file. Its license matters, because those sides aren't GPL plugins (open question 5).
+**The `sco.ipc` service — the in-game wrapper, GPL.** Published by sco-core's host (table `sco_ipc_v1` in `include/sco_ipc.h`, pinned by `tests/abi_ipc.c`). It is the only way an sc-offline plugin creates a channel, and it enforces what a library alone can't: the name is always `Local\SCO_<plugin id>.<channel>` (never `Global\`, never another plugin's prefix, never an arbitrary name — the fork used `SCTitanLink_v1` and `SkyCraft_v1`); the mapping's security descriptor is **the current user only**; sizes are capped (256 MiB per channel, 512 MiB per plugin — the Minecraft bridge maps ~196 MiB); and the channel is unmapped and its heartbeat stopped when the plugin unloads or crashes, so the other side sees the drop within its timeout. The service lays the `sc_ipc.h` header and rings into the mapping; the bridge's own blocks keep their layouts behind it.
 
 ```c
 /* include/sco_ipc.h: service "sco.ipc", version 1.0 (sketch) */
 typedef struct sco_ipc_v1 {
     uint32_t size; uint32_t _pad;
-    /* Creates Local\sco.<plugin id>.<name>, bytes long, with the wire header (layout id and
-     * version are the bridge's own). The host writes this side's heartbeat every tick. */
-    sco_result (*create)(sco_plugin* self, const char* name, uint64_t bytes, uint32_t layout_id,
-                         uint32_t layout_version, uint64_t* out_channel);
-    /* Ms since the other side's heartbeat; SCO_NOT_FOUND: it never attached. */
-    sco_result (*peer_age)(sco_plugin* self, uint64_t channel, uint32_t* out_ms);
-    /* Seqlock snapshot blocks at an offset inside the channel. */
-    sco_result (*block_write)(sco_plugin* self, uint64_t channel, uint64_t offset, const void* data, uint32_t size);
-    sco_result (*block_read)(sco_plugin* self, uint64_t channel, uint64_t offset, void* out, uint32_t size);
-    /* SPSC rings at an offset (head and tail on separate cache lines, as the fork's rings). */
-    sco_result (*ring_push)(sco_plugin* self, uint64_t channel, uint64_t offset, uint32_t type, const void* data, uint32_t size);
-    sco_result (*ring_pop)(sco_plugin* self, uint64_t channel, uint64_t offset, uint32_t* out_type, void* out, uint32_t* inout_size);
-    /* Bulk regions (video frames): a pointer to the mapping, valid until close or the plugin's
-     * unload. The one deliberate exception to "ids, never pointers": it points into memory the
-     * plugin's own channel owns, never into the game, and copying 33 MB frames per call is not an option. */
-    sco_result (*view)(sco_plugin* self, uint64_t channel, void** out_base, uint64_t* out_bytes);
-    sco_result (*close)(sco_plugin* self, uint64_t channel);
+    int (*create)(sco_plugin* self, const char* name, uint64_t bytes,
+                  uint32_t layout_id, uint32_t layout_version, uint64_t* out_channel);
+    int (*peer_age_ms)(sco_plugin* self, uint64_t channel, uint32_t* out_ms);
+    int (*block_write)(sco_plugin* self, uint64_t channel, uint64_t offset, const void* data, uint32_t size);
+    int (*block_read)(sco_plugin* self, uint64_t channel, uint64_t offset, void* out, uint32_t size);
+    int (*ring_push)(sco_plugin* self, uint64_t channel, uint64_t offset, uint32_t type, const void* data, uint32_t size);
+    int (*ring_pop)(sco_plugin* self, uint64_t channel, uint64_t offset, uint32_t* out_type, void* out, uint32_t* inout_size);
+    /* Bulk regions (video frames): a pointer into the plugin's own channel, valid until close or
+     * unload — the one allowed pointer, since it names the plugin's own memory, never the game,
+     * and 33 MB frames can't be copied per call. */
+    int (*view)(sco_plugin* self, uint64_t channel, void** out_base, uint64_t* out_bytes);
+    int (*close)(sco_plugin* self, uint64_t channel);
 } sco_ipc_v1;
 ```
 
-Any thread. The heartbeat is driven from the host's tick; `block_*` and `ring_*` never block. Tests: create a channel, attach a second process using only `sco_ipc_wire.h` (a small test program), and check the seqlock with a writer and reader on threads under TSan. Also check the ring wrap and padding cases from `McColWrite`, refusal of bad names and sizes, and the heartbeat stopping when the plugin unloads. The platform half is `src/ipc/shm_win.cpp`, with `shm_open` on POSIX for the tests. scosdk and C# wrappers come in the same PR; Lua gets none.
+Any thread; the heartbeat is driven from the host tick; `block_*` and `ring_*` never block. Tests: a second process attaches using only `sc_ipc.h`; a writer and reader on threads under TSan; the ring wrap and padding from `McColWrite`; refusal of bad names and oversized channels; the heartbeat stopping on unload. Platform half `src/ipc/shm_win.cpp`, with `shm_open` on POSIX for the tests. scosdk and C# wrappers in the same PR; Lua gets no `sco.ipc`.
 
-### 3.4 Engine-side helpers
+### 3.4 Engine-side helpers for ghost replication
 
-- **Entity ids across peers.** Entities the host's game spawned keep the same entity id on every peer, because the game replicates them. The fork relies on this: ship ids in spawn replies, seat ids, "go to player" teleporting to a peer's id (`:931`). Entities a client spawned locally exist only on that client. The rule for plugins, in `sco_net.h` and `api-v1.md`: **an entity id is shared across peers only if the host spawned it.** So features that must be shared ask the host to spawn (section 4). `sco_net_peer_info.entity` gives each peer's player entity id, which the adapter sets from the expect parameters (`+0x18`). Ids stay opaque `uint64_t`, never decoded.
-- **Zones and transforms.** The game replicates transforms for its own entities, and `sco.net` doesn't duplicate that. For plugin state the game doesn't replicate (bridge avatars, markers a plugin draws), `scosdk/net.hpp` has a fixed 64-byte `ZonePose` codec: a zone id, a position local to the zone in double precision, and a rotation quaternion. The receiver resolves it with its own `sco::engine::ZoneTree` (zone ids are game entities, shared as above). Positions stay zone-local, which avoids the precision loss of world coordinates. This is a codec, not a replication system. Plugins send poses at the rate they choose, unreliable, and drop late ones.
-- **`sco::hook::MidHook`.** It replaces the fork's six hand-written stubs. At a site, it saves the volatile registers and calls a C++ callback with a register context. The callback can read and write the registers and choose "continue" or "jump to X". The relocated instructions are length-decoded by the existing engine, and the trampoline memory comes from `sco::hook`'s allocator, not ad-hoc RWX pages. It's part of a `Transaction`. Tests run on synthetic code, like the existing detour tests.
-- **A frame event.** The dedicated server has no window or message loop, and the bridges need a callback every frame, not the 10 Hz `tick`. With `game.frame` resolved, the host kit posts `frame` from `CCryAction::PostUpdate` (`{ size, frame_ms }`). On a dedicated server, `sco::app::Tick` is driven from there too. Subscribers must stay well under a millisecond, and the event is gated on the `game.frame` capability.
+- **Ghost entities and session-scoped ids.** Unlike the fork, co-presence does **not** rely on the game giving every peer the same entity id. Each player's own game assigns its own ids, so a shared thing gets a **session-scoped id** from `sco.net` when it is announced, and every receiver spawns the announced class **locally as a ghost** (through `spawn.entities`) and keeps a small map `session id -> its own local ghost entity id`. `sco_net_peer.entity_id` and the `multiplayer.spawn` payload carry the **session-scoped** id, 0 once that thing has streamed out. Ids stay opaque `uint64_t`, never decoded, and no real game pointer or id of one peer is ever trusted by another.
+- **The transform primitive (`spawn.entities` 1.2).** A ghost is moved every pose with one new call on sc-offline's `spawn.entities` service (section 4.3): `int set_entity_transform(uint64_t entity_id, uint64_t zone_id, const double pos[3], const double rot[4])` — `zone_id` 0 is the world frame, else that zone's local frame; `rot` is `xyzw` like `teleport.spatial`'s `player_pose`; and it moves **only entities the calling plugin spawned** (so a plugin can move its own ghosts and nothing else).
+- **`ZonePose` over the wire, by zone name.** A game `zone_id` is a volatile streaming handle, meaningful only inside one game process, so it is never sent. `scosdk/net.hpp` has a fixed `ZonePose` codec that carries the **zone name** (`"OOC_Stanton_2b_Daymar"`) plus a double-precision position local to that zone and an `xyzw` quaternion. The receiver resolves the name to its **own** local `zone_id` (through `teleport.spatial` / `sco::engine::ZoneTree`), then calls `set_entity_transform`. Zone-local doubles keep full precision however far the zone is from the origin. This is a codec, not a replication system; poses go unreliable at the sender's chosen rate and late ones are dropped.
+- **`sco::hook::MidHook`.** The benign `net.*` hooks (and any future one) use a proper mid-function hook: it saves the volatile registers, calls a C++ callback with a register context that may continue or branch, relocates instructions through the existing length decoder, and takes its trampoline from `sco::hook`'s allocator inside a `Transaction` — never an ad-hoc RWX page. It replaces the fork's hand-written byte stubs. Tested on synthetic code like the existing detour tests.
+- **A frame event.** With `game.frame` resolved, the host kit posts `frame` (`{ size, frame_ms }`) from `CCryAction::PostUpdate`, so ghosts interpolate smoothly between the 10 Hz `tick` and the bridges (section 4.4) get a per-frame callback. Subscribers must stay well under a millisecond; the event is gated on `game.frame`.
+
+### 3.5 Session crypto (D4)
+
+No OpenSSL and no new large dependency. sco-core vendors a **single-file C** implementation of **SHA-256, HMAC-SHA-256 and PBKDF2-HMAC-SHA256** (`third_party/sha2/`, public-domain, built with its own warnings off like Lua and SQLite), tested against the NIST and RFC 4231 / RFC 6070 vectors.
+
+- **Key.** The session passphrase is stretched with **PBKDF2-HMAC-SHA256**, a **per-session random salt** the host sends in the handshake, and a **documented iteration count** (`SCO_NET_PBKDF2_ITERS = 200000`, a named constant so it can be raised by a protocol-version bump). Both sides derive the same 32-byte session key; the passphrase itself never crosses the wire.
+- **Handshake.** Client `HELLO` (protocol version, name, client nonce, its channel names) -> host `CHALLENGE` (salt, host nonce) -> client `PROOF` (an HMAC over both nonces under the derived key) -> the product admits -> host `WELCOME` (peer id, channel table, peers). A wrong passphrase fails the `PROOF` check and the join is refused.
+- **Per-packet authentication.** Every packet carries a truncated **HMAC-SHA-256 over `protocol_version || channel_fqn || sender_peer_id || seq || payload`** under the session key. A packet that fails the MAC, or whose source address doesn't match its peer, is dropped.
+- **Framing.** 32-bit length caps on every field (checked before any allocation), **monotonic per-sender sequence numbers**, a **sliding replay window** that rejects stale or duplicate `seq`, and **constant-time** MAC comparison.
+- **Confidentiality.** Traffic is **authenticated and integrity-protected but plaintext on the wire** — contents can be read by someone on the path. State this plainly to players: run sessions over a **VPN (Tailscale, ZeroTier, Radmin)** for confidentiality. Default binding is **LAN-only**; VPN ranges are opt-in (section 3.1).
 
 ## 4. sc-offline design
 
 ### 4.1 `builtins/multiplayer`
 
-A built-in plugin (`src/builtins/multiplayer_plugin.cpp`, id `multiplayer`), in the same form as the other built-ins in `src/builtins/`:
+A built-in plugin (`src/builtins/multiplayer_plugin.cpp`, id `multiplayer`), like the other built-ins in `src/builtins/`. It is the one place that opens a session and runs co-presence; every other feature only announces.
 
-- **Session control.** It reads the launcher's settings (the fork's `SC_OFFLINE_DEDICATED`, `SC_OFFLINE_JOIN`, `SC_OFFLINE_NAME` and `SC_OFFLINE_JOIN_PORT`, plus a new passphrase) and calls `sco::net::Host` or `Join`. It enables `sco::game::net` for the role.
-- **Admission.** On the server, its `AdmitFn` calls `sco::game::net::ExpectJoiner` with the joiner's hello (session, node, entity id, name) and answers the game port. This is the fork's `SCOHELLO`/`SCOOK` (`:245-313`) as a product hook. It also sets `SetPeerEntity`. On the client, the welcome triggers `sco::game::net::Connect`.
-- **What stays here:** the join state machine with F9 retry, the universe layout through the adapter's bulk path, visibility (`NoteStreamable` and the per-joiner binding), re-dress after first sight, the per-player data file, and the server-side "load mission scripts on the first join".
-- **UI.** A `Multiplayer` tab through `sco.ui`: the peer list from `sco.net` peers, "Go to" (teleport to the peer's entity through `teleport.spatial`), session state and reasons, and the host's settings (allow noclip, allow console).
+- **Session control.** It reads the launcher's settings (host or join, the peer's address, the player name, the passphrase) and calls `sco::net::Host` or `sco::net::Join`. There is no dedicated-server process and no `SC_OFFLINE_DEDICATED`. It enables `sco::game::net` (the `frame` event, the local-player read, and `net.flymode` gated).
+- **Presence.** It registers `multiplayer.pose` (unreliable) and `multiplayer.spawn` / `multiplayer.despawn` (reliable). Each `frame` it sends the local player's `ZonePose` (zone name + zone-local pose). When a peer's pose first arrives it spawns a **ghost avatar** locally through `spawn.entities`, maps the peer's session-scoped id to that local ghost (`SetPeerEntity`), and moves it every pose with `set_entity_transform`; `multiplayer.despawn` or a `net.peer LEFT` event removes the ghost. The game's netcode is never touched.
+- **UI.** A `Multiplayer` tab through `sco.ui`: the peer list from `get_peers` / `get_peer_name`, "Go to" (teleport to a peer's local ghost through `teleport.spatial`), session state and the reason on a drop, and the host's allow-switches (e.g. allow ghost ships).
 - **Commands:** `multiplayer.status`, `multiplayer.goto <peer name>`, `multiplayer.leave`.
-- **Offline.** With no launcher setting, it loads, publishes nothing, and `sco.net` stays `IDLE`.
+- **Offline.** With no session, `is_active()` is 0, nothing is announced, and every feature runs exactly as it does today — the "offline behavior unchanged" guarantee, checked by the `docs/features.md` offline checklist in every PR.
 
-The launcher's `host` and `join` commands and the firewall rule (with the new remote scope) come over from the fork's launcher in their own PR.
+The launcher's `host` and `join` commands and the firewall rule (now `remoteip=localsubnet` by default, VPN ranges opt-in, listed and undone per CONTRIBUTING) come from the fork's launcher in PR 7.
 
-### 4.2 Domain features: through services, without hard dependencies
+### 4.2 Domain features: announce, don't centralize
 
-Each built-in that has a multiplayer half **registers its own `sco.net` message types** and decides locally:
+Co-presence is **announce-and-ghost**, not host-authoritative request/reply. A feature always does its real work in the player's **own** game, exactly as offline; when a session is active it additionally **announces** the result so peers show a ghost:
 
 ```text
-if (net->state() == SCO_NET_JOINED && !(self is host))   -> send a request to host_peer()
-else                                                      -> run it here, as today
+do_it_locally_as_today();                       // real, functional, in this player's game
+if (net->is_active()) net->send_channel(self, "<id>.<channel>", announce, len);   // peers ghost it
 ```
 
-`sco.net` is host-owned and always published, so there's no load-order dependency on `builtins/multiplayer`. In offline play `state()` is `IDLE` and every path is today's local path, with no message types used. That's the "offline behavior unchanged" guarantee, and the in-game offline checklist in `docs/features.md` checks it in every PR. On the host, the handler runs the same local function the command runs, with the requesting peer's entity id instead of the local player's.
+So the only added behavior in a session is the announcement; offline there is none. Nothing is sent to a "host" to run, no peer runs another peer's action, and no raw object, pointer or code address crosses the wire. A receiver builds its own ghost from the announced **semantic fields** with its own game calls.
 
-| Built-in (sc-offline `main`) | Message types | Replaces |
+| Built-in | Announces (channel) | A peer shows |
 |---|---|---|
-| `spawn` | `spawn.request` (TO_HOST, reliable: class, zone, pose, sit, flight-ready), `spawn.reply` (FROM_HOST: status text, ship id, flags), `spawn.retrieve` (TO_HOST: ATC entity, class) | `SCOSPAWN`, `SCOSPWND`, `SCOATCRQ`; the server seat job (`:608-660`) moves into `spawn` on the host |
-| `crew` | `crew.seat` (TO_HOST: action, ship, seat, NPC, replace), reply via `spawn.reply`'s shape | `Cmd_Seat` |
-| `npc` | `npc.spawn`, `npc.undo`, `npc.clear` (TO_HOST) | `Cmd_Spawn`/`Undo`/`Clear` kind NPC |
-| `build` | `build.place`, `build.undo`, `build.clear` (TO_HOST) | kind Build |
-| `loadout` | `loadout.gear` (TO_HOST, reliable, at most 64 KiB, XML validated as a loadout before it's written to a file the host names) | `SCOGEAR` |
-| `ammo` | `ammo.state` (TO_HOST, unreliable, resent every 5 s) | `Cmd_Ammo` |
-| the noclip and god owner (`spawn` today) | `player.state` (TO_HOST, unreliable, resent) | `Cmd_Noclip`, `Cmd_God`; applied only if the host allows it |
-| `contracts` | `contracts.objective` and `contracts.end` (FROM_HOST, reliable: **semantic fields only**, such as objective id, texts, state, marker entity ids and reason, rebuilt on the client with game calls); `contracts.offer` (TO_HOST); wallets on the host through `sco.storage` keyed by player name | `SCOOBJ` (no raw bytes or vtables over the wire, finding 3), `SCOEND`, `SCOOFFER`, `SaveServerWallet` |
-| menu shell | none: the player list is `sco.net`'s peers | `SCOPLAYQ`/`SCOPLAYR`, `SCONAMEQ`/`SCONAMER` (names are chosen by the player and carried in the hello) |
-| cvars and console | none in 1.0 | `Cmd_Console` is dropped. If the maintainer wants it back, it's an allowlist of CVars the host approves (open question 7) |
+| `multiplayer` | `multiplayer.pose` (unreliable), `multiplayer.spawn`/`despawn` (reliable) | the player's ghost avatar, moved by pose |
+| `spawn` | `spawn.ghost` (reliable: class, session id) + its pose on `spawn.pose` (unreliable) | a ghost of the spawned ship/vehicle, moved by pose |
+| `npc`, `build` | `npc.ghost`, `build.ghost` (reliable: class, session id, static ZonePose) | a static ghost of the NPC or building |
+| `loadout` | `loadout.look` (reliable, at most 64 KiB, the appearance only, validated before use) | the right gear on the player's ghost |
+| `ammo`, `god`, `noclip`, `contracts` | nothing in 1.0 | each is personal to the player's own game; not replicated |
 
-The types each built-in registers are listed in its header comment, as `spawn_service.h` documents its table today. A third-party plugin uses the same pattern, and the same host-side checks (direction flags, sizes, limits) apply to it.
+Console forwarding is **not** a feature (it is a [permanent exclusion](#permanent-exclusions-never-ported)). Each built-in lists its channels in its header comment, as `spawn_service.h` documents its table today; the host's ownership, direction and quota checks apply to a third-party plugin the same way.
 
-### 4.3 The bridges: optional built-ins on `sco.ipc`
+### 4.3 `spawn.entities` 1.2: moving ghosts
 
-`build.cpp` in the fork is three features in one file:
+The ghost model needs one new call on sc-offline's `spawn.entities` service, so it becomes 1.2 (`SC_SPAWN_SERVICE_VERSION 0x00010002u`, a field appended after `entity_alive`, `size`-gated like every minor):
 
-| Lines | What | Where it goes |
-|---|---|---|
-| `F:build.cpp:1-639` (with `ResolveBuildApi`, `:86`) | Build mode: placement, ghost preview, undo and clear; its multiplayer branches at `:397-400`, `:476-481`, `:625-633` | Already `builtins/build_plugin.cpp` on `main`; it gains the `build.*` message types (section 4.2) |
-| `:640-2262` | The Minecraft bridge (`[minecraft]`): the `Local\SkyCraft_v1` mapping, `McConfig`, a DirectComposition overlay thread with its own D3D11 device (`:906`), raw-input handover by patching `user32` imports (`McPatchImport`, `:714-743`), collision and render rings, scanning the world into blocks (`:1730`), NPC hits, body hiding | `builtins/voxel_bridge` |
-| `:2263-3743` | The Titanfall 2 bridge (`[titanfall]`): the `Local\SCTitanLink_v1` mapping (`:2823-2840`), its own overlay (`:2551`), raw-input handover, starting the EA app and `NorthstarLauncher.exe` (`:2889-2940`), a pilot simulation (`:3053`), shooting and titan calls | `builtins/titanlink` |
+```c
+/* 1.2: move an entity this plugin spawned. zone_id 0 = world frame, else that zone's local
+ * frame; rot is (x, y, z, w) like teleport.spatial's player_pose. 1 on success; 0 for an entity
+ * this plugin didn't spawn, an id that isn't streamed in, a bad zone, or a NULL pointer.
+ * Game thread. Call only when size > offsetof(sc_spawn_service_v1, set_entity_transform). */
+int (*set_entity_transform)(uint64_t entity_id, uint64_t zone_id, const double pos[3], const double rot[4]);
+```
 
-`MinecraftFrame` and `TitanfallFrame` run from the multiplayer `PostUpdate` hook (`F:multiplayer.cpp:1257-1258`). The bridges move to the `frame` event (section 3.4) and stop depending on multiplayer.
+Only entities the **calling plugin** spawned can be moved, so `multiplayer` moves its own ghost avatars, `spawn` moves its ghost ships, and neither can move the other's or a real game entity. The receiver resolves the ZonePose's zone **name** to its own `zone_id` (section 3.4) before each call.
 
-Each bridge becomes:
+### 4.4 The bridges: optional built-ins on `sc_ipc.h`
 
-- **A built-in behind a CMake option:** `SC_OFFLINE_BRIDGE_TITANLINK` and `SC_OFFLINE_BRIDGE_VOXEL`, default OFF (open question 8). When built, it is still off until the player enables it.
-- **On `sco.ipc`.** The mappings become `Local\sco.titanlink.link` and `Local\sco.voxel_bridge.link` with the shared wire header (wire v2). The bridge's blocks keep their current layouts (`ScBlock` and `TfBlock`, TitanLink `plugin.cpp:117-156`) behind it. The Northstar side (`TitanLink/src/plugin.cpp`) moves to `sco_ipc_wire.h` in the same PR. The Minecraft-side program isn't in the download (`[minecraft] link open: start the Minecraft side now`, `:1303`), so its source is open question 9.
-- **Overlay and input.** The two near-identical overlay threads become one sc-offline helper (`src/bridges/overlay.cpp`). Raw-input handover (swallowing keys while a bridge mode is on) is a candidate for a later `sco.ui` minor ("input capture while a mode is active"). Until then it stays in the helper, written once.
-- **Process launching** (the EA app, Northstar) stays in `builtins/titanlink`, only on the player's key press, logged with the full command line.
+`build.cpp` in the fork is three features in one file: build mode (`F:build.cpp:1-639`, already `builtins/build_plugin.cpp` on `main`), the Minecraft bridge (`:640-2262`, `Local\SkyCraft_v1`, a DirectComposition overlay, raw-input handover, collision and render rings, world scanning), and the Titanfall 2 bridge (`:2263-3743`, `Local\SCTitanLink_v1`, its own overlay, starting the EA app and `NorthstarLauncher.exe`, a pilot simulation). Each becomes an **optional built-in**:
 
-TitanLink's Northstar side sets `ns_auth_allow_insecure 1`, `sv_cheats 1`, and turns off reporting to Northstar's master server for its local match (TitanLink `plugin.cpp:356-366`). That's a local, unlisted match. It still switches off an authentication check in another game, so it's flagged for the maintainer under the new scope rule (open question 10). Nothing in the bridge connects to EA's or Northstar's online services beyond what the player's own Titanfall 2 launch does.
+- **Behind a CMake option,** `SC_OFFLINE_BRIDGE_TITANLINK` / `SC_OFFLINE_BRIDGE_VOXEL`, and **excluded from the default release zip** (resolved: bridges are not in the shipped build). Built or not, a bridge is off until the player enables it.
+- **On `sco.ipc`.** The mappings become `Local\SCO_titanlink.link` and `Local\SCO_voxel_bridge.link` with the `sc_ipc.h` header and rings; the bridge's own blocks (`ScBlock`, `TfBlock`) keep their layouts behind it, pinned by `static_assert`. The other side (the Northstar plugin `TitanLink/src/plugin.cpp`; the voxel-game mod, whose source isn't in the download) includes only MIT `sc_ipc.h`.
+- **Overlay and input** become one sc-offline helper (`src/bridges/overlay.cpp`); raw-input "capture while a mode is active" is a candidate for a later `sco.ui` minor. **Process launching** (the EA app, Northstar) stays in `builtins/titanlink`, only on the player's key press, logged with the full command line.
+- **To settle in the bridge PRs:** where the Northstar and voxel-game sides live (sc-offline, their own repos, or outside), and whether TitanLink's Titanfall-side local-match settings (`ns_auth_allow_insecure`, `sv_cheats` in Titanfall 2, not Star Citizen) are in scope — a Titanfall local match, flagged for the maintainer at that PR. Neither bridge connects to any online service beyond what the player's own second game already does.
+
+### 4.5 Packaging prerequisites
+
+Before the services ship, the SDK zip must carry the headers plugins build against:
+
+- **`include/sc_spatial.h`** is promoted from sc-offline's `src/builtins/spatial_service.h` (the `teleport.spatial` table) into a shipped header and added to `sdk/package.py`'s file list, so a plugin that reads positions (and the ghost receiver) has a stable header. `spawn.entities` (now 1.2) ships the same way.
+- **`sdk/third_party/imgui/`** gains `imconfig.h`, `imgui.h` and `LICENSE.txt` (**never `imgui_internal.h`**), so a plugin that draws in an `sco.ui` overlay compiles against the same ImGui the product uses. A CI check compares these **byte for byte** against sc-offline's `src/third_party/imgui/` copies, failing if they drift.
+- **Zone persistence.** A `zone_id` is a volatile streaming handle, so anything saved or sent keeps the **zone name plus double coordinates**, never the raw id (section 3.4). This already holds for `sco.storage` saves (saved spots) and now for `ZonePose` on the wire; `package.py` and the docs state it as a rule.
 
 ## 5. Risks
 
 | Risk | Mitigation |
 |---|---|
-| Game patches break network rows (about 35, deeper than any so far) | One capability per group, so a group fails alone. `sco-sigcheck` on patch day. Layout checks in every resolver. `MidHook` instead of byte stubs, so a moved site is a row fix, not a stub rewrite |
-| Joining doesn't work without the anti-cheat step | Not worked around. R1 finds out; the maintainer decides what happens next (open question 1) |
-| Terms-of-service questions | The maintainer judges, possibly with advice. The scope text says plainly what is and isn't done |
-| A session exposes a player's PC | Passphrase and authenticated packets, LAN-only by default, a scoped firewall rule, direction flags, size and rate limits, no remote console, no raw game memory or code addresses on the wire, no files named by peers |
-| Peers with different plugins or versions | Type tables negotiated at join; `SCO_UNAVAILABLE` per type; the protocol version is checked in the hello |
-| Desync between peers' views | The game's netcode stays authoritative for entities. Shared things are spawned only by the host, and features ask the host instead of spawning locally |
-| Validation relaxations seen as cheating aids | Separate capabilities, host-controlled, only in a joined session, never without the anti-cheat-absent check (open question 2) |
-| Bridges launching other programs or sharing memory | Off by default at build time and run time; channels are user-only, per plugin, size-capped and released on unload |
-| Network thread or handler faults | Guarded callouts per plugin. The network thread never calls plugin code |
+| A patch moves one of the benign rows | Only three benign capabilities (session read, `game.post_update`, `net.flymode`); `sco-sigcheck` runs them each patch, every resolver fails with a static reason, a failed row disables only its capability, and `MidHook` means a moved site is a row fix, not a stub rewrite |
+| A permanently-excluded patch creeps back | Each is named with its fork location in [section 2](#permanent-exclusions-never-ported); a PR or plugin reintroducing one is out of scope and closed |
+| A session exposes a player's PC | PBKDF2 passphrase, per-packet HMAC, monotonic `seq` with a replay window, LAN-only default, a `localsubnet` firewall rule, per-plugin quotas, channel-ownership checks, no remote console, no raw objects or code addresses on the wire |
+| Traffic readable on the path | Authenticated and integrity-protected but plaintext; players are told plainly to run sessions over a VPN for confidentiality |
+| A hostile peer feeds bad data | Only semantic fields cross the wire and each side builds its own objects with game calls; `sc_ipc.h` bounds-checks every offset and length against the mapping size and validates epoch and sequence |
+| Peers with different plugins or versions | `requires = sco.net` gates discovery; channel tables are exchanged at join and a missing channel is a no-op; the protocol version is checked in the handshake |
+| Ghost drift or precision | Poses carry a zone **name** plus zone-local doubles, resolved on the receiver; `set_entity_transform` moves only the caller's own ghosts |
+| Bridges launching other programs or sharing memory | Optional, excluded from the release zip, off until the player enables them; mappings are user-only, per plugin, size-capped and released on unload |
+| Network thread or callback faults | Guarded callouts per plugin; the network thread never calls plugin code |
 
 ## 6. Plan: pull requests in order
 
-sco-core first, then sc-offline. "In game" means checks the maintainer runs, named in each PR from sc-offline's `docs/features.md` plus the multiplayer additions.
+The directive's order. "In game" means checks the maintainer runs, from sc-offline's `docs/features.md` plus the multiplayer additions. Each sc-offline PR moves the submodule pin.
 
 | # | Repo | PR | Done when |
 |---|---|---|---|
-| 1 | both (docs) | Scope rules: the section 1 wording in sco-core `README.md`, `CONTRIBUTING.md`, `sdk/docs/plugin-rules.md`, `docs/framework.md` (Goal, Decisions), and sc-offline `README.md`, `CONTRIBUTING.md` | CI green in both; the maintainer approves the wording |
-| R1 | sco-core (docs) | Research, read-only. On 4.10.196, with the fork's dedicated server and client (built locally by the maintainer, not by CI) and **the anti-cheat step left out**, does a client join? Record the result here | The result is written into this doc. If the join fails, the plan stops after PR 5 for the session pieces, pending open question 1 |
-| 2 | sco-core | `sco::net` core: `src/net/` (Winsock and POSIX socket layers, `Core`, reliable layer, HMAC-SHA-256, handshake, limits), `include/sco/net.h`; the in-process tests with two or more cores and the lossy transport; CONTRIBUTING's portable-files list | CI green on all jobs, including TSan |
-| 3 | sco-core | The `sco.net` 1.0 service: `include/sco_net.h`, `tests/abi_net.c`, the events, the game-thread dispatch in `sco::app::Tick`, `scosdk/net.hpp`, `Sco.Sdk` `Net` with its pin, sco-lua's `sco.net` with `tests/test_lua.cpp` cases, `sdk/examples/net_echo`, the `sco-host-sim` options and the two-process CTest; `docs/net.md` and `api-v1.md` § host-owned services | CI green on Linux and Windows; the two-process test passes in CI; the SDK zip builds and checks `net_echo` |
-| 4 | sco-core | `sco.ipc` 1.0: `include/sco_ipc.h`, `include/sco_ipc_wire.h`, `tests/abi_ipc.c`, `src/ipc/`, the two-process and TSan tests, scosdk and C# wrappers, `docs/ipc.md` | CI green, including the second-process test on Windows |
-| 5 | sco-core | `sco::hook::MidHook` with tests; the `game.post_update` row and the `frame` event | CI green; `sco-sigcheck` on 4.10.196 shows `game.post_update` OK |
-| 6 | sco-core | `sco::game::net`: the rows of section 3.2 byte for byte (first commit), fixes for 4.10.196 (second commit), `net_hooks.cpp`, `include/sco/game/net.h`, the capabilities; the anti-cheat step not included. The flymode and validation pieces only as open question 2 decides | CI green; `sco-sigcheck` on 4.10.196 shows every `net.*` row OK, pasted in the PR |
-| 7 | sc-offline | Bump sco-core. `builtins/multiplayer`: session control, admission, join state machine, layout, visibility, the Multiplayer tab. The launcher's `host` and `join`, passphrase, scoped firewall rule (listed and undone, per CONTRIBUTING). No domain features yet | CMake MSVC build and `tools/check.sh` green. In game: offline checklist unchanged with multiplayer off; two PCs (or one PC with the server plus a second PC): host, join with the right passphrase, refused with a wrong one, both players see each other, "Go to" works, leave and rejoin |
-| 8 | sc-offline | `spawn` and `crew` on `sco.net`: spawn requests, ATC retrieval, seat jobs, seat actions | In game: a joiner spawns a ship and is seated, the other player sees it; ASOP retrieval works for the joiner; offline spawn checklist unchanged |
-| 9 | sc-offline | `npc`, `build`, `loadout`, `ammo`, player states | In game: each feature from a joiner shows up for both players; gear seen by the other player; offline checklists unchanged |
-| 10 | sc-offline | `contracts` on `sco.net` with semantic objective messages; wallets on `sco.storage` | In game: a joiner takes a contract, sees its objectives and markers, completes it, gets paid; the host's contracts unchanged; offline checklist unchanged |
-| 11 | sc-offline | `builtins/titanlink` on `sco.ipc` behind `SC_OFFLINE_BRIDGE_TITANLINK`, with the Northstar side on `sco_ipc_wire.h` (where it lives: open question 9) | CI builds with the option ON and OFF; in game with Titanfall 2 installed: link, pilot mode, titan drop, unlink when either side quits |
-| 12 | sc-offline | `builtins/voxel_bridge` on `sco.ipc` behind `SC_OFFLINE_BRIDGE_VOXEL` | CI builds both ways; in game, once the voxel side's source is settled (open question 9) |
+| 1 | both (docs) | **Scope rules** (gate, handled by another worker): the [section 1](#1-scope-what-changes-and-what-doesnt) wording in sco-core `README.md`, `CONTRIBUTING.md`, `sdk/docs/plugin-rules.md`, `docs/framework.md`, and sc-offline `README.md`, `CONTRIBUTING.md` | CI green in both repos; the maintainer approves the wording |
+| 2 | sco-core (docs) | **Changelog + tag:** a `CHANGELOG.md` entry for this design and the SDK `VERSION`/tag note; links from `docs/framework.md` and `docs/README.md` | CI green; the entry and links are in place |
+| 3 | sco-core | **Packaging prerequisites:** promote `include/sc_spatial.h` from sc-offline, add it and `spawn.entities` to `sdk/package.py`; vendor `sdk/third_party/imgui/` (`imconfig.h`, `imgui.h`, `LICENSE.txt`, never `imgui_internal.h`) with a byte-for-byte CI check against sc-offline | CI green incl. the ImGui drift check; the SDK zip carries `sc_spatial.h` and an example builds against it |
+| 4 | sco-core | **`sc_ipc.h` + bridges:** MIT `include/sc_ipc.h` (SPDX tag; interface exception in `LICENSE`/`CONTRIBUTING`), the `sco.ipc` service (`include/sco_ipc.h`, `tests/abi_ipc.c`, `src/ipc/`), the voxel-bridge wire; two-process and TSan tests | CI green incl. the second-process test on Windows |
+| 5 | sco-core | **`sco.net`:** `src/net/` (`socket_win/posix`, `Core`, reliable+unreliable, vendored `third_party/sha2` SHA-256/HMAC/PBKDF2, handshake, quotas), `include/sco_net.h` + `tests/abi_net.c`, the `sco.net` capability, `sco::game::net` benign rows + `net_hooks.cpp` + `MidHook` + `game.post_update` + the `frame` event, scosdk/C#/Lua, the two-process `sco-host-sim` test + `net_echo` | CI green incl. TSan; the two-process test passes in CI; `sco-sigcheck` on 4.10.196 shows `net.*` and `game.post_update` OK, pasted in the PR |
+| 6 | sc-offline | **`spawn.entities` 1.2:** `set_entity_transform`, the version bump and pin | CMake MSVC build and `tools/check.sh` green; in game: an entity the plugin spawned moves via the call; the offline spawn checklist is unchanged |
+| 7 | sc-offline | **`builtins/multiplayer` + `builtins/titanlink`:** session, presence, ghosts and the Multiplayer tab; `titanlink` on `sco.ipc` behind its option; the launcher `host`/`join` and the `localsubnet` firewall rule (listed and undone). `voxel_bridge` may follow | CMake MSVC + `check.sh` green; offline checklist unchanged with no session; two PCs over a LAN or VPN: host, join with the right passphrase, refused with a wrong one, both see each other's ghost avatars and ships, "Go to" works, leave and rejoin; with Titanfall 2: link, pilot mode, unlink when either side quits |
 
-PRs 2-5 need no game and can land in any order after PR 1. PR 6 needs the game exe only for `sco-sigcheck`. Each sc-offline PR moves the submodule pin.
+PRs 1-5 need no running game (PR 5 needs the exe only for `sco-sigcheck`).
 
-## Open questions
+## Resolved by the maintainer's directive (2026-10-09)
 
-1. **If R1 shows joining fails without the anti-cheat step,** what then? This design proposes no workaround. The options are to stop the server-based join, or for the maintainer to decide on a different approach after their own review.
-2. **The validation relaxations** (`net.flymode`; `pl_staging.forceClientValidation`; the validation wait): port them as host-controlled capabilities as proposed, or leave them out?
-3. **Network reach by default:** LAN only, with VPN ranges on request (proposed), or also any address behind an explicit setting? And which VPN ranges? The fork's launcher mentions Radmin VPN.
-4. **Encryption:** is authenticated but unencrypted traffic acceptable for 1.0 (LAN or VPN), or should sessions be encrypted? Encryption would mean a crypto dependency (Windows CNG on Windows, something portable for the tests), which CONTRIBUTING asks to discuss first.
-5. **License of `sco_ipc_wire.h`** for the other side of a bridge (a Northstar plugin, a game mod): GPL-3.0 like the rest, or a permissive license for that one header?
-6. **Lua and `sco.net`:** the proposed binding exposes typed messages and the peer list, inside the step budget, with no session control. Is that the right line for the sandbox, or should Lua stay receive-only at first?
-7. **Remote console:** drop it (proposed), or an allowlist of CVars the host approves?
-8. **Bridge builds:** in the regular release with the bridges off at run time, or only in a separate build?
-9. **Where the other sides live:** TitanLink's Northstar plugin and mod (the fork's `TitanLink/`), and the Minecraft-side program, which isn't in the download at all. In sc-offline, in their own repos, or outside the project?
-10. **TitanLink's local-match settings** in Titanfall 2 (`ns_auth_allow_insecure 1`, `sv_cheats 1`, master-server reporting off): acceptable under the new scope rule for a local, unlisted match?
-11. **Listen servers:** the fork supports only a dedicated server process. Should a player's own game host directly (no second process)? That would need its own research.
-12. **The `entity` field in `sco_net_peer_info`:** keep it game-specific in a game-agnostic table (proposed: it's an opaque id the product sets, 0 in products without one), or move it to a product service?
-13. **Terms of service.** Is shipping multiplayer, including the dedicated-server pieces and the joiner-account row, acceptable under CIG's terms as the maintainer reads them, and does the maintainer want outside advice first? This design takes no position, and where the code lives doesn't change the answer.
+The directive settled the earlier open questions. This document takes no legal position on any of them.
+
+| Topic | Decision |
+|---|---|
+| Model | Co-presence by ghost replication; the dedicated-server model and the game's `connect` are dropped. Pure P2P (one player's client hosts); a headless broker is deferred to v1.x |
+| Permanent exclusions | The anti-cheat skip (`F:multiplayer.cpp:1417`), joiner entitlement/account tampering (`:1434`), host-type forcing (`:1366`), network-context override (`:1399`) and the unauthenticated remote console (`Cmd_Console`) are never in any repo, header or official plugin. No research into joining without the anti-cheat step (R1 removed) |
+| Benign rows | Only session connect, the main tick, and the local-player fly-mode toggle; kept honest by `sco-sigcheck` each patch, never assumed stable |
+| `sco.net` ABI | A plain C table `sco_net_v1` (no virtual `IScoNetService`); `uint32_t size` first, `int` returns, `uint32` sizes, ids never pointers, the peer name by sized copy (no inline `char[32]`) |
+| `sco.net` capability | The host publishes the capability `sco.net` so `requires = sco.net` validates in `discover.cpp` |
+| Crypto | No OpenSSL; vendored single-file SHA-256/HMAC/PBKDF2; PBKDF2 from the passphrase with a per-session salt and a documented iteration count; per-packet HMAC, monotonic `seq`, replay window, constant-time compare; authenticated but plaintext on the wire, a VPN for confidentiality; LAN-only by default |
+| IPC header | `include/sc_ipc.h`, MIT with an SPDX tag and an interface exception in `LICENSE`/`CONTRIBUTING`; the `sco.ipc` service stays as the in-game wrapper |
+| `spawn.entities` | 1.2 adds `set_entity_transform`, own-spawned entities only |
+| Bridges | Optional built-ins, excluded from the default release zip |
+| Remote console | Dropped |
+| Movement-validation relaxations | Dropped (the staging / validation-wait cluster); only the local-player noclip fly-mode toggle is kept, gated on no-anti-cheat and an active session |
+| In-game hosting | None beyond the P2P host client |
+| Peer entity field | Kept, session-scoped (0 when streamed out) |
+| Lua | Peer list + pub/sub only, when the manifest `requires = sco.net`; no session control |
+| Terms of service | The maintainer decided to proceed; this document takes no legal position |
