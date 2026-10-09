@@ -141,6 +141,11 @@ splice 0: at 134562223, removes 4, adds 4; patched value reads 2.5
 
 The same with one float override in each of 1,000 records: 1.9 ms for the operations, `Emit` 89 ms including re-validation (which composes and re-parses the whole patched file in memory), re-parse `layout: OK`.
 
+
+## In game: `sco::game::pak`
+
+`sco-dcb` works on a file on disk. In game, the engine reads `Game2.dcb` through CryPak, and `sco::game::pak` (`sco/game/pak.h`, library `sco_pak`) serves it from a `sco::vfs` mount while the DataCore loader runs. The tracked file gets the virtual bytes on the loader's thread; every other file and thread gets the engine's own. A mount that doesn't apply (expected bytes differ, a transform refuses) leaves the game loading its own data. The product enables it once after `sco::ResolveAll` (sc-offline: plan PR 8), and `sco-sigcheck` checks its `pak.*` rows on patch day. Reference: [API § sco/game/pak.h](api.md#scogamepakh-the-crypak-adapter).
+
 ## Patch-day routine
 
 1. Extract `Game2.dcb` from the new `Data.p4k` (above).

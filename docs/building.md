@@ -63,7 +63,8 @@ The build is 64-bit only; configuring for 32 bits stops with an error.
 
 | Target | Sources | Links |
 |---|---|---|
-| `sco_core` | Scanners, signatures, log/status, PE file loader, `src/game/*.cpp`; on Windows also `sco_image_win.cpp` | |
+| `sco_core` | Scanners, signatures, log/status, PE file loader, `src/game/*.cpp` except `pak_hooks.cpp`; on Windows also `sco_image_win.cpp` | |
+| `sco_pak` | `src/game/pak_hooks.cpp`: the CryPak adapter, `sco/game/pak.h` (its rows are in `sco_core`) | `sco_core`, `sco_hook`, `sco_vfs`, `sco_host` |
 | `sco_runtime` | `src/api/sco_tasks.cpp`, `sco_events.cpp`, `sco_commands.cpp`, `sco_services.cpp` | |
 | `sco_hook` | `src/hook/sco_hook.cpp`: detours and near-code memory, `sco/hook.h` (x86-64) | |
 | `sco_engine` | `src/engine/zone.cpp`: the zone tree, `sco/engine/zone.h` (spatial math `sco/engine/types.h` is header-only) | |
@@ -113,7 +114,8 @@ add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
 | `test_core` | Scanners and the signature registry against a synthetic image |
 | `test_runtime` | Task queue, event bus, command registry, `Release` |
 | `test_host` | Capabilities and the `sco_api` table |
-| `test_hook` | Detours over small functions written into executable memory |
+| `test_hook` | Detours over small functions written into executable memory; vtable slot swaps |
+| `test_pak` | `sco::game::pak` over a fake `ICryPak` (a real vtable) and a detoured fake loader: the load window, a served mount, passthrough of other files, a second `.dcb` and a second thread, an inert mount read from 0, offsets past 2 GiB, `Disable` |
 | `test_spatial` | Vector, quaternion and transform math; the zone tree (chains, round trips at 1e11 m, failures, readers beside a writer) |
 | `test_sdk` | The C++20 SDK layer (`include/scosdk/`): two SDK plugins over the real host table |
 | `test_plugins` | `plugin.ini`, discovery, the content index and the native loader against the fake plugins in `<build>/tests/out/plugins/` |
@@ -159,4 +161,4 @@ Every workflow has `contents: read` permissions and pins its actions to commit S
 
 ## Adding a source file
 
-The two builds list sources separately. A new `.cpp` goes into both `tools/test.sh` (`APP` for anything `sco_app` links) (and `tools/test-win.sh` if `test_plugins` links it) and the matching library in `CMakeLists.txt`; a new fake-plugin mode goes into the `for m in ...` loops of both scripts and `SCO_FAKE_PLUGIN_MODES`.
+The two builds list sources separately. A new `.cpp` under `src/game/` is picked up by both builds' globs (`pak_hooks.cpp` is the one exclusion, for `sco_pak` and `test_pak`). Any other new `.cpp` goes into both `tools/test.sh` (`APP` for anything `sco_app` links) (and `tools/test-win.sh` if `test_plugins` links it) and the matching library in `CMakeLists.txt`; a new fake-plugin mode goes into the `for m in ...` loops of both scripts and `SCO_FAKE_PLUGIN_MODES`.
