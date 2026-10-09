@@ -189,6 +189,13 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_host PRIVATE sco_host)
   sco_project_target(test_host)
   add_test(NAME test_host COMMAND test_host)
+
+  # The C++20 SDK layer (include/scosdk/): two SDK plugins over the real host table.
+  add_executable(test_sdk tests/test_sdk.cpp)
+  target_link_libraries(test_sdk PRIVATE sco_host)
+  sco_project_target(test_sdk)
+  add_test(NAME test_sdk COMMAND test_sdk)
+
   add_executable(test_hook tests/test_hook.cpp)
   target_link_libraries(test_hook PRIVATE sco_hook)
   add_test(NAME test_hook COMMAND test_hook)
