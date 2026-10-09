@@ -4,8 +4,6 @@ What each change means for plugin authors and for products built on sco-core (sc
 
 ## Unreleased
 
-- **`teleport.to_camera` survives Star Citizen 4.10.196** (the 2026-10-09 patch, `StarCitizen.exe` 4.10.196.36804): the row failed with "layout changed at +0x17a" because the four camera fields the handler loads at +0x17A..+0x1BD moved by 8 bytes (`0x6D3C` -> `0x6D44`, ...); the code around them was unchanged. Those checks now pin the instructions (`vmovss`/`vmovups`/`vmovsd` from `[rax+disp32]`) and wildcard the field offset, which nothing reads. `sco-sigcheck`: 8/8 OK on both 4.10.193.11644 and 4.10.196.36804 (the three dependent `teleport.*` rows resolve again).
-
 ## sdk-v1.1.0 (2026-10-09)
 
 The first SDK release. The plugin ABI is version 1.1 and stable from here on: version 1 only grows at the end of structs, so plugins built with this SDK keep loading in later 1.x hosts.
@@ -62,6 +60,7 @@ Every change since the first commit, newest first:
 - **Runtime and ABI review fixes**: a task that ticks or drains no longer corrupts the queue (nested drains are refused); `Release(owner)` removes an owner's subscriptions, commands, queued tasks and queued invokes, for plugin unload; `Unsubscribe` applies at once and the docs give the safe point for freeing `ctx`; `RegisterCommand` copies every string and arg def, takes an owner, and refuses reserved or foreign prefixes; `Bool` args must be 0 or 1; nothing throws. `sco_api.h`: 4-byte enums (`_FORCE32`), `sco_command.arg_def_size` so `sco_arg_def` can grow, `done` and `list_commands` rules spelled out. `tools/test.sh` pins the ABI for `x86_64-pc-windows-msvc` and with `-fshort-enums`, and runs real cross-thread overlap tests under ThreadSanitizer.
 - **Plugin ABI 1.0-pre**: `include/sco_api.h`, the plain-C header plugins will include ([reference](docs/api-v1.md)). Declarations only; nothing implements or loads it yet. `tests/abi_v1.c` pins every v1 size, offset, enum value and signature; `tools/test.sh` compiles it as C11 and C++20 (CI now passes `CC=clang`).
 - **Docs**: README, [How it works](docs/architecture.md), [Adding a signature](docs/adding-signatures.md), [Checking a game build](docs/sigcheck.md), [API reference](docs/api.md), CONTRIBUTING.md and this changelog.
+- **`teleport.to_camera` survives Star Citizen 4.10.196** (the 2026-10-09 patch, `StarCitizen.exe` 4.10.196.36804): the row failed with "layout changed at +0x17a" because the four camera fields the handler loads at +0x17A..+0x1BD moved by 8 bytes (`0x6D3C` -> `0x6D44`, ...); the code around them was unchanged. Those checks now pin the instructions (`vmovss`/`vmovups`/`vmovsd` from `[rax+disp32]`) and wildcard the field offset, which nothing reads. `sco-sigcheck`: 8/8 OK on both 4.10.193.11644 and 4.10.196.36804 (the three dependent `teleport.*` rows resolve again).
 
 ## 2026-10-08: first commit (`01d579c`)
 
