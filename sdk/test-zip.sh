@@ -51,6 +51,41 @@ grep -q 'invoke  my_plugin.ping -> ok "pong"' "$WORK/template.txt"
 "$CHECK" "$P/travel_pack"
 "$CHECK" "$P/greeter"
 
+# sco-plugin-check reads plugin.ini with the host's rules (src/plugins/manifest.cpp): it refuses
+# what the game refuses and accepts what the game accepts.
+CASES="$WORK/cases"
+case_ini() {   # case_ini [key=value]...: a lua plugin.ini with these keys changed, in $CASES/<id>
+  local id=bad name=Case version=1.0 author=Someone api=1.0 kind=lua entry=main.lua requires=teleport extra= kv
+  for kv in "$@"; do local "$kv"; done
+  mkdir -p "$CASES/$id"
+  : > "$CASES/$id/main.lua"
+  printf 'id = %s\nname = %s\nversion = %s\nauthor = %s\napi = %s\nkind = %s\nentry = %s\nrequires = %s\n%s\n' \
+    "$id" "$name" "$version" "$author" "$api" "$kind" "$entry" "$requires" "$extra" > "$CASES/$id/plugin.ini"
+  echo "$CASES/$id"
+}
+refused() {    # refused <what> [key=value]...: the checker must fail on that plugin.ini
+  local what=$1 dir code
+  shift
+  dir=$(case_ini "$@")
+  set +e; "$CHECK" "$dir" > "$WORK/case.txt"; code=$?; set -e
+  { [ $code -eq 1 ] && grep -q '^FAIL plugin.ini' "$WORK/case.txt"; } || { cat "$WORK/case.txt"; echo "sco-plugin-check accepted $what"; exit 1; }
+}
+refused "requires = a..b" "requires=a..b"
+refused "a capability listed twice" "requires=teleport, teleport"
+refused "'*' in entry" "entry=main*.lua"
+refused "a control character in entry" "entry=main$(printf '\001').lua"
+refused "an empty author" "author="
+refused "a control character in name" "name=Case$(printf '\177')"
+refused "api = 1.0x" "api=1.0x"
+refused "api = +1.0" "api=+1.0"
+refused "api = -0.0" "api=-0.0"
+refused "a plugin.ini over 16 KiB" "extra=;$(head -c 17000 /dev/zero | tr '\0' x)"
+good=$(case_ini id=good "extra=homepage = a
+homepage = b
+notes = $(head -c 3000 /dev/zero | tr '\0' x)")
+"$CHECK" "$good" > "$WORK/case.txt" || { cat "$WORK/case.txt"; echo "sco-plugin-check refused unknown keys or a long line"; exit 1; }
+echo "sco-plugin-check: 10 bad plugin.ini refused, unknown keys and a 3000-byte line accepted"
+
 if [ "${SCO_SDK_NO_LUA:-0}" = 1 ]; then
   echo "lua-check: skipped (SCO_SDK_NO_LUA=1)"
 else
