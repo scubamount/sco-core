@@ -57,6 +57,50 @@ static void ReleaseB(void*) { sco::Release(&kTaskB); }
 static std::atomic<int> g_crossRan{ 0 };
 static void CountCross(void*) { g_crossRan.fetch_add(1); }
 
+static char kTaskSelf;
+static int g_selfRuns = 0;
+static void SelfRepost(void*) {   // posts itself again every time it runs
+    ++g_selfRuns;
+    CHECK(sco::Post(SelfRepost, nullptr, &kTaskSelf) == Result::Ok);
+}
+
+static std::vector<int> g_dropped;
+static void RecordDrop(void* ctx) { g_dropped.push_back(static_cast<int>(reinterpret_cast<intptr_t>(ctx))); }
+static char kTaskC;
+
+static int g_counted = 0;
+static void Count(void*) { ++g_counted; }
+
+// 4 threads post 2,500 tasks each while the game thread drains: every task runs exactly once and
+// each thread's tasks run in the order that thread posted them.
+static void TestTasksManyThreads() {
+    constexpr int kThreads = 4, kEach = 2500;
+    g_order.clear();
+    std::atomic<int> done{ 0 }, refused{ 0 };
+    std::vector<std::thread> posters;
+    for (int t = 0; t < kThreads; ++t)
+        posters.emplace_back([&, t] {
+            for (int i = 0; i < kEach; ++i)
+                if (sco::Post(Record, Tag(t * 100000 + i)) != Result::Ok) ++refused;
+            ++done;
+        });
+    size_t ran = 0;
+    while (done.load() < kThreads) ran += sco::DrainTasks();
+    for (auto& p : posters) p.join();
+    ran += sco::DrainTasks();
+    CHECK(refused == 0);
+    CHECK(ran == static_cast<size_t>(kThreads * kEach) && g_order.size() == ran && sco::QueuedTasks() == 0);
+    int next[kThreads] = {};
+    bool ordered = true;
+    for (const int v : g_order) {
+        const int t = v / 100000, i = v % 100000;
+        if (t < 0 || t >= kThreads || i != next[t]) { ordered = false; break; }
+        ++next[t];
+    }
+    CHECK(ordered);
+    for (int t = 0; t < kThreads; ++t) CHECK(next[t] == kEach);
+}
+
 static void TestTaskQueue() {
     g_order.clear();
     CHECK(sco::Post(nullptr, nullptr) == Result::BadArg);
@@ -69,18 +113,69 @@ static void TestTaskQueue() {
     CHECK((g_order == std::vector<int>{ 0, 1, 2, 3, 4 }));
     CHECK(sco::QueuedTasks() == 0);
 
-    // Bound: 256 fit, the 257th is refused and nothing is lost or reordered.
+    // Past the ring: posts go to the overflow and run after the ring, in posting order.
     g_order.clear();
+    const size_t kPast = sco::kMaxQueuedTasks + 100;
     int ok = 0;
-    for (size_t i = 0; i < sco::kMaxQueuedTasks; ++i) ok += sco::Post(Record, Tag(static_cast<int>(i))) == Result::Ok;
-    CHECK(ok == static_cast<int>(sco::kMaxQueuedTasks));
-    CHECK(sco::Post(Record, Tag(-1)) == Result::TooMany);
-    CHECK(sco::DrainTasks() == sco::kMaxQueuedTasks);
-    bool inOrder = g_order.size() == sco::kMaxQueuedTasks;
+    for (size_t i = 0; i < kPast; ++i) ok += sco::Post(Record, Tag(static_cast<int>(i))) == Result::Ok;
+    CHECK(ok == static_cast<int>(kPast) && sco::QueuedTasks() == kPast);
+    CHECK(sco::DrainTasks() == kPast);
+    bool inOrder = g_order.size() == kPast;
     for (size_t i = 0; inOrder && i < g_order.size(); ++i) inOrder = g_order[i] == static_cast<int>(i);
     CHECK(inOrder);
-    CHECK(sco::Post(Record, Tag(7)) == Result::Ok);   // room again after the drain (ring wrapped)
+    CHECK(sco::Post(Record, Tag(7)) == Result::Ok);   // back in the ring (wrapped)
     CHECK(sco::DrainTasks() == 1 && g_order.back() == 7);
+
+    // FIFO across the boundary: a task posted mid-drain, when the ring has room again but the
+    // overflow still holds older tasks, queues behind the overflow and waits for the next drain.
+    g_order.clear();
+    CHECK(sco::Post(PostAgain, Tag(-2)) == Result::Ok);
+    for (int i = 0; i < static_cast<int>(sco::kMaxQueuedTasks) + 9; ++i) CHECK(sco::Post(Record, Tag(i)) == Result::Ok);
+    CHECK(sco::DrainTasks() == sco::kMaxQueuedTasks + 10 && sco::QueuedTasks() == 1);
+    inOrder = g_order.size() == sco::kMaxQueuedTasks + 10 && g_order[0] == -2;
+    for (size_t i = 1; inOrder && i < g_order.size(); ++i) inOrder = g_order[i] == static_cast<int>(i - 1);
+    CHECK(inOrder);
+    CHECK(sco::DrainTasks() == 1 && g_order.back() == 99);
+
+    // A task that re-posts itself runs once per drain, never twice in one.
+    g_selfRuns = 0;
+    CHECK(sco::Post(SelfRepost, nullptr, &kTaskSelf) == Result::Ok);
+    CHECK(sco::DrainTasks() == 1 && g_selfRuns == 1 && sco::QueuedTasks() == 1);
+    CHECK(sco::DrainTasks() == 1 && g_selfRuns == 2 && sco::QueuedTasks() == 1);
+
+    // Release drops an owner's tasks from the ring and the overflow, running their drop
+    // callbacks in posting order; the rest run in order.
+    g_order.clear();
+    g_dropped.clear();
+    for (int i = 0; i < 200; ++i) CHECK(sco::Post(Record, Tag(i)) == Result::Ok);
+    for (int i = 0; i < 100; ++i) {   // with the SelfRepost task: 28 in the ring, 72 in the overflow
+        CHECK(sco::detail::PostOwned(Record, RecordDrop, Tag(1000 + i), &kTaskC) == Result::Ok);
+        CHECK(sco::Post(Record, Tag(200 + i)) == Result::Ok);
+    }
+    CHECK(sco::QueuedTasks() == 401);
+    size_t removed = 0;
+    CHECK(sco::Release(&kTaskC, &removed) == Result::Ok && removed == 100);
+    inOrder = g_dropped.size() == 100;
+    for (size_t i = 0; inOrder && i < g_dropped.size(); ++i) inOrder = g_dropped[i] == 1000 + static_cast<int>(i);
+    CHECK(inOrder);
+    CHECK(sco::QueuedTasks() == 301);
+    CHECK(sco::detail::PostOwned(Record, RecordDrop, Tag(1), &kTaskC) == Result::BadArg);
+    CHECK(sco::DrainTasks() == 301 && g_selfRuns == 3);
+    inOrder = g_order.size() == 300;
+    for (size_t i = 0; inOrder && i < g_order.size(); ++i) inOrder = g_order[i] == static_cast<int>(i);
+    CHECK(inOrder);
+    CHECK(sco::Release(&kTaskSelf, &removed) == Result::Ok && removed == 1 && sco::QueuedTasks() == 0);
+
+    // Hard cap: kMaxQueuedTasksHard waiting in all, then TooMany with nothing queued; one drain
+    // runs them all.
+    g_counted = 0;
+    ok = 0;
+    for (size_t i = 0; i < sco::kMaxQueuedTasksHard; ++i) ok += sco::Post(Count, nullptr) == Result::Ok;
+    CHECK(ok == static_cast<int>(sco::kMaxQueuedTasksHard) && sco::QueuedTasks() == sco::kMaxQueuedTasksHard);
+    CHECK(sco::Post(Count, nullptr) == Result::TooMany);
+    CHECK(sco::QueuedTasks() == sco::kMaxQueuedTasksHard);
+    CHECK(sco::DrainTasks() == sco::kMaxQueuedTasksHard && g_counted == static_cast<int>(sco::kMaxQueuedTasksHard));
+    CHECK(sco::QueuedTasks() == 0);
 
     // A task posted while draining waits for the next drain.
     g_order.clear();
@@ -373,12 +468,13 @@ static void TestCommands() {
     std::thread([&] { r = sco::Invoke(nullptr, nullptr, 0, OnDone, &qe); }).join();
     CHECK(r == Result::BadArg && sco::QueuedTasks() == 0 && qe.calls == 1);
 
-    // Off-thread Invoke on a full queue: refused, done never called, nothing leaks (ASan).
-    for (size_t i = 0; i < sco::kMaxQueuedTasks; ++i) sco::Post(CountCross, nullptr);
+    // Off-thread Invoke on a full queue (the hard cap): refused, done never called, nothing
+    // leaks (ASan).
+    for (size_t i = 0; i < sco::kMaxQueuedTasksHard; ++i) sco::Post(CountCross, nullptr);
     Done full;
     std::thread([&] { r = sco::Invoke("hello.wave", nullptr, 0, OnDone, &full); }).join();
     CHECK(r == Result::TooMany);
-    CHECK(sco::DrainTasks() == sco::kMaxQueuedTasks && full.calls == 0);
+    CHECK(sco::DrainTasks() == sco::kMaxQueuedTasksHard && full.calls == 0);
 
     // Bool must be 0 or 1.
     sco::Arg badBool[] = { A(2), F(1.0), S("x"), B(true) };
@@ -852,6 +948,7 @@ static void TestRaw() {
 int main() {
     TestBeforeGameThread();   // first: checks the "no game thread yet" state
     TestTaskQueue();
+    TestTasksManyThreads();
     TestEvents();
     TestOverlap();    // before TestCommands, which fills every command slot
     TestCalloutGuard();
