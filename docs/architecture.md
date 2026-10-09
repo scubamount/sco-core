@@ -152,3 +152,7 @@ The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../includ
 | `tests/test_hook.cpp` | Detours over small functions written into executable memory (x86-64) |
 | `tests/test_spatial.cpp` | Spatial math and the zone tree (ASan+UBSan and ThreadSanitizer) |
 | `tools/sco-sigcheck.cpp` | The offline checker |
+| `src/datacore/datacore.cpp` | `sco::datacore::Schema::Parse` (`sco/datacore.h`): the DataCore layout and its validation |
+| `tests/dcb_builder.h` | Synthetic DataCore files for tests (32-, 36- or 40-byte records), written independently of the parser |
+| `tests/test_datacore.cpp` | Parser round trips, each refusal, truncated and corrupted files (ASan+UBSan) |
+| `tools/sco-dcb.cpp` | `sco-dcb info` and `records` over a `Game2.dcb` on disk |
