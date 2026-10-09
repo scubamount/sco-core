@@ -86,3 +86,26 @@ done
   "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
 "$OUT/test_lua" "$ROOT/sdk" "$OUT"
+
+# The host kit (sco/app.h): built-ins, the fake plugins m0 and m11, greeter and travel_pack through
+# sco::app (ASan+UBSan). Then sco-host-sim over the SDK examples, laid out like data/plugins with
+# hello built here as a shared library (CMake: CTest host_sim_examples).
+APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
+     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/game/"*.cpp)
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
+  "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"
+"$OUT/test_app" "$ROOT/sdk" "$OUT"
+SIM=$OUT/sim/plugins
+rm -rf "$OUT/sim"
+mkdir -p "$SIM/hello"
+"$CC" -std=c11 -O1 -Wall -Wextra -Werror -I "$ROOT/include" "${SHARED[@]}" "$ROOT/sdk/examples/hello/hello.c" -o "$SIM/hello/hello.so"
+sed 's/^entry = hello\.dll/entry = hello.so/' "$ROOT/sdk/examples/hello/plugin.ini" > "$SIM/hello/plugin.ini"
+cp -R "$ROOT/sdk/examples/greeter" "$ROOT/sdk/examples/travel_pack" "$SIM/"
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tools/sco-host-sim.cpp" "${APP[@]}" \
+  "$ROOT/src/sco_pe_file.cpp" "${LUA_OBJS[@]}" -ldl -o "$OUT/sco-host-sim"
+if ! "$OUT/sco-host-sim" "$SIM" --ticks 3 --invoke hello.wave "Pilot One" > "$OUT/sim.log"; then
+  cat "$OUT/sim.log"; echo "sco-host-sim: failed"; exit 1
+fi
+cat "$OUT/sim.log"
+grep -qF '[sim] invoke hello.wave -> OK "Hello, Pilot One"' "$OUT/sim.log" || { echo "sco-host-sim: no reply from hello.wave"; exit 1; }
+echo "sco-host-sim: SDK examples load, tick, answer and unload"

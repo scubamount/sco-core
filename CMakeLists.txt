@@ -237,4 +237,39 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua)
   sco_project_target(test_lua)
   add_test(NAME test_lua COMMAND test_lua "${CMAKE_CURRENT_SOURCE_DIR}/sdk" "${SCO_TEST_OUT}")
+
+  # The host kit with built-ins, two fake plugins, greeter and travel_pack.
+  add_executable(test_app tests/test_app.cpp)
+  target_link_libraries(test_app PRIVATE sco_app sco_lua)
+  add_dependencies(test_app ${_fake_targets})
+  sco_project_target(test_app)
+  add_test(NAME test_app COMMAND test_app "${CMAKE_CURRENT_SOURCE_DIR}/sdk" "${SCO_TEST_OUT}")
+
+  # sco-host-sim over the SDK examples, laid out like data/plugins: <out>/sim/plugins/
+  # {hello/{hello.<ext>,plugin.ini}, greeter/, travel_pack/}. Keep in step with tools/test.sh.
+  set(_sim "${SCO_TEST_OUT}/sim/plugins")
+  file(REMOVE_RECURSE "${SCO_TEST_OUT}/sim")
+  add_library(sco_sim_hello SHARED sdk/examples/hello/hello.c)
+  target_include_directories(sco_sim_hello PRIVATE "${SCO_INCLUDE_DIR}")
+  set_target_properties(sco_sim_hello PROPERTIES
+    OUTPUT_NAME hello PREFIX "" SUFFIX ".${_ext}"
+    LIBRARY_OUTPUT_DIRECTORY "$<1:${_sim}/hello>"
+    RUNTIME_OUTPUT_DIRECTORY "$<1:${_sim}/hello>")
+  sco_warnings(sco_sim_hello)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/sdk/examples/hello/plugin.ini" _hello_ini)
+  if(NOT WIN32)
+    string(REPLACE "entry = hello.dll" "entry = hello.so" _hello_ini "${_hello_ini}")
+  endif()
+  file(WRITE "${_sim}/hello/plugin.ini" "${_hello_ini}")
+  file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/sdk/examples/greeter" "${CMAKE_CURRENT_SOURCE_DIR}/sdk/examples/travel_pack"
+       DESTINATION "${_sim}")
+  add_dependencies(sco-host-sim sco_sim_hello)
+  # tests/host_sim.cmake runs the sim and prints "host_sim_examples: FAIL" unless it exits 0 and
+  # answers the invoke; CTest needs the reply and no FAIL line.
+  add_test(NAME host_sim_examples
+           COMMAND "${CMAKE_COMMAND}" "-DSIM=$<TARGET_FILE:sco-host-sim>" "-DROOT=${_sim}"
+                   -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/host_sim.cmake")
+  set_tests_properties(host_sim_examples PROPERTIES
+    PASS_REGULAR_EXPRESSION "hello\\.wave -> OK \"Hello, Pilot One\""
+    FAIL_REGULAR_EXPRESSION "host_sim_examples: FAIL")
 endif()
