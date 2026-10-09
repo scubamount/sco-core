@@ -4,7 +4,7 @@ sco-core is the game-facing core of [sc-offline](https://github.com/scubamount/s
 
 ## What fits
 
-- **Offline, single-player only.** Nothing that connects to Star Citizen's servers, changes online play, or helps cheating or anti-cheat bypass. PRs like that are closed.
+- **Offline, never CIG's servers.** Two kinds of connection are allowed: local IPC with other processes on the same PC (bridges such as Titanfall 2/Northstar or Minecraft), and private co-presence between sc-offline players over a LAN or VPN through `sco.net`. Never: connecting to Star Citizen's servers or online services, public or official online play, getting around anti-cheat or skipping its steps, signature-check bypass, account or entitlement tampering, forcing the game's host type or network context, unauthenticated remote commands between peers, telemetry, or anything that helps cheating in the official game. Full list: [Plugin rules](sdk/docs/plugin-rules.md). PRs like that are closed.
 - **No game files.** Byte patterns and the names of strings the game references are fine. Don't commit pieces of `StarCitizen.exe`, dumps or anything extracted from the game.
 - **No secrets or personal data** in code, tests or logs you paste.
 - **Portable core.** Only `src/sco_image_win.cpp` and the `_WIN32` halves of `src/plugins/loader.cpp` and `src/plugins/guard_win.cpp` may include Windows headers. Everything else must build with clang or gcc on macOS and Linux, so the tests and `sco-sigcheck` keep running without Windows, and with MSVC x64, the real target.

@@ -1,6 +1,6 @@
 # Design: game-file overrides (`sco::vfs`) and a semantic DataCore patcher
 
-**Status: design accepted with the maintainer's decisions of 2026-10-09 ([Decisions](#decisions-maintainer-2026-10-09)). No code yet.** Phase 6 item ([Framework plan](../framework.md#phase-6-the-framework-grows)). Scope rules unchanged: offline single-player only; this is about the game's local data files as the game reads them, nothing else.
+**Status: design accepted with the maintainer's decisions of 2026-10-09 ([Decisions](#decisions-maintainer-2026-10-09)). No code yet.** Phase 6 item ([Framework plan](../framework.md#phase-6-the-framework-grows)). Scope ([plugin rules](../../sdk/docs/plugin-rules.md)): local only; this is about the game's local data files as the game reads them, nothing else.
 
 ## Why
 
