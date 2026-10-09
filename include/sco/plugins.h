@@ -233,8 +233,9 @@ constexpr size_t kMaxPackFiles = 4096;            // per pack; more refuses the 
 // Extensions match case-insensitively. Symlinks are skipped (a pack can't point outside itself).
 class ContentIndex {
 public:
-    // Indexes every Ready data pack in list order and sets it Loaded; a pack over kMaxPackFiles
-    // is set Refused ("too many files") and contributes nothing. Rebuilding replaces the index.
+    // Indexes every Ready or Loaded data pack in list order and sets it Loaded; a pack over
+    // kMaxPackFiles is set Refused ("too many files") and contributes nothing. Rebuilding
+    // replaces the index: it re-reads every pack, including the ones already Loaded.
     // Returns the number of items indexed.
     size_t Build(std::vector<Plugin>& list);
     void   Clear();

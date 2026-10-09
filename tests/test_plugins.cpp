@@ -255,8 +255,11 @@ static void TestContentIndex() {
     CHECK(fs::exists(item->path) && item->kind == P::ContentKind::List);
     CHECK(std::strcmp(P::ContentKindName(P::ContentKind::Script), "script") == 0);
 
-    // Rebuilding replaces; packs already Loaded aren't indexed twice.
-    CHECK(index.Build(list) == 0);
+    // Rebuilding replaces: the Loaded packs are re-read, not dropped and not indexed twice.
+    const auto missions = Names(index.Items(P::ContentKind::Mission));
+    CHECK(index.Build(list) == 7 && index.Size() == 7);
+    CHECK(Names(index.Items(P::ContentKind::Mission)) == missions);
+    CHECK(Find(list, "pack")->state == State::Loaded && Find(list, "zpack")->state == State::Loaded);
     index.Clear();
     CHECK(index.Size() == 0);
 

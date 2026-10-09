@@ -76,7 +76,8 @@ static bool Collect(const Plugin& p, std::vector<ContentItem>& out) {
 size_t ContentIndex::Build(std::vector<Plugin>& list) {
     items_.clear();
     for (auto& p : list) {
-        if (p.state != State::Ready || p.manifest.kind != Kind::Data) continue;
+        // Loaded too: a rebuild re-reads every pack it indexed before.
+        if ((p.state != State::Ready && p.state != State::Loaded) || p.manifest.kind != Kind::Data) continue;
         std::vector<ContentItem> mine;
         if (!Collect(p, mine)) {
             p.state = State::Refused;
