@@ -21,6 +21,7 @@
 
 #ifndef _WIN32
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -278,6 +279,36 @@ static void TestContentIndex() {
     CHECK(index.Build(list) == 1);
     CHECK(Find(list, "big")->state == State::Refused && Find(list, "big")->reason == "too many files");
     CHECK((Names(index.Items(P::ContentKind::Script)) == std::vector<std::string>{ "sly:scripts/own.xml" }));
+    fs::remove_all(root);
+
+    // scripts/** goes kMaxScriptDepth folders deep; deeper files are ignored.
+    WriteFile(root / "deep" / "plugin.ini", "id=deep\nname=N\nversion=1\napi=1.0\nkind=data\n");
+    fs::path at = root / "deep" / "scripts";
+    for (int i = 0; i < P::kMaxScriptDepth; ++i) at /= "d";
+    WriteFile(at / "last.xml", "<x/>");
+    WriteFile(at / "d" / "too_deep.xml", "<x/>");
+#ifndef _WIN32
+    // A folder that can't be read refuses the pack instead of loading part of it.
+    const fs::path shut = root / "locked" / "scripts" / "shut";
+    WriteFile(root / "locked" / "plugin.ini", "id=locked\nname=N\nversion=1\napi=1.0\nkind=data\n");
+    WriteFile(root / "locked" / "scripts" / "a.xml", "<x/>");
+    WriteFile(shut / "b.xml", "<x/>");
+    fs::permissions(shut, fs::perms::none);
+#endif
+    list = P::Discover(root, on);
+    index.Build(list);
+    const auto deep = index.FromPlugin("deep");
+    CHECK(deep.size() == 1 && deep[0]->name.ends_with("/d/last.xml"));
+#ifndef _WIN32
+    if (geteuid() == 0) {
+        std::printf("SKIP: unreadable pack folder (running as root reads it anyway)\n");
+    } else {
+        const P::Plugin* locked = Find(list, "locked");
+        CHECK(locked && locked->state == State::Refused && locked->reason.rfind("cannot read scripts: ", 0) == 0);
+        CHECK(index.FromPlugin("locked").empty());
+    }
+    fs::permissions(shut, fs::perms::owner_all);
+#endif
     fs::remove_all(root);
 }
 

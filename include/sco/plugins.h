@@ -227,10 +227,13 @@ struct ContentItem {
 };
 
 constexpr size_t kMaxPackFiles = 4096;            // per pack; more refuses the pack
+constexpr int    kMaxScriptDepth = 16;            // scripts/** folders below scripts/; deeper is ignored
 
 // Content a data pack may carry (anything else in the folder is ignored):
-//   missions/*.cwmission   rules/*.rules   scripts/**.xml (any depth)   lists/*.txt
+//   missions/*.cwmission   rules/*.rules   scripts/**.xml (up to kMaxScriptDepth folders deep)
+//   lists/*.txt
 // Extensions match case-insensitively. Symlinks are skipped (a pack can't point outside itself).
+// A content folder that can't be read to the end refuses the pack ("cannot read scripts: ...").
 class ContentIndex {
 public:
     // Indexes every Ready or Loaded data pack in list order and sets it Loaded; a pack over
