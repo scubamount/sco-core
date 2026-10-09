@@ -1,7 +1,9 @@
 name: sdk
 
 # Packages the plugin SDK (sdk/package.py) and builds every example from the zip alone, on
-# Linux and on Windows with MSVC. The zip is kept as an artifact; nothing is released here.
+# Linux and on Windows with MSVC; the C# example (cs_hello) is published with NativeAOT on both.
+# The csharp-host-sim job loads cs_hello through the real host kit (sco-host-sim). The zip is kept
+# as an artifact; nothing is released here.
 
 on:
   push:
@@ -23,10 +25,20 @@ jobs:
       - name: Install Lua 5.4
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
 
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
+      # The C# structs against the pins of tests/abi_*.c, line for line (the zip's copy runs below).
+      - name: C# SDK layout test against tests/abi_*.c
+        run: dotnet run -c Release --project sdk/csharp/Sco.Sdk.Tests -- tests/abi_v1.c tests/abi_storage.c tests/abi_ui.c tests/abi_datacore.c
+
       - name: Package the SDK
         run: python3 sdk/package.py --out dist
 
       - name: Build and check the examples from the zip
+        env:
+          SCO_SDK_CSHARP: "1"            # cs_hello: NativeAOT linux-x64, checked like the C examples
         run: sdk/test-zip.sh dist/sco-sdk-*.zip
 
       # The sample DataCore pack, as the zip ships it: sco-dcb lint, and sco-dcb check against the
@@ -72,10 +84,50 @@ jobs:
           name: sco-sdk
           path: dist
 
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
       - name: Build and check the examples from the zip (MSVC x64)
         shell: bash
         env:
           SCO_SDK_NO_LUA: "1"            # no Lua on the image; the Linux job runs the Lua example
+          SCO_SDK_CSHARP: "1"            # cs_hello: NativeAOT win-x64 with MSVC's linker
           PYTHON: python                 # python3 on Windows can be the Store stub
           CMAKE_GENERATOR_PLATFORM: x64
         run: sdk/test-zip.sh dist/sco-sdk-*.zip
+
+  # cs_hello through the real host kit: sco-host-sim (sco::app, the loader, the runtime) loads the
+  # NativeAOT DLL from a plugin root, ticks, invokes cs_hello.wave and unloads. The greeter
+  # service is found here (sco-plugin-check can't look services up), so its line is checked too.
+  csharp-host-sim:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Build sco-host-sim (MSVC x64)
+        run: |
+          cmake -S . -B build -A x64 -DSCO_BUILD_TESTS=OFF
+          cmake --build build --config Release --parallel --target sco-host-sim
+
+      - name: Publish cs_hello (NativeAOT win-x64)
+        shell: bash
+        run: |
+          dotnet publish sdk/examples/cs_hello/cs_hello.csproj -c Release -r win-x64 -o build/cs_publish
+          mkdir -p build/sim/cs_hello
+          cp build/cs_publish/cs_hello.dll sdk/examples/cs_hello/plugin.ini build/sim/cs_hello/
+
+      - name: Load cs_hello in sco-host-sim and invoke cs_hello.wave
+        shell: bash
+        run: |
+          build/Release/sco-host-sim.exe build/sim --no-lua --ticks 3 --invoke cs_hello.wave "Pilot One" | tee build/sim.txt
+          grep -q 'cs_hello.wave -> OK "Hello, Pilot One"' build/sim.txt
+          grep -q 'Hello, services' build/sim.txt
+          grep -q '^\[sim\] PASS' build/sim.txt
