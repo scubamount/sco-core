@@ -29,6 +29,8 @@ namespace P = sco::plugins;
 using P::State;
 
 static int g_fail = 0, g_pass = 0;
+// Debug instrumentation for the Windows CI hang; one line per phase, unbuffered.
+static void Mk(const char* w) { std::printf("[mk] %s\n", w); std::fflush(stdout); }
 #define CHECK(c) do { if (c) ++g_pass; else { ++g_fail; std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); } } while (0)
 
 static std::vector<std::string> g_log;
@@ -49,6 +51,7 @@ static std::string ParseError(const char* text) {
 }
 
 static void TestManifest() {
+    Mk("TestManifest");
     P::Manifest m; std::string err;
     CHECK(Parse("\xEF\xBB\xBF; header comment\r\n"
                 "id = hello\r\n"
@@ -130,6 +133,7 @@ static int HasTeleportOnly(const char* cap) { return std::strcmp(cap, "teleport"
 static int HasAll(const char*) { return 1; }
 
 static void TestDiscover() {
+    Mk("TestDiscover");
     const fs::path tree = g_fixtures / "tree";
     CHECK(P::Discover(g_fixtures / "does_not_exist", {}).empty());
     CHECK(P::Discover(tree / "README.md", {}).empty());
@@ -195,16 +199,20 @@ static void WriteFile(const fs::path& p, const std::string& text) {
 }
 
 static void TestDiscoverLimits() {
+    Mk("TestDiscoverLimits");
     const fs::path root = g_out / "limits";
     fs::remove_all(root);
+    Mk("limits: make 130 plugins");
     for (size_t i = 0; i < P::kMaxPlugins + 2; ++i) {
         char id[16];
         std::snprintf(id, sizeof(id), "p%03zu", i);
         WriteFile(root / id / "plugin.ini", std::string("id=") + id + "\nname=N\nversion=1\napi=1.0\nkind=data\n");
     }
+    Mk("limits: discover");
     P::Options on;
     on.enabled = true;
     auto list = P::Discover(root, on);
+    Mk("limits: discovered");
     CHECK(list.size() == P::kMaxPlugins + 2);
     CHECK(list[P::kMaxPlugins - 1].state == State::Ready);
     CHECK(list[P::kMaxPlugins].state == State::Refused && list[P::kMaxPlugins].reason == "too many plugins");
@@ -239,6 +247,7 @@ static std::vector<std::string> Names(const std::vector<const P::ContentItem*>& 
 }
 
 static void TestContentIndex() {
+    Mk("TestContentIndex");
     P::Options on;
     on.enabled = true;
     on.has = HasAll;
@@ -279,7 +288,9 @@ static void TestContentIndex() {
     const fs::path root = g_out / "packs";
     fs::remove_all(root);
     WriteFile(root / "big" / "plugin.ini", "id=big\nname=N\nversion=1\napi=1.0\nkind=data\n");
-    for (size_t i = 0; i < P::kMaxPackFiles + 1; ++i) WriteFile(root / "big" / "lists" / (std::to_string(i) + ".txt"), "");
+    Mk("content: make 4097 files");
+    for (size_t i = 0; i < P::kMaxPackFiles + 1; ++i) { WriteFile(root / "big" / "lists" / (std::to_string(i) + ".txt"), ""); if (i % 512 == 511) { std::printf("[mk] content: file %zu\n", i); std::fflush(stdout); } }
+    Mk("content: files made");
     WriteFile(root / "sly" / "plugin.ini", "id=sly\nname=N\nversion=1\napi=1.0\nkind=data\n");
     WriteFile(root / "outside" / "secret.xml", "<x/>");
     WriteFile(root / "sly" / "scripts" / "own.xml", "<x/>");
@@ -287,7 +298,9 @@ static void TestContentIndex() {
     fs::create_directory_symlink(root / "outside", root / "sly" / "scripts" / "linked", dirLink);
     fs::create_symlink(root / "outside" / "secret.xml", root / "sly" / "scripts" / "file_link.xml", fileLink);
     list = P::Discover(root, on);
+    Mk("content: building index");
     const size_t built = index.Build(list);
+    Mk("content: index built");
     CHECK(Find(list, "big")->state == State::Refused && Find(list, "big")->reason == "too many files");
     CHECK(index.Find(P::ContentKind::Script, "scripts/own.xml").size() == 1);
     if (dirLink) std::printf("SKIP: symlinked pack folder (cannot create symlink: %s)\n", dirLink.message().c_str());
@@ -428,6 +441,7 @@ static uint32_t NestedCrashGuard(void (*thunk)(void*), void* ctx) {
 }
 
 static void TestNative() {
+    Mk("TestNative");
     const fs::path root = g_out / "plugins";
     if (!fs::is_directory(root)) { std::printf("FAIL: %s missing (tools/test.sh builds it)\n", root.string().c_str()); ++g_fail; return; }
 #ifndef _WIN32
@@ -435,6 +449,7 @@ static void TestNative() {
 #endif
     P::Options on;
     on.enabled = true;
+    Mk("native: discover");
     auto list = P::Discover(root, on);
     g_list = &list;
     P::ContainCallouts(&list);   // the real crash containment path: runtime -> CallPlugin
@@ -447,6 +462,7 @@ static void TestNative() {
     const size_t subs0 = sco::SubscriptionCount();
 
     // m0: clean load, its tick runs through the trampoline.
+    Mk("native: m0");
     P::Plugin& ok = get("m0");
     CHECK(P::LoadNative(ok, &api, NewOwner(), on, kRecOps));
     CHECK(ok.state == State::Loaded && ok.module && ok.loadOrder > 0);
@@ -467,7 +483,9 @@ static void TestNative() {
         { "m9",  "sco_plugin_info.size too small" },
         { "text", "cannot load text." },   // .so on the host, .dll on Windows
     };
+    Mk("native: refusals");
     for (const auto& r : refused) {
+        Mk(r.id);
         P::Plugin& p = get(r.id);
         const size_t closes = g_closed.size();
         CHECK(!P::LoadNative(p, &api, NewOwner(), on, kRecOps));
@@ -506,6 +524,7 @@ static void TestNative() {
         CHECK(!P::LoadNative(m10, &api, NewOwner(), on, kRecOps));
         CHECK(m10.state == State::Crashed && m10.reason == "crashed in sco_plugin_query (0xC0000005)");
 
+        Mk("native: m8");
         // m8: loads, then faults in its tick: crashed mid-dispatch, never called again, the
         // other plugin keeps ticking.
         P::Plugin& t = get("m8");
@@ -529,6 +548,7 @@ static void TestNative() {
     int ran = 0;
     CHECK(P::CallPlugin(ok, "test", [](void* c) { ++*static_cast<int*>(c); }, &ran) && ran == 1);
 
+    Mk("native: m11 + UnloadAll");
     // m11 loads second; UnloadAll unloads newest first, calls unload once, releases, closes.
     P::Plugin& second = get("m11");
     CHECK(P::LoadNative(second, &api, NewOwner(), on, kRecOps));
@@ -550,6 +570,7 @@ static void TestNative() {
     P::ContainCallouts(&again);
     auto get2 = [&](const char* id) -> P::Plugin& { return *const_cast<P::Plugin*>(Find(again, id)); };
 
+    Mk("native: stuck release");
     // A failed Release (UnloadNative off the game thread: WRONG_THREAD) keeps the module mapped
     // and marks the plugin Crashed; its subscription is still there but never called.
     P::Plugin& stuck = get2("m0");
@@ -563,6 +584,7 @@ static void TestNative() {
     CHECK(sco::GameThreadTick(5) == sco::Result::Ok && Ticks(stuck) == ticks0);
     CHECK(sco::Release(stuck.self) == sco::Result::Ok && sco::SubscriptionCount() == subs0);
 
+    Mk("native: nested crash");
     // A fault nested inside unload() is kept, not overwritten as a clean unload.
     P::Plugin& nested = get2("m11");
     CHECK(P::LoadNative(nested, &api, NewOwner(), on, kRecOps));
@@ -579,6 +601,8 @@ static void TestNative() {
 }
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    Mk("start");
     if (argc < 3) { std::printf("usage: test_plugins <fixtures dir> <out dir>\n"); return 2; }
     g_fixtures = argv[1];
     g_out = argv[2];
