@@ -242,6 +242,17 @@ static void TestDiscoverLimits() {
     fs::create_directories(root / "real" / "disabled");
     list = P::Discover(root, on);
     CHECK(Find(list, "real") && Find(list, "real")->state == State::Disabled);
+
+    // "sco" is the host's id (its services are sco.<name>): a folder by that name, or by another
+    // reserved id, is refused whatever its plugin.ini says, a disabled one too. Off still lists it.
+    WriteFile(root / "sco" / "plugin.ini", "id=sco\nname=N\nversion=1\napi=1.0\nkind=data\n");
+    WriteFile(root / "sco" / "disabled", "");
+    WriteFile(root / "game" / "plugin.ini", "id=other\nname=N\nversion=1\napi=1.0\nkind=data\n");
+    list = P::Discover(root, on);
+    CHECK(Find(list, "sco") && Find(list, "sco")->state == State::Refused &&
+          Find(list, "sco")->reason == "the folder name 'sco' is reserved for the host");
+    CHECK(Find(list, "game") && Find(list, "game")->reason == "the folder name 'game' is reserved for the host");
+    CHECK(Find(P::Discover(root, P::Options{}), "sco")->state == State::Off);
     fs::remove_all(root);
 }
 

@@ -390,6 +390,17 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     CHECK(StateOf("greeter") == State::Refused && Find("greeter")->reason == "no script runtime");
     CHECK(StateOf("m0") == State::Loaded);
     sco::app::Stop();
+
+    // A data folder gives plugins sco.storage, published before they load and withdrawn after
+    // they unloaded; without one there is none.
+    const sco_api* api = sco::host::BuildApi({ "test-app 1.0" });
+    const void* table = nullptr;
+    CHECK(api->query_service("sco.storage", 0x00010000, &table) == SCO_NOT_FOUND);
+    pf.dataRoot = out / "app" / "data";
+    CHECK(sco::app::Start(pf));
+    CHECK(api->query_service("sco.storage", 0x00010000, &table) == SCO_OK && table);
+    sco::app::Stop();
+    CHECK(api->query_service("sco.storage", 0x00010000, &table) == SCO_NOT_FOUND);
     fs::remove_all(out / "app", ec);
 }
 

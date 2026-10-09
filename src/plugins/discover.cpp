@@ -51,6 +51,13 @@ static bool BuiltinId(const Options& opts, const std::string& id) {
     return false;
 }
 
+// The host's own id and the reserved command prefixes (kReservedIds) can't be plugin folders.
+static bool ReservedFolder(const std::string& folder) {
+    for (const char* r : kReservedIds)
+        if (folder == r) return true;
+    return false;
+}
+
 static void Refuse(Plugin& p, std::string reason) {
     p.state = State::Refused;
     p.reason = std::move(reason);
@@ -86,6 +93,8 @@ std::vector<Plugin> Discover(const fs::path& root, const Options& opts) {
 
         if (!opts.enabled) {
             p.state = State::Off;
+        } else if (ReservedFolder(p.folder)) {
+            Refuse(p, "the folder name '" + p.folder + "' is reserved for the host");
         } else if (std::error_code dec; fs::symlink_status(dir / "disabled", dec).type() != fs::file_type::not_found) {
             // Any entry named "disabled" (file, folder, link) switches the plugin off.
             p.state = State::Disabled;

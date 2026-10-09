@@ -87,8 +87,6 @@ static bool Fail(std::string& error, size_t line, const char* what) {
     return false;
 }
 
-static constexpr const char* kReservedIds[] = { "sco", "host", "menu", "game" };
-
 static bool ParseInto(std::string_view text, Manifest& out, std::string& error);
 
 bool ParseManifest(std::string_view text, Manifest& out, std::string& error) {

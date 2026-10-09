@@ -95,7 +95,8 @@ See [The runtime](architecture.md#the-runtime) for the model. Every call returns
 | `void SetGameThread()` | Marks the calling thread as the game thread. Call once, from the game's main thread |
 | `bool OnGameThread()` | Whether the caller is the game thread; false until `SetGameThread()` |
 | `Result GameThreadTick(uint32_t nowMs)` | Runs queued tasks, then dispatches `tick` with `data = &nowMs`. `WrongThread` off the game thread or from inside a task, callback or command |
-| `Result Release(const void* owner, size_t* removed)` | Removes everything `owner` registered: subscriptions (at once, even mid-dispatch), commands, queued tasks and queued `Invoke` calls (dropped, `done` not called). Final: from the moment it starts, every `Post`, `Subscribe`, `RegisterCommand` and `Invoke` naming that owner returns `BadArg`, from any thread, so afterwards the runtime never calls the owner's functions again. Game thread only; `BadArg` for `nullptr` or an owner already released; `TooMany` only when out of memory (nothing removed; retry). No limit on released owners |
+| `Result Release(const void* owner, size_t* removed)` | Removes everything `owner` registered: subscriptions (at once, even mid-dispatch), commands, queued tasks and queued `Invoke` calls (dropped, `done` not called). Final: from the moment it starts, every `Post`, `Subscribe`, `RegisterCommand` and `Invoke` naming that owner returns `BadArg`, from any thread, so afterwards the runtime never calls the owner's functions again. Game thread only; `BadArg` for `nullptr` or an owner already released; `TooMany` only when out of memory (nothing removed; retry). No limit on released owners. Then calls every release hook |
+| `Result AddReleaseHook(ReleaseHook hook)`, `Result RemoveReleaseHook(ReleaseHook hook)` | For host modules with per-owner state outside the runtime (`sco::storage`: a plugin's database): `hook(owner)` runs on the game thread at the end of every successful `Release`, in the order added. At most 8 (`TooMany`); adding one twice changes nothing; `RemoveReleaseHook` answers `NotFound` for one not added. A hook must not call `Release` |
 | `Result Post(TaskFn fn, void* ctx, const void* owner)` | Queues `fn(ctx)` for the game thread, in order. `owner` (default `nullptr`) lets `Release` drop it. `TooMany` with 256 waiting, `BadArg` for a null `fn` |
 | `size_t DrainTasks()`, `size_t QueuedTasks()` | Run the tasks queued when the call started (game thread only and never nested, else 0); count waiting tasks |
 | `Result Subscribe(const void* owner, const char* event, EventFn fn, void* ctx)` | Adds a subscriber from the next dispatch; the name is copied. `BadArg` for a null/empty event, null `fn` or the same (owner, event, fn) twice; `TooMany` at 512 |
@@ -134,6 +135,8 @@ Named yes/no answers to "does this feature work on this game build?". `sco_api.h
 | `const sco_api* host::BuildApi(const HostInfo& info)` | The process's one `sco_api` table, over the runtime, caps, status and log. Wires `SetCapabilityCheck` to `caps::Has`. Calling again updates `host_version` and returns the same table; `nullptr` for a null version |
 | `sco_plugin* host::NewPlugin(const char* id)` | A handle for one plugin load: `[a-z0-9_]`, 1-31 characters, not `sco`/`host`/`menu`/`game`, and not held by a handle that hasn't been released. Never freed or reused; 256 for the life of the process. The handle is the plugin's runtime owner, so `sco::Release(self)` removes everything it added |
 | `const char* host::PluginId(const sco_plugin* p)` | The handle's id; `nullptr` for a pointer `NewPlugin` didn't return |
+| `Result host::ProvideHostService(const char* name, uint32_t version, const void* table)` | Publishes a [host-owned service](api-v1.md#host-owned-services) under the reserved id `sco` (`host::kHostId`): `name` must be `sco.<name>`, the service name rule otherwise. Owner `host::HostOwner()`, never released. `BadArg` for another name, a taken one or a null table. Any thread |
+| `Result host::WithdrawHostService(const char* name)`, `size_t host::WithdrawHostServices()` | Withdraw one (`NotFound` if the host publishes nothing by that name) or all (host shutdown; returns how many). A withdrawn name can be published again |
 
 The table checks `self` on every call (`SCO_BAD_ARG` for a pointer the host didn't hand out or one already released; `status` and `log` are dropped). `register_command` uses the plugin id as the prefix, needs `size >= sizeof(sco_command)` and reads arg defs with `arg_def_size`. `list_commands` returns host-built views of every live command, host features' too; in a view `fn` and `ctx` are `NULL` (run commands with `invoke`). `log` writes `[<id>] message`, with `warning: ` or `error: ` for the higher levels.
 
@@ -151,20 +154,41 @@ struct Platform {
     const Image* image = nullptr;                  // resolve signatures against this; nullptr skips
     void (*setCapabilities)() = nullptr;           // the product sets caps after ResolveAll
     plugins::ModuleOps moduleOps = plugins::PlatformModuleOps();
+    std::filesystem::path dataRoot;                // data; set: sco.storage in <dataRoot>/storage/
 };
 ```
 
 | Function | Does |
 |---|---|
-| `bool app::Start(const Platform& pf)` | `SetGameThread`; with `image`, `RegisterGameSignatures` and `ResolveAll(*image)`; `setCapabilities()`; `host::BuildApi`; the list (every built-in, then `Discover(pluginRoot)` when `pluginsEnabled`); `ContainCallouts`; `LoadBuiltin` for the built-ins, then `LoadNative` / `LoadScript` in list order (a `lua` plugin is refused `no script runtime` without `scripts`); the content index; with `image`, `LogSignatureReport(false)`; `LogReport`; dispatches `game.ready`. Problems are logged, never fatal. False (nothing changes) when already started |
+| `bool app::Start(const Platform& pf)` | `SetGameThread`; with `image`, `RegisterGameSignatures` and `ResolveAll(*image)`; `setCapabilities()`; `host::BuildApi`; with `dataRoot`, `storage::Start` (a failure is logged `[app] storage not started: <RESULT>`); the list (every built-in, then `Discover(pluginRoot)` when `pluginsEnabled`); `ContainCallouts`; `LoadBuiltin` for the built-ins, then `LoadNative` / `LoadScript` in list order (a `lua` plugin is refused `no script runtime` without `scripts`); the content index; with `image`, `LogSignatureReport(false)`; `LogReport`; dispatches `game.ready`. Problems are logged, never fatal. False (nothing changes) when already started |
 | `void app::Tick(uint32_t nowMs)` | `GameThreadTick(nowMs)`. No-op unless started |
-| `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
+| `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last), `storage::Stop`, `host::WithdrawHostServices` (host services outlive every plugin) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
 | `const std::vector<plugins::Plugin>& app::Plugins()` | The list of the last `Start` (built-ins first), final states after `Stop`. Never resized between two `Start`s |
 | `const plugins::ContentIndex& app::Content()` | The data-pack index of the last `Start` |
 
 `Platform` is copied; `builtins`, `scripts` and `hostVersion` must outlive `Stop`.
 
-Call `Stop` from the game's own quit path, on the game thread. The game's menu Quit calls `CSystem::Quit` (`Quit via console command`), then `System Fast Shutdown (ExitOnQuit enabled)`: the process ends without the message loop ever getting `WM_QUIT`, so a `WM_QUIT` hook never runs `Stop` and plugins never see `game.exit`. sc-offline hooks `CSystem::Quit` through the `system.quit` signature row (`sco/game/system.h`, `QuitFunction`: the entry and the 15 prologue bytes a detour may overwrite). Never call `Stop` from `DLL_PROCESS_DETACH`: it runs under the loader lock, at the wrong time. Even from the quit path, `game.exit` is best effort: a crash or a killed process never sends it. Start the host kit regardless of whether any one feature resolved. Why: [framework plan, Lessons](framework.md#lessons). Storage and services ([framework plan, Phase 5](framework.md#phase-5-services-and-storage)) will be further `Platform` fields with defaults.
+Call `Stop` from the game's own quit path, on the game thread. The game's menu Quit calls `CSystem::Quit` (`Quit via console command`), then `System Fast Shutdown (ExitOnQuit enabled)`: the process ends without the message loop ever getting `WM_QUIT`, so a `WM_QUIT` hook never runs `Stop` and plugins never see `game.exit`. sc-offline hooks `CSystem::Quit` through the `system.quit` signature row (`sco/game/system.h`, `QuitFunction`: the entry and the 15 prologue bytes a detour may overwrite). Never call `Stop` from `DLL_PROCESS_DETACH`: it runs under the loader lock, at the wrong time. Even from the quit path, `game.exit` is best effort: a crash or a killed process never sends it. Start the host kit regardless of whether any one feature resolved. Why: [framework plan, Lessons](framework.md#lessons). Further Phase 5 additions ([framework plan](framework.md#phase-5-services-and-storage)) will be more `Platform` fields with defaults.
+
+## `sco/storage.h`: the `sco.storage` service
+
+The host side of [`sco.storage`](storage.md) (library `sco_storage`, over vendored SQLite in `third_party/sqlite`). `sco::app::Start` calls it when `Platform::dataRoot` is set; other hosts call it themselves. Any thread.
+
+```cpp
+struct Options {
+    std::filesystem::path dataRoot;      // databases go in <dataRoot>/storage/<plugin id>.db
+    uint64_t quotaBytes = 64ull << 20;   // per plugin; past it a write is SCO_TOO_MANY
+    uint32_t busyTimeoutMs = 1000;       // waiting for a lock another process holds
+    uint32_t budgetMs = 1000;            // per call; a statement still running is interrupted
+    bool     durable = true;             // synchronous FULL (false: NORMAL)
+};
+```
+
+| Function | Does |
+|---|---|
+| `Result storage::Start(const Options& o)` | Publishes `sco.storage` 1.0 with `host::ProvideHostService` and installs a release hook, so `Release(self)` rolls back the plugin's transaction and closes its cursors and database. `BadArg`: empty `dataRoot`, `budgetMs` 0, already started. The folder is created on the first call |
+| `void storage::Stop()` | Withdraws the service, rolls back open transactions, closes every database; the table then answers `SCO_UNAVAILABLE`. No-op unless started. Call after every plugin has unloaded |
+| `bool storage::Started()`, `const sco_storage_v1* storage::Table()`, `fs::path storage::DatabasePath(const char* id)` | State, the table `query_service` hands out, and a plugin's database path (empty unless started) |
 
 ## `sco/hook.h`: detours and near-code memory
 

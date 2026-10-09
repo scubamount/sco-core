@@ -18,6 +18,13 @@ ABI=(-Wall -Wextra -Wpedantic -Werror -I "$ROOT/include" -fsyntax-only)
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_v1.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_v1.c"
 echo "abi_v1: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The sco.storage table (tests/abi_storage.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_storage.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_storage.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_storage.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_storage.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_storage.c"
+echo "abi_storage: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
 # SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
 # header change that breaks them fails here. The full build from the packaged zip, with MSVC on
@@ -32,7 +39,7 @@ for f in "$ROOT/sdk/examples/cpp_hello/cpp_hello.cpp" "$ROOT"/include/scosdk/*.h
 done
 echo "sdk: template, hello, cpp_hello, include/scosdk and sco-plugin-check compile against sco_api.h"
 
-FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include")
+FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include" -isystem "$ROOT/third_party/sqlite")
 RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp"
          "$ROOT/src/api/sco_services.cpp" "$ROOT/src/api/sco_raw.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined \
@@ -72,6 +79,25 @@ SDKT=("$ROOT/tests/test_sdk.cpp" "${HOST[@]:1}")
 "$OUT/test_sdk"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${SDKT[@]}" -o "$OUT/test_sdk_tsan"
 "$OUT/test_sdk_tsan"
+# sco.storage (sco/storage.h) over vendored SQLite, built once per sanitizer set as C with its own
+# warnings off and the options of CMakeLists.txt (keep in step). test_storage spawns itself to test
+# crash safety and runs threads, so both sanitizer sets.
+SQLITE_DEFS=(-DSQLITE_THREADSAFE=2 -DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_DQS=0
+             -DSQLITE_TEMP_STORE=2 -DSQLITE_TRUSTED_SCHEMA=0 -DSQLITE_USE_URI=0 -DSQLITE_OMIT_SHARED_CACHE
+             -DSQLITE_OMIT_DEPRECATED -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_LIKE_DOESNT_MATCH_BLOBS -DSQLITE_ENABLE_API_ARMOR)
+# SQLite calls through function pointers cast to a common type (its destructors); clang's
+# -fsanitize=function would flag every one of them in its own code.
+NOFN=(); "$CC" --version 2>/dev/null | grep -q clang && NOFN=(-fno-sanitize=function)
+SQLITE_ASAN=$OUT/sqlite3_asan.o
+SQLITE_TSAN=$OUT/sqlite3_tsan.o
+"$CC" -std=gnu11 -O1 -g0 -w -fsanitize=address,undefined "${NOFN[@]}" "${SQLITE_DEFS[@]}" -c "$ROOT/third_party/sqlite/sqlite3.c" -o "$SQLITE_ASAN"
+"$CC" -std=gnu11 -O1 -g0 -w -fsanitize=thread "${SQLITE_DEFS[@]}" -c "$ROOT/third_party/sqlite/sqlite3.c" -o "$SQLITE_TSAN"
+STORAGE=("$ROOT/tests/test_storage.cpp" "$ROOT/src/storage/storage.cpp" "${HOST[@]:1}")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${STORAGE[@]}" "$SQLITE_ASAN" -lm -o "$OUT/test_storage"
+"$OUT/test_storage" "$OUT"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${STORAGE[@]}" "$SQLITE_TSAN" -lm -o "$OUT/test_storage_tsan"
+"$OUT/test_storage_tsan" "$OUT"
+
 # The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
 # corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb
 # over the fixtures test_datacore writes (CMake: CTest dcb_tool).
@@ -133,7 +159,7 @@ done
 # sco::app (ASan+UBSan). Then sco-host-sim over the SDK examples, laid out like data/plugins with
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
-     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/game/"*.cpp)
+     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/game/"*.cpp "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"
 "$OUT/test_app" "$ROOT/sdk" "$OUT"
