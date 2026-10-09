@@ -70,3 +70,19 @@ PLUGINS=("$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROO
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_plugins.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
   -ldl -o "$OUT/test_plugins"
 "$OUT/test_plugins" "$ROOT/tests/fixtures/plugins" "$OUT"
+
+# sco-lua (plugins/lua): the sandboxed Lua runtime, loaded through the real loader and host table.
+# Vendored Lua is built as C with its own warnings off; sco_lua.c with -Werror like the rest.
+LUA_SRC=$ROOT/plugins/lua/third_party/lua/src
+mkdir -p "$OUT/lua"
+LUA_OBJS=()
+for f in "$LUA_SRC"/*.c "$ROOT/plugins/lua/sco_lua.c"; do
+  o="$OUT/lua/$(basename "$f" .c).o"
+  if [ "$f" = "$ROOT/plugins/lua/sco_lua.c" ]; then W=(-Wall -Wextra -Wpedantic -Werror); else W=(-w); fi
+  "$CC" -std=c11 -O1 -g "${W[@]}" -fsanitize=address,undefined -I "$ROOT/include" -I "$LUA_SRC" -c "$f" -o "$o"
+  LUA_OBJS+=("$o")
+done
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_lua.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
+  "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
+  "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
+"$OUT/test_lua" "$ROOT/sdk" "$OUT"

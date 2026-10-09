@@ -59,6 +59,7 @@ The scanners and the registry are plain C++ with no Windows headers. Only [`src/
 | [Checking a game build](docs/sigcheck.md) | `sco-sigcheck`: reading its output, exit codes, the patch-day routine |
 | [API reference](docs/api.md) | Every function and type in `include/sco/` |
 | [Plugin API v1](docs/api-v1.md) | `include/sco_api.h`, the plain-C plugin ABI (1.0-pre, not hosted yet) |
+| [sco-lua](plugins/lua/README.md) | The Lua runtime for `kind = lua` plugins: Lua 5.4.8, sandbox, step and memory limits |
 | [Plugin SDK](sdk/README.md) | Template, examples (native, data pack, Lua), CMake helper and checkers; CI packages it as `sco-sdk-<version>.zip` |
 | [Contributing](CONTRIBUTING.md) | What fits, tests, and how changes reach sc-offline |
 | [Changelog](CHANGELOG.md) | What changed |

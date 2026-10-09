@@ -68,8 +68,8 @@ enum class State : uint32_t {
     Off,        // plugins = off in sc-offline.ini; listed, never parsed past the manifest
     Disabled,   // data/plugins/<id>/disabled exists (or the menu switched it off)
     Refused,    // a check failed; `reason` says which
-    Ready,      // passed discovery; LoadNative (native), sco-lua (lua) or Build (data) takes it
-    Loaded,     // native: sco_plugin_load returned OK; data: indexed
+    Ready,      // passed discovery; LoadNative (native), LoadScript (lua) or Build (data) takes it
+    Loaded,     // native: sco_plugin_load returned OK; lua: the entry script ran; data: indexed
     Crashed,    // faulted in plugin code; released, never called again, DLL kept mapped
     Unloaded,   // unloaded cleanly; DLL closed
 };
@@ -91,9 +91,9 @@ struct Plugin {
     std::string reason;                           // why Refused / Disabled / Crashed
     // native only
     void*         module = nullptr;               // module handle while mapped
-    sco_plugin*   self = nullptr;                 // the owner handle the host passed to load
+    sco_plugin*   self = nullptr;                 // the owner handle the host passed to load (native, lua)
     NativeExports exports;
-    uint32_t      loadOrder = 0;                  // 1-based among loaded natives; 0 = never loaded
+    uint32_t      loadOrder = 0;                  // 1-based among loaded natives and scripts; 0 = never
 };
 
 using CapabilityCheck = int (*)(const char* capability);
@@ -163,8 +163,32 @@ void MarkCrashed(Plugin& p, const char* where, uint32_t code);
 // sco::Release(self), close the module, state Unloaded. Game thread only. No-op unless Loaded.
 void UnloadNative(Plugin& p, const ModuleOps& ops = PlatformModuleOps());
 
-// Unloads every Loaded native plugin, last loaded first.
-void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops = PlatformModuleOps());
+// ---- script loader (kind = lua) --------------------------------------------------------------
+
+// The script runtime the host links in (sc-offline: sco-lua, plugins/lua/sco_lua.h). The loader
+// only reads the entry file and hands it over; the runtime owns the sandbox.
+struct ScriptRuntime {
+    // Runs the script once. SCO_OK = loaded; else err says why (NUL-terminated).
+    sco_result (*load)(const sco_api* api, sco_plugin* self, const char* chunkname,
+                       const char* source, size_t size, char* err, size_t errSize);
+    // Frees the script. Called after sco::Release(self).
+    void (*unload)(sco_plugin* self);
+};
+
+constexpr size_t kMaxScriptBytes = 1024 * 1024;   // entry script size
+
+// Loads one Ready lua plugin. Game thread only.
+//   1. read <dir>/<entry> (at most kMaxScriptBytes)
+//   2. runtime.load(api, self, entry, text) (guarded like native calls)
+// Loaded (true), or Refused with everything self registered released ("cannot read main.lua",
+// "script too big", "main.lua:3: ..." from the runtime). A fault in the runtime: Crashed.
+bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRuntime& runtime);
+
+// Unloads every Loaded plugin, last loaded first: natives as UnloadNative; scripts by
+// sco::Release(self) then runtime.unload(self) (state Unloaded). runtime may be null when no
+// script was loaded.
+void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops = PlatformModuleOps(),
+               const ScriptRuntime* runtime = nullptr);
 
 // ---- status ---------------------------------------------------------------------------------
 

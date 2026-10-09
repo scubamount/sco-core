@@ -1,0 +1,4 @@
+Lua 5.4.8 (2025-05-21)
+Source: https://www.lua.org/ftp/lua-5.4.8.tar.gz
+sha256: 4f18ddae154e793e46eeab727c59ef1c0c0c2b744e7b94219710d76f530629ae (matches the sum listed on https://www.lua.org/ftp/, checked 2026-10-08)
+Kept: src/*.c and src/*.h, minus lua.c, luac.c and the Makefile. Local changes: see ../../README.md.

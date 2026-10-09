@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -214,12 +215,80 @@ void UnloadNative(Plugin& p, const ModuleOps& ops) {
     sco::Log("[plugin] unloaded %s", IdOf(p));
 }
 
-void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops) {
+// ---- scripts --------------------------------------------------------------------------------
+
+struct ScriptCall {
+    const ScriptRuntime* rt;
+    const sco_api* api;
+    sco_plugin* self;
+    const char* chunk;
+    const std::string* text;
+    char err[256] = {};
+    sco_result result = SCO_OK;
+};
+static void ScriptThunk(void* c) {
+    auto* k = static_cast<ScriptCall*>(c);
+    k->result = k->rt->load(k->api, k->self, k->chunk, k->text->data(), k->text->size(), k->err, sizeof(k->err));
+}
+
+bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRuntime& runtime) {
+    if (p.state != State::Ready || p.manifest.kind != Kind::Lua) return false;
+    auto refuse = [&](std::string why) {
+        ReleaseOwner(p);
+        p.state = State::Refused;
+        p.reason = std::move(why);
+        sco::Log("[plugin] refused %s: %s", IdOf(p), p.reason.c_str());
+        return false;
+    };
+    if (!api || !self || !runtime.load || !runtime.unload) {
+        p.state = State::Refused;
+        p.reason = "host passed no api, owner or script runtime";
+        sco::Log("[plugin] refused %s: %s", IdOf(p), p.reason.c_str());
+        return false;
+    }
+    p.self = self;
+    std::ifstream in(p.dir / detail::FromUtf8(p.manifest.entry), std::ios::binary);
+    if (!in) return refuse("cannot read " + p.manifest.entry);
+    std::string text;
+    char buf[8192];
+    while (in.read(buf, sizeof(buf)) || in.gcount() > 0) {
+        text.append(buf, static_cast<size_t>(in.gcount()));
+        if (text.size() > kMaxScriptBytes) return refuse(p.manifest.entry + ": script too big");
+    }
+    ScriptCall k;
+    k.rt = &runtime; k.api = api; k.self = self; k.chunk = p.manifest.entry.c_str(); k.text = &text;
+    if (const uint32_t code = Guarded(ScriptThunk, &k)) { Crash(p, "the script runtime", code); return false; }
+    if (k.result != SCO_OK) {
+        runtime.unload(self);
+        return refuse(k.err[0] ? std::string(k.err) : std::string("script load returned ") +
+                      sco::ResultName(static_cast<Result>(k.result)));
+    }
+    p.state = State::Loaded;
+    p.reason.clear();
+    p.loadOrder = g_loadCounter.fetch_add(1) + 1;
+    sco::Log("[plugin] loaded %s %s (lua) from %s", IdOf(p), p.manifest.version.c_str(),
+             (p.folder + "/" + p.manifest.entry).c_str());
+    return true;
+}
+
+static void UnloadScript(Plugin& p, const ScriptRuntime* runtime) {
+    ReleaseOwner(p);
+    if (runtime && runtime->unload) runtime->unload(p.self);
+    p.state = State::Unloaded;
+    sco::Log("[plugin] unloaded %s", IdOf(p));
+}
+
+void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops, const ScriptRuntime* runtime) {
     std::vector<Plugin*> loaded;
-    for (auto& p : list) if (p.state == State::Loaded && p.manifest.kind == Kind::Native) loaded.push_back(&p);
+    for (auto& p : list)
+        if (p.state == State::Loaded && (p.manifest.kind == Kind::Native || p.manifest.kind == Kind::Lua))
+            loaded.push_back(&p);
     for (size_t i = 1; i < loaded.size(); ++i)         // insertion sort, newest first
         for (size_t j = i; j > 0 && loaded[j - 1]->loadOrder < loaded[j]->loadOrder; --j) std::swap(loaded[j - 1], loaded[j]);
-    for (Plugin* p : loaded) UnloadNative(*p, ops);
+    for (Plugin* p : loaded) {
+        if (p->manifest.kind == Kind::Native) UnloadNative(*p, ops);
+        else UnloadScript(*p, runtime);
+    }
 }
 
 // ---- status ---------------------------------------------------------------------------------

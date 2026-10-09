@@ -59,7 +59,16 @@ This limits damage. It is not a sandbox: stack corruption, `__fastfail` and `/GS
 
 ### Unloading
 
-`UnloadAll(list)` at `game.exit`: last loaded first, `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`.
+`UnloadAll(list, ops, &runtime)` at `game.exit`: plugins last loaded first. For a native plugin: `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`.
+
+## Lua plugins
+
+`LoadScript(plugin, api, self, runtime)`, on the game thread, with the script runtime the host links in (sc-offline: [sco-lua](../plugins/lua/README.md)):
+
+1. Reads the entry script (1 MiB at most).
+2. Calls the runtime's `load` (guarded like a native call). It runs the script once in a sandbox; an error refuses the plugin with the script's message (`main.lua:3: ...`) and releases what it registered.
+
+A script talks to the host only through the `sco_api` table, like a native plugin, and has no file, OS or network access. It runs under a step budget and a 64 MiB memory cap; past either, or after 3 errors, the runtime disables it (`[<id>] error: script disabled: <why>`). `UnloadAll(list, ops, &runtime)` releases each script, then frees it. What scripts can call: [`sdk/docs/lua.md`](../sdk/docs/lua.md).
 
 ## Data packs
 

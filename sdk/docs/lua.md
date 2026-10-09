@@ -2,7 +2,7 @@
 
 A Lua plugin is a folder with `plugin.ini` (`kind = lua`, `entry = main.lua`) and its scripts. sc-offline's bundled `sco-lua` runtime runs the entry script once at load, in a sandbox. The script registers commands and subscribes to events; those callbacks run on the game thread.
 
-> **Status: 1.0-pre.** The `sco-lua` runtime is still being built. This page and [`examples/greeter`](../examples/greeter) follow the SDK plan's contract; until `sdk-v1.0.0` the runtime's binding is the reference, and this page changes with it.
+> **Status: 1.0-pre.** This page matches the `sco-lua` runtime in sco-core (`plugins/lua/`), whose tests run [`examples/greeter`](../examples/greeter). Until `sdk-v1.0.0` it can still change.
 
 ## The sandbox
 
@@ -14,7 +14,15 @@ The script sees only:
 
 There is no `io`, `os`, `package`, `require`, `debug`, `dofile`, `loadfile` or FFI, and precompiled (bytecode) chunks are refused. A script can't read or write files or start programs.
 
-Each callback has an instruction budget (1 million by default). A callback that goes past it is stopped and the script is disabled, with one line in `mod.log`. An error raised in a callback is caught: a command that raises returns its error as a failed result; an event callback that raises is logged.
+`setmetatable` refuses a `__gc` field (finalizers would run outside the limits below).
+
+Limits, per script:
+
+- **Steps**: loading the script, and each event callback, command or `run_on_game_thread` task, may take 1 million steps (a step is about one VM instruction; long `string.rep`, `find`, `gsub`, `table.sort` and `table.concat` calls count per item). Past that the call fails and the script is disabled; `pcall` can't catch it.
+- **Memory**: 64 MiB. An allocation past it fails with `not enough memory` and the script is disabled.
+- **Errors**: an error raised in a callback is caught and logged; a command that raises fails with the error text as its reply. After 3 errors the script is disabled.
+
+A disabled script stays listed but does nothing: its event callbacks stop and its commands answer `unavailable`. `mod.log` gets `[<id>] error: script disabled: <why>`.
 
 ## `sco` functions
 
@@ -28,8 +36,8 @@ Each callback has an instruction budget (1 million by default). A callback that 
 | `sco.unsubscribe(event, fn)` | `true`, or `false, err` | Removes that subscription |
 | `sco.run_on_game_thread(fn)` | `true`, or `false, err` | Runs `fn()` on the next tick |
 | `sco.register_command(t)` | `true`, or `false, err` | Registers a command (below) |
-| `sco.invoke(name, ...)` | `true, reply`, or `false, err` | Runs any command, sc-offline's or a plugin's |
-| `sco.list_commands()` | table | `{ {name = ..., title = ...}, ... }` |
+| `sco.invoke(name, ...)` | `true, reply`, or `false, err[, reply]` | Runs any command, sc-offline's or a plugin's, now. Arguments must match the command's types exactly (`int` takes an integer, not `"2"`). When the command itself fails, the third value is its reply |
+| `sco.list_commands()` | table | `{ {name, title, help, capability, args = { {name, type, help}, ... } }, ... }` |
 
 `err` is the result name from the C API in lower case: `"bad_arg"`, `"unavailable"`, `"not_found"`, `"too_many"`, `"crashed"`.
 
