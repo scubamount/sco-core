@@ -153,6 +153,9 @@ void SetCapabilityCheck(CapabilityCheck check);
 //   Release(owner) drops the queued call first. If Invoke returns anything other than Ok
 //   (BadArg for a null name, too many args or a released owner, TooMany when the task queue is
 //   full or memory runs out) done is never called.
+//   Either way, done is not called if `owner` was released while the command ran (the command,
+//   or something it called, ran Release(owner)): after Release the runtime never calls an
+//   owner's functions again.
 // Results from the command run: NotFound (no such live command), BadArg (arg count or a type
 // differs from the defs, a null string, a Bool not 0 or 1), Unavailable (capability check
 // says no), else fn's result.

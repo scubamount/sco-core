@@ -194,14 +194,18 @@ static void DoneThunk(void* p) {
     k->done(k->r, k->reply, k->ctx);
 }
 
-// owner: the invoking owner, the owner done runs as.
+// owner: the invoking owner, the owner done runs as. If the command released that owner, done is
+// not called (the owner's code may be gone): dropCtx(ctx) runs instead, and also when done
+// faulted before it could free its ctx.
 static void RunAndReport(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx,
-                         const void* owner, Result* out) {
+                         const void* owner, TaskFn dropCtx, Result* out) {
     char reply[kReplySize];
     const Result r = RunNow(name, args, nargs, reply, sizeof(reply));
     if (done) {
         DoneCall call{ done, r, reply, ctx };
-        detail::Callout(owner, "invoke done", DoneThunk, &call);
+        if (detail::Released(owner) || !detail::Callout(owner, "invoke done", DoneThunk, &call)) {
+            if (dropCtx) dropCtx(ctx);
+        }
     }
     if (out) *out = r;
 }
@@ -233,7 +237,7 @@ static void DropPending(void* p) {
 
 static void RunPending(void* p) {
     Pending* job = static_cast<Pending*>(p);
-    RunAndReport(job->name, job->args, job->nargs, job->done, job->ctx, job->owner, nullptr);
+    RunAndReport(job->name, job->args, job->nargs, job->done, job->ctx, job->owner, job->dropCtx, nullptr);
     FreePending(job);
 }
 
@@ -246,7 +250,7 @@ Result detail::InvokeOwned(const char* name, const Arg* args, uint32_t nargs, In
     if (!name || nargs > kMaxCommandArgs || (nargs && !args) || detail::Released(owner)) return Result::BadArg;
     if (OnGameThread()) {
         Result r = Result::Ok;
-        RunAndReport(name, args, nargs, done, ctx, owner, &r);
+        RunAndReport(name, args, nargs, done, ctx, owner, dropCtx, &r);
         return r;
     }
     Pending* job = new (std::nothrow) Pending;

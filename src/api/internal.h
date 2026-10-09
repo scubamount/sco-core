@@ -30,9 +30,10 @@ bool Released(const void* owner);
 Result PostOwned(TaskFn fn, TaskFn drop, void* ctx, const void* owner);
 
 // Invoke() with one addition for callers whose done ctx is heap state (sco::host's C-ABI
-// trampoline): when Release(owner) drops the queued off-thread call, dropCtx(ctx) runs so ctx
-// can be freed. dropCtx must not call back into the runtime. Never called on the game-thread
-// path or when Invoke returns anything but Ok.
+// trampoline): whenever done won't run after all, dropCtx(ctx) runs so ctx can be freed:
+// Release(owner) dropped the queued off-thread call, the command released owner while it ran,
+// or done itself faulted (the callout guard reported false). dropCtx must not call back into the
+// runtime. Never called when Invoke returns anything but Ok, or when done ran to completion.
 Result InvokeOwned(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx,
                    const void* owner, TaskFn dropCtx);
 

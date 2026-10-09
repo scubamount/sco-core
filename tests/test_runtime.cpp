@@ -2,6 +2,7 @@
 // Host build, no game needed. The "game thread" is this test's main thread.
 //   tools/test.sh
 #include "sco/runtime.h"
+#include "../src/api/internal.h"   // detail::InvokeOwned
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -430,10 +431,10 @@ static void TestCommands() {
     std::thread([&] { r = sco::Post(Record, Tag(1), &kOwnerH); }).join();
     CHECK(r == Result::BadArg && sco::QueuedTasks() == 0);
 
-    // Registering from another thread while the game thread lists. 24 slots are used so far
-    // (TestOverlap's 17, TestCalloutGuard's 1 and 6 here; released ones count too: slots never
-    // move).
-    constexpr size_t kUsed = 24;
+    // Registering from another thread while the game thread lists. 25 slots are used so far
+    // (TestOverlap's 17, TestCalloutGuard's 1, TestDoneAfterRelease's 1 and 6 here; released ones
+    // count too: slots never move).
+    constexpr size_t kUsed = 25;
     const size_t liveBefore = sco::ListCommands(nullptr, 0);   // spawn.ship, test.long, copy.me
     std::vector<std::string> names;
     for (size_t i = 0; i < sco::kMaxCommands; ++i) names.push_back("bulk.c" + std::to_string(i));
@@ -675,12 +676,50 @@ static void TestCalloutGuard() {
     CHECK(sco::Release(&kGuarded) == Result::Ok && sco::ListCommands(nullptr, 0) == 0);
 }
 
+// ---- done after the invoking owner is released -----------------------------------------------
+
+static const void* g_releaseMe = nullptr;
+static Result CmdRelease(const sco::Arg*, uint32_t, void*, char* reply, uint32_t size) {
+    CHECK(sco::Release(g_releaseMe) == Result::Ok);
+    snprintf(reply, size, "released");
+    return Result::Ok;
+}
+static int g_drops = 0;
+static void* g_droppedCtx = nullptr;
+static void CountDrop(void* ctx) { ++g_drops; g_droppedCtx = ctx; }
+
+static void TestDoneAfterRelease() {
+    static char kRel, kPlain, kGame, kOff, kKept, kBystander;
+    const sco::Command c{ "rel.caller", "Release", nullptr, nullptr, nullptr, 0, CmdRelease, nullptr };
+    CHECK(sco::RegisterCommand(&kRel, "rel", c) == Result::Ok);
+
+    // The command releases the invoking owner: the result still comes back, done is not called.
+    Done d;
+    g_releaseMe = &kPlain;
+    CHECK(sco::Invoke("rel.caller", nullptr, 0, OnDone, &d, &kPlain) == Result::Ok && d.calls == 0);
+    // With a dropCtx (sco::host's heap DoneRecord), dropCtx runs instead so ctx is freed.
+    g_releaseMe = &kGame;
+    CHECK(sco::detail::InvokeOwned("rel.caller", nullptr, 0, OnDone, &d, &kGame, CountDrop) == Result::Ok);
+    CHECK(d.calls == 0 && g_drops == 1 && g_droppedCtx == &d);
+    // Off the game thread: the queued call runs, releases its owner, done is skipped.
+    g_releaseMe = &kOff;
+    Result r = Result::Crashed;
+    std::thread([&] { r = sco::detail::InvokeOwned("rel.caller", nullptr, 0, OnDone, &d, &kOff, CountDrop); }).join();
+    CHECK(r == Result::Ok && sco::DrainTasks() == 1 && d.calls == 0 && g_drops == 2);
+    // Control: someone else released, the invoking owner is live: done runs, dropCtx doesn't.
+    g_releaseMe = &kBystander;
+    CHECK(sco::detail::InvokeOwned("rel.caller", nullptr, 0, OnDone, &d, &kKept, CountDrop) == Result::Ok);
+    CHECK(d.calls == 1 && d.reply == "released" && g_drops == 2);
+    CHECK(sco::Release(&kRel) == Result::Ok);
+}
+
 int main() {
     TestBeforeGameThread();   // first: checks the "no game thread yet" state
     TestTaskQueue();
     TestEvents();
     TestOverlap();    // before TestCommands, which fills every command slot
     TestCalloutGuard();
+    TestDoneAfterRelease();
     TestCommands();
     std::printf("sco-core runtime tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
