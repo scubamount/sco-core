@@ -4,7 +4,7 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 
 | Kind | What it is | Example |
 |---|---|---|
-| `native` | A 64-bit Windows DLL written in C against `sco_api.h`, or in C++20 with the `include/scosdk/` headers | [`examples/hello`](examples/hello), [`examples/cpp_hello`](examples/cpp_hello) |
+| `native` | A 64-bit Windows DLL written in C against `sco_api.h`, in C++20 with the `include/scosdk/` headers, or in C# with `csharp/Sco.Sdk` (NativeAOT) | [`examples/hello`](examples/hello), [`examples/cpp_hello`](examples/cpp_hello), [`examples/cs_hello`](examples/cs_hello) |
 | `data` | Files only: missions, rules, scripts, lists and game-data overrides (`datacore\*.toml`). Runs no code | [`examples/travel_pack`](examples/travel_pack), [`examples/quantum_pack`](examples/quantum_pack) |
 | `lua` | A Lua 5.4 script, run in a sandbox by sc-offline's bundled Lua runtime | [`examples/greeter`](examples/greeter) |
 
@@ -18,12 +18,13 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 |---|---|
 | `include/sco_api.h` | The only header a native C plugin includes |
 | `include/scosdk/` | The C++20 layer over `sco_api.h`, header-only: [C++ plugins](#c-plugins) |
+| `csharp/` | The C# layer (`Sco.Sdk`, .NET 8, NativeAOT) and its layout test: [C# plugins](#c-plugins-1) |
 | `cmake/sco-plugin.cmake` | `sco_add_plugin()` and `sco_add_pack()`: build a plugin and lay it out |
 | `template/` | A native plugin to copy and rename |
-| `examples/` | `hello` (native C), `cpp_hello` (native C++20), `travel_pack` (data), `quantum_pack` (data: DataCore overrides), `greeter` (Lua) |
+| `examples/` | `hello` (native C), `cpp_hello` (native C++20), `cs_hello` (native C#, NativeAOT), `travel_pack` (data), `quantum_pack` (data: DataCore overrides), `greeter` (Lua) |
 | `tools/sco-plugin-check.c` | Checks a built plugin folder on your machine, without the game |
 | `tools/lua-check.lua` | Runs a Lua plugin against a stand-in `sco` table, without the game |
-| `docs/` | [plugin.ini](docs/plugin-ini.md), [data packs](docs/data-packs.md), [Lua](docs/lua.md), [plugin rules](docs/plugin-rules.md), [API reference](../docs/api-v1.md), [C++ SDK](../docs/sdk-cpp.md) |
+| `docs/` | [plugin.ini](docs/plugin-ini.md), [data packs](docs/data-packs.md), [Lua](docs/lua.md), [plugin rules](docs/plugin-rules.md), [API reference](../docs/api-v1.md), [C++ SDK](../docs/sdk-cpp.md), [C# SDK](../docs/sdk-csharp.md) |
 | `SHA256SUMS` | The SHA-256 of every other file (in the zip only) |
 
 ## Build the examples
@@ -106,6 +107,24 @@ SCO_PLUGIN(MyPlugin, "my_plugin", "1.0.0", "you");
 - No exception crosses into the host: one that escapes `OnLoad` or a handler is caught, logged, and answered with `SCO_FAILED`.
 
 Build a C++ plugin with the same `sco_add_plugin`, in a project that enables `CXX`; [`examples/cpp_hello`](examples/cpp_hello/cpp_hello.cpp) shows the whole layer in one file. The [C++ SDK reference](../docs/sdk-cpp.md) covers lifetimes, the exception boundary and threads.
+
+## C# plugins
+
+`csharp/Sco.Sdk` is a .NET 8 library over `sco_api.h` and the host services, with no package references. A plugin derives from `Sco.Sdk.Plugin`, declares the three exports as `[UnmanagedCallersOnly(EntryPoint = "sco_plugin_query")]` (and `_load`, `_unload`) methods that forward to `PluginExports`, and is published with NativeAOT into one native DLL: no .NET runtime is needed next to the game.
+
+```powershell
+cd examples\cs_hello
+dotnet publish -c Release -r win-x64 -o out\cs_hello
+copy plugin.ini out\cs_hello\
+..\..\out\bin\sco-plugin-check out\cs_hello --invoke cs_hello.wave "Pilot One"
+```
+
+- You need the .NET 8 SDK and, on Windows, Visual Studio 2019 or newer with "Desktop development with C++" (NativeAOT links with MSVC). CMake doesn't build C# plugins; `dotnet publish` does.
+- Commands (`CommandBuilder`, `Args`, `Reply`), `Subscribe` handles, `RunOnGameThread`, `Invoke` / `InvokeAsync`, services (`Provide`, `Query` with `ServiceRef<T>.Covers`), raw handlers with the size handshake, and `Storage`, `DataCore` and `Ui` for the host services.
+- Every callback's `ctx` is an id into a registry swept at unload, never a `GCHandle`; no exception crosses into the host (logged, and `SCO_FAILED` where there is a result).
+- `dotnet run -c Release --project csharp/Sco.Sdk.Tests` checks every C# struct against the pinned C layout.
+
+[`examples/cs_hello`](examples/cs_hello/CsHello.cs) shows the whole layer in one file. The [C# SDK reference](../docs/sdk-csharp.md) covers setup, lifetimes, threads, the exception boundary and the NativeAOT rules.
 
 ## License
 
