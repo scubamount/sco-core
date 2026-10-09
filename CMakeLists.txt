@@ -70,7 +70,7 @@ sco_project_target(sco_core)
 
 # Tasks, events and commands: the cross-thread runtime under the plugin ABI.
 add_library(sco_runtime STATIC src/api/sco_tasks.cpp src/api/sco_events.cpp src/api/sco_commands.cpp
-  src/api/sco_services.cpp)
+  src/api/sco_services.cpp src/api/sco_raw.cpp)
 target_include_directories(sco_runtime PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_runtime PUBLIC Threads::Threads)
 sco_project_target(sco_runtime)
@@ -189,6 +189,13 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_host PRIVATE sco_host)
   sco_project_target(test_host)
   add_test(NAME test_host COMMAND test_host)
+
+  # The C++20 SDK layer (include/scosdk/): two SDK plugins over the real host table.
+  add_executable(test_sdk tests/test_sdk.cpp)
+  target_link_libraries(test_sdk PRIVATE sco_host)
+  sco_project_target(test_sdk)
+  add_test(NAME test_sdk COMMAND test_sdk)
+
   add_executable(test_hook tests/test_hook.cpp)
   target_link_libraries(test_hook PRIVATE sco_hook)
   add_test(NAME test_hook COMMAND test_hook)

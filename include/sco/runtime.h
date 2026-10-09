@@ -74,6 +74,38 @@ Result ProvideService(const void* owner, const char* prefix, const char* name, u
 // BadArg: null name or out. *out is null unless Ok.
 Result QueryService(const char* name, uint32_t minVersion, const void** out);
 
+// Withdraws one of owner's services. NotFound: owner publishes nothing by that name.
+// BadArg: null owner or name.
+Result ReleaseService(const void* owner, const char* name);
+
+// ---- raw calls (game thread) ------------------------------------------------------------------
+//
+// A raw handler takes and returns bytes, for calls whose data doesn't fit typed arguments and a
+// 256-byte reply (sco_api 1.1 register_raw / invoke_raw). The bytes' layout is the provider's
+// contract, like a service table's.
+
+// fn(in, inSize, out, outSize, ctx): *outSize holds out's capacity on entry; the handler sets it
+// to the bytes it wrote, or to the bytes it needs and answers TooMany.
+using RawFn = Result (*)(const void* in, uint32_t inSize, void* out, uint32_t* outSize, void* ctx);
+constexpr size_t kMaxRawHandlers = 256;   // live handlers
+
+// Registers fn under name ("<x>.<y>", the command name rule). With a non-null prefix the name
+// must start with "<prefix>.". capability: as for commands; nullptr for none. Only fn and ctx are
+// borrowed, until Release(owner). BadArg: null owner or fn, a bad name, capability or prefix, a
+// name already registered, or owner released. TooMany: kMaxRawHandlers live, or out of memory.
+// Any thread.
+Result RegisterRaw(const void* owner, const char* prefix, const char* name, const char* capability,
+                   RawFn fn, void* ctx);
+
+// Calls a raw handler now, on the game thread, as one callout of its owner (a fault is Crashed
+// and marks the owner, through the callout guard). in may be null only with inSize 0; out may be
+// null only with outSize null (no output wanted). Returns the handler's result, with *outSize
+// the bytes written or (TooMany) needed. NotFound: no handler by that name. Unavailable: its
+// capability is missing. WrongThread: not the game thread. BadArg: null name, a bad buffer pair,
+// or caller released. Crashed: the handler faulted (*outSize 0).
+Result InvokeRaw(const void* caller, const char* name, const void* in, uint32_t inSize, void* out,
+                 uint32_t* outSize);
+
 // ---- task queue -----------------------------------------------------------------------------
 
 using TaskFn = void (*)(void* ctx);

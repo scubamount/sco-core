@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.20)
-project(sco_sdk C)
+project(sco_sdk C CXX)
 
 # Builds every example, the template and sco-plugin-check in one go. Works from the unpacked
 # SDK zip and from sdk/ in the sco-core repository.
 #
 #   cmake -S . -B build && cmake --build build && cmake --install build --prefix out
 #
-# out/data/plugins/ then holds hello/, travel_pack/, greeter/ and my_plugin/, laid out the way
+# out/data/plugins/ then holds hello/, cpp_hello/, travel_pack/, greeter/ and my_plugin/, laid out the way
 # sc-offline reads them, and out/bin/ holds sco-plugin-check.
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/sco-plugin.cmake")
@@ -25,6 +25,7 @@ endif()
 install(TARGETS sco-plugin-check RUNTIME DESTINATION bin)
 
 sco_add_plugin(hello SOURCES examples/hello/hello.c INI examples/hello/plugin.ini)
+sco_add_plugin(cpp_hello SOURCES examples/cpp_hello/cpp_hello.cpp INI examples/cpp_hello/plugin.ini)
 sco_add_plugin(my_plugin SOURCES template/plugin.c INI template/plugin.ini)
 sco_add_pack(travel_pack DIR examples/travel_pack)
 sco_add_pack(greeter DIR examples/greeter)

@@ -6,7 +6,7 @@
 #   sdk/test-zip.sh                 # packages first (sdk/package.py), then tests that zip
 #   sdk/test-zip.sh <sco-sdk.zip>   # tests a zip built elsewhere, e.g. CI's artifact
 #
-# Needs python3, cmake, a C compiler and Lua 5.4 (lua5.4). SCO_SDK_NO_LUA=1 skips the Lua
+# Needs python3, cmake, a C and C++20 compiler and Lua 5.4 (lua5.4). SCO_SDK_NO_LUA=1 skips the Lua
 # example's run (the Windows CI job, which has no Lua); the job that packages runs it.
 #
 # Exit 0 = the zip is complete and every example builds and passes its check.
@@ -46,6 +46,11 @@ P="$WORK/out/data/plugins"
 "$CHECK" "$P/hello"
 "$CHECK" "$P/hello" --cap teleport --invoke hello.wave "Pilot One" | tee "$WORK/hello.txt"
 grep -q 'invoke  hello.wave -> ok "Hello, Pilot One"' "$WORK/hello.txt"
+# The C++20 example (include/scosdk/): a command with an argument, one without, and its service.
+"$CHECK" "$P/cpp_hello" --invoke cpp_hello.wave "Pilot One" | tee "$WORK/cpp_hello.txt"
+grep -q 'invoke  cpp_hello.wave -> ok "Hello, Pilot One"' "$WORK/cpp_hello.txt"
+grep -q 'invoke  cpp_hello.ticks -> ok "3 ticks"' "$WORK/cpp_hello.txt"
+grep -q 'service cpp_hello.greeter 1.0' "$WORK/cpp_hello.txt"
 "$CHECK" "$P/my_plugin" | tee "$WORK/template.txt"
 grep -q 'invoke  my_plugin.ping -> ok "pong"' "$WORK/template.txt"
 "$CHECK" "$P/travel_pack"

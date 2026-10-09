@@ -66,6 +66,17 @@ Result QueryService(const char* name, uint32_t minVersion, const void** out) {
     return Result::NotFound;
 }
 
+Result ReleaseService(const void* owner, const char* name) {
+    if (!owner || !name) return Result::BadArg;
+    std::lock_guard<std::mutex> hold(g_lock);
+    for (size_t i = 0; i < g_services.size(); ++i)
+        if (g_services[i].owner == owner && g_services[i].name == name) {
+            g_services.erase(g_services.begin() + static_cast<std::ptrdiff_t>(i));
+            return Result::Ok;
+        }
+    return Result::NotFound;
+}
+
 long detail::ReleaseServices(const void* owner) {
     std::lock_guard<std::mutex> hold(g_lock);
     long n = 0;

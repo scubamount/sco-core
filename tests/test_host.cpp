@@ -215,24 +215,53 @@ static void TestTable() {
     sco_plugin* forged = reinterpret_cast<sco_plugin*>(reinterpret_cast<char*>(hello) + 1);
 
     // Services (1.1): published under the plugin's own id, found by any plugin.
-    CHECK(api->provide_service && api->query_service);
+    CHECK(api->provide_service && api->query_service && api->release_service && api->invoke_raw && api->register_raw);
     static const int kTable = 7;
-    sco_service_def def = { sizeof(sco_service_def), "hello.greeter", 0x00010000, &kTable };
-    CHECK(api->provide_service(hello, &def) == SCO_OK);
+    CHECK(api->provide_service(hello, "hello.greeter", 0x00010000, &kTable) == SCO_OK);
     const void* tab = nullptr;
-    CHECK(api->query_service(other, "hello.greeter", 0x00010000, &tab) == SCO_OK && tab == &kTable);
-    CHECK(api->query_service(other, "hello.greeter", 0x00020000, &tab) == SCO_UNAVAILABLE && tab == nullptr);
-    CHECK(api->query_service(other, "hello.nothing", 0x00010000, &tab) == SCO_NOT_FOUND);
-    sco_service_def theirs = def;
-    theirs.name = "teleport.spatial";
-    CHECK(api->provide_service(hello, &theirs) == SCO_BAD_ARG);   // not hello's prefix
-    sco_service_def shortDef = def;
-    shortDef.name = "hello.short";
-    shortDef.size = 8;
-    CHECK(api->provide_service(hello, &shortDef) == SCO_BAD_ARG);
-    CHECK(api->provide_service(hello, nullptr) == SCO_BAD_ARG && api->provide_service(forged, &def) == SCO_BAD_ARG);
-    tab = &kTable;
-    CHECK(api->query_service(forged, "hello.greeter", 0x00010000, &tab) == SCO_BAD_ARG && tab == nullptr);
+    CHECK(api->query_service("hello.greeter", 0x00010000, &tab) == SCO_OK && tab == &kTable);
+    CHECK(api->query_service("hello.greeter", 0x00020000, &tab) == SCO_UNAVAILABLE && tab == nullptr);
+    CHECK(api->query_service("hello.nothing", 0x00010000, &tab) == SCO_NOT_FOUND);
+    CHECK(api->provide_service(hello, "teleport.spatial", 0x00010000, &kTable) == SCO_BAD_ARG);   // not hello's prefix
+    CHECK(api->provide_service(hello, "hello.greeter", 0x00010000, &kTable) == SCO_BAD_ARG);      // taken
+    CHECK(api->provide_service(forged, "hello.other", 0x00010000, &kTable) == SCO_BAD_ARG);
+    CHECK(api->provide_service(hello, "hello.temp", 0x00010000, &kTable) == SCO_OK);
+    CHECK(api->release_service(other, "hello.temp") == SCO_NOT_FOUND);   // not other's
+    CHECK(api->release_service(hello, "hello.temp") == SCO_OK && api->query_service("hello.temp", 0x00010000, &tab) == SCO_NOT_FOUND);
+    CHECK(api->release_service(forged, "hello.greeter") == SCO_BAD_ARG);
+
+    // Raw handlers (1.1): bytes in, bytes out, through the plugin's own trampoline.
+    struct Echo {
+        static sco_result Fn(const void* in, uint32_t inSize, void* out, uint32_t* outSize, void* ctx) {
+            ++*static_cast<int*>(ctx);
+            if (*outSize < inSize) { *outSize = inSize; return SCO_TOO_MANY; }
+            if (inSize) std::memcpy(out, in, inSize);
+            *outSize = inSize;
+            return SCO_OK;
+        }
+    };
+    int echoCalls = 0;
+    CHECK(api->register_raw(hello, "hello.echo", nullptr, Echo::Fn, &echoCalls) == SCO_OK);
+    CHECK(api->register_raw(hello, "other.echo", nullptr, Echo::Fn, &echoCalls) == SCO_BAD_ARG);
+    CHECK(api->register_raw(hello, "hello.echo", nullptr, Echo::Fn, &echoCalls) == SCO_BAD_ARG);
+    CHECK(api->register_raw(hello, "hello.gated", "no.such", Echo::Fn, &echoCalls) == SCO_OK);
+    CHECK(api->register_raw(forged, "hello.x", nullptr, Echo::Fn, &echoCalls) == SCO_BAD_ARG);
+    const char msg[] = "ping";
+    char got[16] = {};
+    uint32_t gotSize = sizeof(got);
+    CHECK(api->invoke_raw(other, "hello.echo", msg, 4, got, &gotSize) == SCO_OK && gotSize == 4 && std::memcmp(got, "ping", 4) == 0);
+    gotSize = 2;
+    CHECK(api->invoke_raw(other, "hello.echo", msg, 4, got, &gotSize) == SCO_TOO_MANY && gotSize == 4);
+    gotSize = 0;
+    CHECK(api->invoke_raw(other, "hello.echo", msg, 4, nullptr, &gotSize) == SCO_TOO_MANY && gotSize == 4);   // asks the size
+    CHECK(api->invoke_raw(other, "hello.gated", msg, 4, nullptr, nullptr) == SCO_UNAVAILABLE);
+    CHECK(api->invoke_raw(other, "hello.none", nullptr, 0, nullptr, nullptr) == SCO_NOT_FOUND);
+    gotSize = sizeof(got);
+    CHECK(api->invoke_raw(forged, "hello.echo", msg, 4, got, &gotSize) == SCO_BAD_ARG && gotSize == 0);
+    sco_result offRaw = SCO_OK;
+    std::thread([&] { uint32_t s = 0; offRaw = api->invoke_raw(other, "hello.echo", nullptr, 0, nullptr, &s); }).join();
+    CHECK(offRaw == SCO_WRONG_THREAD);
+    CHECK(echoCalls == 3);
     static char notAHandle[64];
     sco_plugin* fake = reinterpret_cast<sco_plugin*>(notAHandle);
     CHECK(sco::host::PluginId(forged) == nullptr && sco::host::PluginId(fake) == nullptr && sco::host::PluginId(nullptr) == nullptr);
@@ -354,7 +383,7 @@ static void TestTable() {
     CHECK(api->run_on_game_thread(hello, Task, &n) == SCO_OK);
     CHECK(api->subscribe(hello, "tick", Ev, &n) == SCO_OK);
     size_t removed = 0;
-    CHECK(sco::Release(hello, &removed) == Result::Ok && removed == 7);   // 3 commands, 1 sub, 2 tasks, 1 service
+    CHECK(sco::Release(hello, &removed) == Result::Ok && removed == 9);   // 3 commands, 1 sub, 2 tasks, 1 service, 2 raw handlers
     const int nBefore = n;
     sco::GameThreadTick(5);
     CHECK(dropped.calls == 0 && n == nBefore);

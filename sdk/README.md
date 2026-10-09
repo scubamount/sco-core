@@ -4,7 +4,7 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 
 | Kind | What it is | Example |
 |---|---|---|
-| `native` | A 64-bit Windows DLL written in C (or C++ with `extern "C"`) against `sco_api.h` | [`examples/hello`](examples/hello) |
+| `native` | A 64-bit Windows DLL written in C against `sco_api.h`, or in C++20 with the `include/scosdk/` headers | [`examples/hello`](examples/hello), [`examples/cpp_hello`](examples/cpp_hello) |
 | `data` | Files only: missions, rules, scripts and lists. Runs no code | [`examples/travel_pack`](examples/travel_pack) |
 | `lua` | A Lua 5.4 script, run in a sandbox by sc-offline's bundled Lua runtime | [`examples/greeter`](examples/greeter) |
 
@@ -16,18 +16,19 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 
 | Path | What |
 |---|---|
-| `include/sco_api.h` | The only header a native plugin includes |
+| `include/sco_api.h` | The only header a native C plugin includes |
+| `include/scosdk/` | The C++20 layer over `sco_api.h`, header-only: [C++ plugins](#c-plugins) |
 | `cmake/sco-plugin.cmake` | `sco_add_plugin()` and `sco_add_pack()`: build a plugin and lay it out |
 | `template/` | A native plugin to copy and rename |
-| `examples/` | `hello` (native), `travel_pack` (data), `greeter` (Lua) |
+| `examples/` | `hello` (native C), `cpp_hello` (native C++20), `travel_pack` (data), `greeter` (Lua) |
 | `tools/sco-plugin-check.c` | Checks a built plugin folder on your machine, without the game |
 | `tools/lua-check.lua` | Runs a Lua plugin against a stand-in `sco` table, without the game |
-| `docs/` | [plugin.ini](docs/plugin-ini.md), [data packs](docs/data-packs.md), [Lua](docs/lua.md), [plugin rules](docs/plugin-rules.md), [API reference](../docs/api-v1.md) |
+| `docs/` | [plugin.ini](docs/plugin-ini.md), [data packs](docs/data-packs.md), [Lua](docs/lua.md), [plugin rules](docs/plugin-rules.md), [API reference](../docs/api-v1.md), [C++ SDK](../docs/sdk-cpp.md) |
 | `SHA256SUMS` | The SHA-256 of every other file (in the zip only) |
 
 ## Build the examples
 
-You need CMake 3.20 or newer (Visual Studio 2019 ships 3.20) and a C compiler. For plugins the game can load, that's Visual Studio 2019 or newer with the "Desktop development with C++" workload, on Windows. On macOS and Linux the same commands build plugins you can check with `sco-plugin-check`; the game needs the Windows DLL.
+You need CMake 3.20 or newer (Visual Studio 2019 ships 3.20) and a C and C++20 compiler (Visual Studio 2019 16.11 or newer, clang 14, gcc 11). For plugins the game can load, that's Visual Studio 2019 or newer with the "Desktop development with C++" workload, on Windows. On macOS and Linux the same commands build plugins you can check with `sco-plugin-check`; the game needs the Windows DLL.
 
 Windows (Developer PowerShell for VS):
 
@@ -45,7 +46,7 @@ cmake --build build
 cmake --install build --prefix out
 ```
 
-`out/data/plugins/` now holds `hello/`, `travel_pack/`, `greeter/` and `my_plugin/` (the template), laid out the way sc-offline reads them, and `out/bin/` holds `sco-plugin-check`.
+`out/data/plugins/` now holds `hello/`, `cpp_hello/`, `travel_pack/`, `greeter/` and `my_plugin/` (the template), laid out the way sc-offline reads them, and `out/bin/` holds `sco-plugin-check`.
 
 ## Check a plugin
 
@@ -79,6 +80,32 @@ To switch one plugin off, create an empty file named `disabled` in its folder.
    ```
 
 The template registers one command, `my_plugin.ping`. [`examples/hello/hello.c`](examples/hello/hello.c) adds `has()`, events and a command with an argument. The [API reference](../docs/api-v1.md) covers every function.
+
+## C++ plugins
+
+`include/scosdk/` is a header-only C++20 layer over `sco_api.h`, with nothing beyond the standard library. Derive from `sco::sdk::Plugin`, override `OnLoad`, and `SCO_PLUGIN` writes the three exports:
+
+```cpp
+#include "scosdk/scosdk.hpp"
+
+class MyPlugin : public sco::sdk::Plugin {
+public:
+    sco_result OnLoad() override {
+        return sco::sdk::CommandBuilder(*this, "my_plugin.ping")
+            .Title("Ping")
+            .Handle([](const sco::sdk::Args&, sco::sdk::Reply& reply) { reply.Set("pong"); return SCO_OK; })
+            .Register();
+    }
+};
+
+SCO_PLUGIN(MyPlugin, "my_plugin", "1.0.0", "you");
+```
+
+- Commands with typed arguments (`CommandBuilder`, `Args`, `Reply`), event subscriptions as handles that unsubscribe themselves (`Subscribe`), tasks as `std::function` (`RunOnGameThread`), services (`Provide`, `ServiceRef<T>`) and raw handlers with the size handshake done for you (`RegisterRaw<In, Out>`, `InvokeRaw`).
+- The SDK owns your handlers and strings for the plugin's life and releases them at unload; nothing it hands the host can be called after it was freed.
+- No exception crosses into the host: one that escapes `OnLoad` or a handler is caught, logged, and answered with `SCO_FAILED`.
+
+Build a C++ plugin with the same `sco_add_plugin`, in a project that enables `CXX`; [`examples/cpp_hello`](examples/cpp_hello/cpp_hello.cpp) shows the whole layer in one file. The [C++ SDK reference](../docs/sdk-cpp.md) covers lifetimes, the exception boundary and threads.
 
 ## License
 
