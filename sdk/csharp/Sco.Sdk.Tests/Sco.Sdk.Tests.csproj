@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The C# SDK's own test: the layout of every struct against the C pins (Layout.cs), and the
+       wrappers against a stand-in host table (FakeHost.cs). `dotnet run -c Release [abi files]`;
+       exit 0 = every check passed. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <RollForward>Major</RollForward>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Sco.Sdk/Sco.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>
