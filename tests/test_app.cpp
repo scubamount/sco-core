@@ -12,6 +12,7 @@
 #include "sco/plugins.h"
 #include "sco/runtime.h"
 #include "sco/scan.h"
+#include "sco/ui.h"
 #include "sco_api.h"
 #include "sco_lua.h"
 #include <csetjmp>
@@ -401,6 +402,17 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     CHECK(api->query_service("sco.storage", 0x00010000, &table) == SCO_OK && table);
     sco::app::Stop();
     CHECK(api->query_service("sco.storage", 0x00010000, &table) == SCO_NOT_FOUND);
+
+    // sco.ui is always published, with the product's reserved chords, and withdrawn after unload.
+    static const char* const kReserved[] = { "F6", "not a chord" };
+    pf.reservedChords = kReserved;
+    pf.nReservedChords = 2;
+    CHECK(sco::app::Start(pf));
+    CHECK(api->query_service("sco.ui", 0x00010000, &table) == SCO_OK && table == sco::ui::Table());
+    CHECK((sco::ui::ReservedChords() == std::vector<std::string>{ "f6" }));
+    CHECK(Logged("[app] hotkey 'not a chord' not reserved: BAD_ARG"));
+    sco::app::Stop();
+    CHECK(api->query_service("sco.ui", 0x00010000, &table) == SCO_NOT_FOUND && !sco::ui::Started());
     fs::remove_all(out / "app", ec);
 }
 
