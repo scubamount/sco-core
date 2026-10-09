@@ -145,6 +145,7 @@ namespace Sco.Sdk.Tests
             ("tests/abi_ui.c", "AT(sco_ui_v1, last_error, 72);"),
             ("tests/abi_datacore.c", "PIN(sizeof(void*) == 8);"),
             ("tests/abi_datacore.c", "PIN(SCO_DATACORE_VERSION_1_0 == 0x00010000u);"),
+            ("tests/abi_datacore.c", "PIN(SCO_DATACORE_VERSION_1_1 == 0x00010001u);"),
             ("tests/abi_datacore.c", "PIN(sizeof(SCO_DATACORE_NAME) == 13); /* \"sco.datacore\" */"),
             ("tests/abi_datacore.c", "PIN(sizeof(SCO_DC_APPLIED_EVENT) == 17); /* \"datacore.applied\" */"),
             ("tests/abi_datacore.c", "PIN(SCO_DC_OPEN == 1u);"),

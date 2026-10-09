@@ -164,7 +164,7 @@ namespace Sco.Sdk
                 return t->append(Id, r, f, v.Ptr);
         }
 
-        /// <summary>A new record. Unavailable in 1.0 (saved patches have no record operation yet).</summary>
+        /// <summary>A new record (sco.datacore 1.1: query with Abi.DataCoreVersion1_1 to require it). A 1.0 host answers Unavailable.</summary>
         public ScoResult AddRecord(string type, string name, string? guid, string cloneRecord, string? filePath, out ulong record)
         {
             record = 0;

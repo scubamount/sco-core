@@ -79,6 +79,7 @@ namespace Sco.Sdk.Tests
             ["SCO_UI_MAX_HOTKEY_ARGS"] = Abi.UiMaxHotkeyArgs,
             ["SCO_UI_MAX_ARG_STRING"] = Abi.UiMaxArgString,
             ["SCO_DATACORE_VERSION_1_0"] = Abi.DataCoreVersion1_0,
+            ["SCO_DATACORE_VERSION_1_1"] = Abi.DataCoreVersion1_1,
             ["SCO_DC_OPEN"] = Abi.DcOpen,
             ["SCO_DC_LOADED"] = Abi.DcLoaded,
             ["SCO_DC_NON_ATOMIC"] = Abi.DcNonAtomic,
