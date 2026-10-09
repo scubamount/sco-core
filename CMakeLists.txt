@@ -88,6 +88,11 @@ endif()
 target_link_libraries(sco_plugins PUBLIC sco_runtime sco_core ${CMAKE_DL_LIBS})
 sco_project_target(sco_plugins)
 
+# The host kit (sco/app.h): Start / Tick / Stop over the host table, caps, signatures and loader.
+add_library(sco_app STATIC src/app/sco_app.cpp)
+target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core)
+sco_project_target(sco_app)
+
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
 file(GLOB SCO_LUA_VENDOR_SOURCES CONFIGURE_DEPENDS
   "${CMAKE_CURRENT_SOURCE_DIR}/plugins/lua/third_party/lua/src/*.c")
