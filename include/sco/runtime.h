@@ -159,4 +159,22 @@ void SetCapabilityCheck(CapabilityCheck check);
 Result Invoke(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx,
               const void* owner = nullptr);
 
+// ---- crash containment ----------------------------------------------------------------------
+
+// Runs one callout for `owner`: calls thunk(ctx) (or skips it) and returns true when the call
+// completed, false when it did not (it faulted, or the owner may not be called any more).
+using CalloutGuard = bool (*)(const void* owner, const char* where, TaskFn thunk, void* ctx);
+
+// Installs the guard every owned callout runs through; nullptr (the default) calls straight
+// through. When set, every task, event callback, command fn and Invoke done callback whose owner
+// is non-null runs as guard(owner, where, thunk, ctx); nullptr-owner callouts never see it.
+//   owner: the task's, the subscription's or the command's owner; for done, the owner passed to
+//          Invoke
+//   where: "task" for tasks, the event name for events, the command name for commands,
+//          "invoke done" for done callbacks
+// A false return means the callout did not complete: a command that faults answers Crashed (with
+// an empty reply, and done still gets Crashed); nothing else is retried or reported.
+// Install from the game thread while nothing runs (sco::plugins::ContainCallouts does).
+void SetCalloutGuard(CalloutGuard guard);
+
 }  // namespace sco

@@ -430,9 +430,10 @@ static void TestCommands() {
     std::thread([&] { r = sco::Post(Record, Tag(1), &kOwnerH); }).join();
     CHECK(r == Result::BadArg && sco::QueuedTasks() == 0);
 
-    // Registering from another thread while the game thread lists. 23 slots are used so far
-    // (TestOverlap's 17 and 6 here; released ones count too: slots never move).
-    constexpr size_t kUsed = 23;
+    // Registering from another thread while the game thread lists. 24 slots are used so far
+    // (TestOverlap's 17, TestCalloutGuard's 1 and 6 here; released ones count too: slots never
+    // move).
+    constexpr size_t kUsed = 24;
     const size_t liveBefore = sco::ListCommands(nullptr, 0);   // spawn.ship, test.long, copy.me
     std::vector<std::string> names;
     for (size_t i = 0; i < sco::kMaxCommands; ++i) names.push_back("bulk.c" + std::to_string(i));
@@ -597,11 +598,89 @@ static void TestOverlap() {
     CHECK(sco::Release(&kConc) == Result::Ok);
 }
 
+// ---- callout guard --------------------------------------------------------------------------
+
+struct GuardSeen { const void* owner; std::string where; };
+static std::vector<GuardSeen> g_guardSeen;
+static bool g_guardFaults = false;   // simulate a fault: report it without running the call
+static bool TestGuard(const void* owner, const char* where, sco::TaskFn thunk, void* ctx) {
+    g_guardSeen.push_back({ owner, where });
+    if (g_guardFaults) return false;
+    thunk(ctx);
+    return true;
+}
+static bool GuardSaw(std::vector<GuardSeen> want) {
+    if (want.size() != g_guardSeen.size()) return false;
+    for (size_t i = 0; i < want.size(); ++i)
+        if (want[i].owner != g_guardSeen[i].owner || want[i].where != g_guardSeen[i].where) return false;
+    return true;
+}
+
+static void TestCalloutGuard() {
+    static char kGuarded, kCaller;
+    Call cmd;
+    const sco::Command c{ "guard.cmd", "Guarded", nullptr, nullptr, nullptr, 0, CmdNop, &cmd };
+    CHECK(sco::RegisterCommand(&kGuarded, "guard", c) == Result::Ok);
+    sco::SetCalloutGuard(TestGuard);
+
+    // Commands run as their owner, done as the invoking owner.
+    g_guardSeen.clear();
+    Done d;
+    CHECK(sco::Invoke("guard.cmd", nullptr, 0, OnDone, &d, &kCaller) == Result::Ok);
+    CHECK(cmd.calls == 1 && d.calls == 1 && d.r == Result::Ok);
+    CHECK(GuardSaw({ { &kGuarded, "guard.cmd" }, { &kCaller, "invoke done" } }));
+
+    // A faulting command answers Crashed; done (no owner here) bypasses the guard and still runs.
+    g_guardSeen.clear();
+    g_guardFaults = true;
+    CHECK(sco::Invoke("guard.cmd", nullptr, 0, OnDone, &d) == Result::Crashed);
+    CHECK(cmd.calls == 1 && d.calls == 2 && d.r == Result::Crashed && d.reply.empty());
+    CHECK(GuardSaw({ { &kGuarded, "guard.cmd" } }));
+
+    // Tasks: owned ones through the guard, nullptr-owner ones straight through.
+    g_guardSeen.clear();
+    g_order.clear();
+    CHECK(sco::Post(Record, Tag(1), &kGuarded) == Result::Ok);
+    CHECK(sco::Post(Record, Tag(2)) == Result::Ok);
+    CHECK(sco::DrainTasks() == 2 && (g_order == std::vector<int>{ 2 }));   // the owned one "faulted"
+    CHECK(GuardSaw({ { &kGuarded, "task" } }));
+    g_guardFaults = false;
+
+    // Events: the event name is `where`.
+    g_guardSeen.clear();
+    Seen owned, host;
+    CHECK(sco::Subscribe(&kGuarded, "guard.ev", OnEvent, &owned) == Result::Ok);
+    CHECK(sco::Subscribe(nullptr, "guard.ev", OnEvent, &host) == Result::Ok);
+    size_t called = 0;
+    CHECK(sco::Dispatch("guard.ev", nullptr, &called) == Result::Ok && called == 2 && owned.calls == 1 && host.calls == 1);
+    CHECK(GuardSaw({ { &kGuarded, "guard.ev" } }));
+
+    // An off-thread invoke: the queued call itself is runtime code (no "task" callout); the
+    // command and done are guarded as before.
+    g_guardSeen.clear();
+    Done q;
+    Result r = Result::Crashed;
+    std::thread([&] { r = sco::Invoke("guard.cmd", nullptr, 0, OnDone, &q, &kCaller); }).join();
+    CHECK(r == Result::Ok && sco::DrainTasks() == 1 && q.calls == 1 && q.r == Result::Ok && cmd.calls == 2);
+    CHECK(GuardSaw({ { &kGuarded, "guard.cmd" }, { &kCaller, "invoke done" } }));
+
+    // Uninstalled: direct calls again.
+    sco::SetCalloutGuard(nullptr);
+    g_guardSeen.clear();
+    CHECK(sco::Invoke("guard.cmd", nullptr, 0, OnDone, &d, &kCaller) == Result::Ok && cmd.calls == 3);
+    CHECK(sco::Dispatch("guard.ev", nullptr, &called) == Result::Ok && owned.calls == 2);
+    CHECK(g_guardSeen.empty());
+
+    CHECK(sco::Unsubscribe(nullptr, "guard.ev", OnEvent) == Result::Ok);
+    CHECK(sco::Release(&kGuarded) == Result::Ok && sco::ListCommands(nullptr, 0) == 0);
+}
+
 int main() {
     TestBeforeGameThread();   // first: checks the "no game thread yet" state
     TestTaskQueue();
     TestEvents();
     TestOverlap();    // before TestCommands, which fills every command slot
+    TestCalloutGuard();
     TestCommands();
     std::printf("sco-core runtime tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

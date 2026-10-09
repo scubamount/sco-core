@@ -15,6 +15,7 @@
 //
 // Flow on the game thread, after game.ready:
 //   auto list = sco::plugins::Discover(root, opts);       // parse + check every folder
+//   sco::plugins::ContainCallouts(&list);                 // guard every plugin callback
 //   for (auto& p : list) if (p.state == State::Ready && p.manifest.kind == Kind::Native)
 //       sco::plugins::LoadNative(p, api, selfFor(p));     // query -> checks -> load, all guarded
 //   index.Build(list);                                    // data packs -> content index
@@ -148,16 +149,25 @@ bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& 
                 const ModuleOps& ops = PlatformModuleOps());
 
 // Calls into a loaded plugin's code (an event callback, a command, a task, a done callback):
-// the host's sco_api trampolines route every plugin callback through this. Skips the call and
-// returns false unless p is Loaded; runs thunk(ctx) under Guarded(); on a fault calls
-// MarkCrashed(p, where, code) and returns false. Game thread only.
+// the runtime guard ContainCallouts installs routes every callout of a Loaded plugin through
+// this. Skips the call and returns false unless p is Loaded; runs thunk(ctx) under Guarded(); on
+// a fault calls MarkCrashed(p, where, code) and returns false. Game thread only.
 bool CallPlugin(Plugin& p, const char* where, void (*thunk)(void* ctx), void* ctx);
 
-// Marks a loaded native plugin crashed after a fault the host caught in one of its callbacks
-// (tick, a command, a task): sco::Release(self), state Crashed, reason "crashed in <where>
-// (0x<code>)", one log line and a status message. The module stays mapped (its code may still
-// be on a stack). Game thread only. No-op unless state is Loaded.
+// Marks a loaded plugin crashed after a fault caught in one of its callbacks (CallPlugin calls
+// it for tick, a command, a task, a done callback): sco::Release(self), state Crashed, reason
+// "crashed in <where> (0x<code>)", one log line and a status message. The module stays mapped
+// (its code may still be on a stack). Game thread only. No-op unless state is Loaded.
 void MarkCrashed(Plugin& p, const char* where, uint32_t code);
+
+// Installs a runtime callout guard (sco::SetCalloutGuard) that finds the Plugin in *list whose
+// `self` is the callout's owner and runs the call as CallPlugin(p, where, ...), so a fault in any
+// plugin callback marks that plugin Crashed and a faulting command answers SCO_CRASHED. Owners
+// not in the list (host features) and plugins still Ready (calls made synchronously during their
+// load or script run, already inside the load guard) are called straight through; a Crashed,
+// Refused or Unloaded plugin is never called. nullptr uninstalls. Game thread only; *list must
+// outlive the installation and must not be resized while installed.
+void ContainCallouts(std::vector<Plugin>* list);
 
 // Unloads one loaded native plugin: unload() (guarded; a fault marks it Crashed instead),
 // sco::Release(self), close the module, state Unloaded. Game thread only. No-op unless Loaded.

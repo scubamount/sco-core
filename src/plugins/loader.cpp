@@ -201,6 +201,25 @@ bool CallPlugin(Plugin& p, const char* where, void (*thunk)(void*), void* ctx) {
     return true;
 }
 
+static std::vector<Plugin>* g_contained = nullptr;   // game thread only
+
+static bool ContainedCallout(const void* owner, const char* where, TaskFn thunk, void* ctx) {
+    Plugin* p = nullptr;
+    if (g_contained)
+        for (Plugin& q : *g_contained)
+            if (q.self && q.self == owner) { p = &q; break; }
+    if (!p || p->state == State::Ready) {   // a host feature, or a plugin inside its load guard
+        thunk(ctx);
+        return true;
+    }
+    return CallPlugin(*p, where, thunk, ctx);
+}
+
+void ContainCallouts(std::vector<Plugin>* list) {
+    g_contained = list;
+    sco::SetCalloutGuard(list ? ContainedCallout : nullptr);
+}
+
 void UnloadNative(Plugin& p, const ModuleOps& ops) {
     if (p.state != State::Loaded || p.manifest.kind != Kind::Native) return;
     if (const uint32_t code = Guarded(UnloadThunk, reinterpret_cast<void*>(p.exports.unload))) {

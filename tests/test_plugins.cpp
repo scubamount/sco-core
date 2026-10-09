@@ -310,36 +310,20 @@ static uint32_t SignalGuard(void (*thunk)(void*), void* ctx) {
 }
 #endif
 
-// A tiny sco_api over the runtime, standing in for the host table (lane A's sco::host). Each
-// plugin callback goes through CallPlugin, the way the real host table must.
-struct Sub { P::Plugin* plugin; sco_event_fn fn; void* ctx; };
+// A tiny sco_api over the runtime, standing in for the host table (sco::host). Callbacks go to
+// the runtime as they are, like the real table; ContainCallouts guards them there.
 static std::vector<P::Plugin>* g_list;
-static std::vector<Sub*> g_subs;
 
 static P::Plugin* PluginOf(sco_plugin* self) {
     for (auto& p : *g_list) if (p.self == self) return &p;
     return nullptr;
 }
 
-struct EventCall { Sub* sub; const char* event; const void* data; };
-static void EventThunk(void* c) {
-    auto* e = static_cast<EventCall*>(c);
-    e->sub->fn(e->event, e->data, e->sub->ctx);
-}
-static void Trampoline(const char* event, const void* data, void* ctx) {
-    auto* sub = static_cast<Sub*>(ctx);
-    EventCall call{ sub, event, data };
-    P::CallPlugin(*sub->plugin, event, EventThunk, &call);
-}
-
 static const char* ApiHostVersion() { return "test-host 0.0"; }
 static int ApiHas(const char*) { return 0; }
 static sco_result ApiSubscribe(sco_plugin* self, const char* event, sco_event_fn fn, void* ctx) {
-    P::Plugin* p = PluginOf(self);
-    if (!p || !fn) return SCO_BAD_ARG;
-    auto* sub = new Sub{ p, fn, ctx };
-    g_subs.push_back(sub);
-    return static_cast<sco_result>(sco::Subscribe(self, event, Trampoline, sub));
+    if (!PluginOf(self)) return SCO_BAD_ARG;
+    return static_cast<sco_result>(sco::Subscribe(self, event, fn, ctx));
 }
 static void ApiLog(sco_plugin* self, sco_log_level, const char* message) {
     const P::Plugin* p = PluginOf(self);
@@ -392,6 +376,7 @@ static void TestNative() {
     on.enabled = true;
     auto list = P::Discover(root, on);
     g_list = &list;
+    P::ContainCallouts(&list);   // the real crash containment path: runtime -> CallPlugin
     const sco_api api = MakeApi();
     auto get = [&](const char* id) -> P::Plugin& { return *const_cast<P::Plugin*>(Find(list, id)); };
     CHECK(list.size() == 13);   // m0..m11 + text
@@ -498,9 +483,8 @@ static void TestNative() {
     P::UnloadNative(ok, kRecOps);                                      // no-op when not Loaded
     CHECK(ok.state == State::Unloaded);
 
+    P::ContainCallouts(nullptr);
     g_list = nullptr;
-    for (Sub* s : g_subs) delete s;
-    g_subs.clear();
     P::SetCallGuard(nullptr);
 }
 

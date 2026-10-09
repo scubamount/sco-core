@@ -157,7 +157,13 @@ size_t ListCommands(const Command** out, size_t max) {
     return live;
 }
 
-// Runs on the game thread. reply is NUL-terminated whatever fn writes.
+struct CommandCall { const Command* cmd; const Arg* args; uint32_t nargs; char* reply; uint32_t replySize; Result r; };
+static void CommandThunk(void* p) {
+    CommandCall* k = static_cast<CommandCall*>(p);
+    k->r = k->cmd->fn(k->args, k->nargs, k->cmd->ctx, k->reply, k->replySize);
+}
+
+// Runs on the game thread. reply is NUL-terminated whatever fn writes; empty when fn faulted.
 static Result RunNow(const char* name, const Arg* args, uint32_t nargs, char* reply, uint32_t replySize) {
     reply[0] = 0;
     const Slot* s = FindLive(name);
@@ -173,21 +179,29 @@ static Result RunNow(const char* name, const Arg* args, uint32_t nargs, char* re
         const CapabilityCheck check = g_capCheck.load();
         if (!check || !check(c.capability)) return Result::Unavailable;
     }
-    Result r;
-    {
-        detail::CallScope scope;
-        r = c.fn(args, nargs, c.ctx, reply, replySize);
+    CommandCall call{ &c, args, nargs, reply, replySize, Result::Ok };
+    if (!detail::Callout(s->owner, c.name, CommandThunk, &call)) {
+        reply[0] = 0;
+        return Result::Crashed;
     }
     reply[replySize - 1] = 0;
-    return r;
+    return call.r;
 }
 
-static void RunAndReport(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx, Result* out) {
+struct DoneCall { InvokeDone done; Result r; const char* reply; void* ctx; };
+static void DoneThunk(void* p) {
+    DoneCall* k = static_cast<DoneCall*>(p);
+    k->done(k->r, k->reply, k->ctx);
+}
+
+// owner: the invoking owner, the owner done runs as.
+static void RunAndReport(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx,
+                         const void* owner, Result* out) {
     char reply[kReplySize];
     const Result r = RunNow(name, args, nargs, reply, sizeof(reply));
     if (done) {
-        detail::CallScope scope;
-        done(r, reply, ctx);
+        DoneCall call{ done, r, reply, ctx };
+        detail::Callout(owner, "invoke done", DoneThunk, &call);
     }
     if (out) *out = r;
 }
@@ -201,6 +215,7 @@ struct Pending {
     uint32_t nargs;
     InvokeDone done;
     void* ctx;
+    const void* owner;              // the invoking owner
     TaskFn dropCtx;                 // frees ctx when Release drops the call; may be null
 };
 
@@ -218,7 +233,7 @@ static void DropPending(void* p) {
 
 static void RunPending(void* p) {
     Pending* job = static_cast<Pending*>(p);
-    RunAndReport(job->name, job->args, job->nargs, job->done, job->ctx, nullptr);
+    RunAndReport(job->name, job->args, job->nargs, job->done, job->ctx, job->owner, nullptr);
     FreePending(job);
 }
 
@@ -231,7 +246,7 @@ Result detail::InvokeOwned(const char* name, const Arg* args, uint32_t nargs, In
     if (!name || nargs > kMaxCommandArgs || (nargs && !args) || detail::Released(owner)) return Result::BadArg;
     if (OnGameThread()) {
         Result r = Result::Ok;
-        RunAndReport(name, args, nargs, done, ctx, &r);
+        RunAndReport(name, args, nargs, done, ctx, owner, &r);
         return r;
     }
     Pending* job = new (std::nothrow) Pending;
@@ -242,6 +257,7 @@ Result detail::InvokeOwned(const char* name, const Arg* args, uint32_t nargs, In
     job->nargs = nargs;
     job->done = done;
     job->ctx = ctx;
+    job->owner = owner;
     job->dropCtx = dropCtx;
     job->strings = nullptr;
     size_t total = 0;
