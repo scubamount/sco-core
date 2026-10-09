@@ -1,0 +1,3 @@
+# expect: 3: TOML:
+format = 1
+[[set]

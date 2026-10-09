@@ -1,0 +1,7 @@
+# expect: 6: [[set]]: unknown key "feild"
+format = 1
+
+[[set]]
+record = "ShipA"
+feild = "speed"
+value = 1.0

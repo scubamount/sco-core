@@ -29,6 +29,22 @@ jobs:
       - name: Build and check the examples from the zip
         run: sdk/test-zip.sh dist/sco-sdk-*.zip
 
+      # The sample DataCore pack, as the zip ships it: sco-dcb lint, and sco-dcb check against the
+      # fixture test_datacore_pack writes (the record and field names of 4.10.193 the pack uses).
+      # A pack naming a missing field must be refused.
+      - name: Check the sample DataCore pack with sco-dcb
+        run: |
+          cmake -S . -B build-dcb -DCMAKE_BUILD_TYPE=Release -DSCO_BUILD_TESTS=ON
+          cmake --build build-dcb --parallel --target sco-dcb test_datacore_pack
+          build-dcb/test_datacore_pack . build-dcb/fixture
+          python3 -m zipfile -e dist/sco-sdk-*.zip build-dcb/unpacked
+          pack=$(ls -d build-dcb/unpacked/sco-sdk-*/examples/quantum_pack)
+          build-dcb/sco-dcb lint "$pack"
+          build-dcb/sco-dcb check build-dcb/fixture/quantum_fixture.dcb "$pack"
+          if build-dcb/sco-dcb check build-dcb/fixture/quantum_fixture.dcb tests/fixtures/datacore/missing_field; then
+            echo "sco-dcb check accepted a pack naming a missing field"; exit 1
+          fi
+
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sco-sdk

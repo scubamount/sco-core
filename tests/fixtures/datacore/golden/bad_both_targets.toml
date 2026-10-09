@@ -1,0 +1,12 @@
+# expect: 11: [[set]]: give record/guid or instance, not both
+format = 1
+
+[[instance]]
+id = "a"
+struct = "Part"
+
+[[set]]
+record = "ShipA"
+field = "speed"
+instance = "@a"
+value = 1.0

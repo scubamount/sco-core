@@ -1,0 +1,7 @@
+# expect: 7: [[set]]: value: a value is a number
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "speed"
+value = [1, 2]

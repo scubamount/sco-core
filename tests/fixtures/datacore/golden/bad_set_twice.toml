@@ -1,0 +1,12 @@
+# expect: 9: [[set]]: field "speed" is already set at line 4
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "speed"
+value = 1.0
+
+[[set]]
+record = "ShipA"
+field = "speed"
+value = 2.0

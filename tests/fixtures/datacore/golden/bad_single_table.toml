@@ -1,0 +1,5 @@
+# expect: 4: write [[set]] (an array of tables), not [set]
+format = 1
+
+[set]
+record = "ShipA"

@@ -1,0 +1,32 @@
+# quantum_pack: a quicker RSI Eos quantum drive, and the Wetkah Beacon given a copy of the Eos's
+# drive settings with more top speed. Names are those of Game2.dcb 4.10.193; `sco-dcb show` lists a
+# record's fields as these paths. Format: docs/data-packs.md in the SDK.
+format = 1        # the pack file format, not a game version
+atomic = true     # all of this file applies, or none of it (the default)
+
+# Plain field overrides. The GUID is the record's identity; the name is what messages show.
+[[set]]
+record = "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem"
+guid   = "08a5bfdb-1972-421f-83fe-be03b7ac5222"
+field  = "Components[SCItemQuantumDriveParams].params.spoolUpTime"
+value  = 3.5
+
+[[set]]
+record = "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem"
+guid   = "08a5bfdb-1972-421f-83fe-be03b7ac5222"
+field  = "Components[SCItemQuantumDriveParams].params.cooldownTime"
+value  = 8.0
+
+# A new object: a copy of the Eos drive's parameters, named "eos_fast" in this file...
+[[instance]]
+id     = "eos_fast"
+struct = "SCItemQuantumDriveParams"
+clone  = { record = "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem", field = "Components[SCItemQuantumDriveParams]" }
+set    = { "params.driveSpeed" = 2.5e8, "params.spoolUpTime" = 4.0 }
+
+# ...that the Beacon's drive component now points at.
+[[set]]
+record  = "EntityClassDefinition.QDRV_WETK_S01_Beacon_SCItem"
+guid    = "b5cbef86-f37f-4e05-8aff-e0f61afe166e"
+field   = "Components[SCItemQuantumDriveParams]"
+pointer = "@eos_fast"

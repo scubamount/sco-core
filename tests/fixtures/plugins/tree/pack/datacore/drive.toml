@@ -1,0 +1,6 @@
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "speed"
+value = 2.5

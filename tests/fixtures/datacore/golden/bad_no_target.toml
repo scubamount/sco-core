@@ -1,0 +1,6 @@
+# expect: 4: [[set]]: needs record, guid or instance = "@id"
+format = 1
+
+[[set]]
+field = "speed"
+value = 1.0

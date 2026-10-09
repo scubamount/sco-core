@@ -54,6 +54,8 @@ grep -q 'service cpp_hello.greeter 1.0' "$WORK/cpp_hello.txt"
 "$CHECK" "$P/my_plugin" | tee "$WORK/template.txt"
 grep -q 'invoke  my_plugin.ping -> ok "pong"' "$WORK/template.txt"
 "$CHECK" "$P/travel_pack"
+"$CHECK" "$P/quantum_pack" | tee "$WORK/quantum_pack.txt"
+grep -q 'content datacore/eos.toml' "$WORK/quantum_pack.txt"
 "$CHECK" "$P/greeter"
 
 # sco-plugin-check reads plugin.ini with the host's rules (src/plugins/manifest.cpp): it refuses
@@ -129,7 +131,7 @@ cmake --build "$WORK/mine/build" --config Release
 # no compiler is enabled and the 64-bit check must not fire. greeter builds in its own folder,
 # under a name other than build or out (those are always left out): that build folder must not be
 # installed with the pack, however the platform spells the temp path.
-for ex in greeter travel_pack; do
+for ex in greeter travel_pack quantum_pack; do
   if [ $ex = greeter ]; then B="$ROOT/examples/$ex/my-build"; else B="$WORK/$ex-build"; fi
   cmake -S "$ROOT/examples/$ex" -B "$B"
   cmake --install "$B" --config Release --prefix "$WORK/$ex-out"

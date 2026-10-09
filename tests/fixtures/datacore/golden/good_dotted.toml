@@ -1,0 +1,8 @@
+# expect: ok 1
+# An unquoted dotted key in a set table is a path too: pos.x is "pos.x".
+format = 1
+
+[[instance]]
+id = "s"
+struct = "Ship"
+set = { pos.x = 1.0, pos.y = 2.0, speed = 3.0 }
