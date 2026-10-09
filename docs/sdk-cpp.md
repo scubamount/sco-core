@@ -104,6 +104,7 @@ if (g.Query(*this, "hello.greeter", sco::sdk::ServiceVersion(1, 0)) == SCO_OK) g
 - `HasMember(ref, &T::field)` is true when the provider's `size` covers `field`: the check before calling a function a later minor added.
 - `Release(plugin, name)` withdraws one of your services. The host withdraws the rest when you unload.
 - A provider's table goes away when it unloads: query when you need it, and don't keep a `ServiceRef` across ticks.
+- Entity ids, never pointers: a service that deals with game objects takes and returns entity and zone ids (opaque `uint64_t` values, as the game's are), resolves them on every call on the game thread, and answers `SCO_NOT_FOUND` or `SCO_UNAVAILABLE` once the entity has streamed out. Never return a pointer into the game: objects stream out and a stored pointer dangles. See [the API rule](api-v1.md#services-11).
 
 ## Raw handlers
 
