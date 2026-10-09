@@ -1,11 +1,15 @@
 #pragma once
-// sco::datacore: the game's DataCore database (Data\Game2.dcb), read-only part. Parses the file's
-// tables from bytes in memory and validates the layout as docs/design/vfs-datacore.md section 4
-// describes: every size is derived from the header and must add up to the file size; the version
-// number is never trusted. Patch operations and Emit come in later PRs.
+// sco::datacore: the game's DataCore database (Data\Game2.dcb). Schema parses the file's tables from
+// bytes in memory and validates the layout as docs/design/vfs-datacore.md section 4 describes: every
+// size is derived from the header and must add up to the file size; the version number is never
+// trusted. Patch turns semantic overrides (a record's field, a new instance, a pointer, an array
+// element) into base-offset splices for sco::vfs (section 4, "API"). AddRecord comes in a later PR.
 // Standard library only; no engine, no Windows. A Schema is plain data: concurrent const use is fine.
+#include "sco/vfs.h"
 #include <array>
 #include <cstdint>
+#include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -120,6 +124,7 @@ struct Schema {
     std::string_view ValueString(uint32_t offset) const;   // value pool; "" when out of range
     std::string_view StructName(uint32_t index) const;
     size_t OpaqueCount() const;
+    std::span<const uint8_t> File() const { return file_; }   // the bytes Parse read
 
     // Property indices of a struct, inherited first (root ancestor's properties, then down to its own).
     std::vector<uint32_t> Properties(uint32_t structIndex) const;
@@ -135,5 +140,141 @@ private:
     std::unordered_map<std::string_view, uint32_t> structByName_, recordByName_;
     std::unordered_map<std::string, uint32_t> recordByGuid_;
 };
+
+// ---- patcher (design section 4) ----------------------------------------------------------------
+
+// Why an operation (or Emit) was refused. Tests and callers act on the category; the message is
+// for people ("record \"ShipA\" field \"speedX\": no property \"speedX\" in Ship").
+enum class Refusal : uint8_t {
+    None,
+    Layout,             // the base file failed validation: nothing applies
+    BadArgument,        // malformed field path, empty record reference, bad instance id or splice
+    RecordNotFound,     // neither the GUID nor the name names a record
+    StructNotFound,     // a type name names no struct
+    FieldNotFound,      // a path step names no property, or can't be followed (null, weak, reference)
+    IndexOutOfRange,    // name[3] past the end, or name[Type] matching no element
+    TypeMismatch,       // the value (or operation) doesn't fit the field's type: nothing is written
+    ValueOutOfRange,    // a number too large for the field
+    UnknownEnumOption,  // not an option of the field's enum
+    Opaque,             // the struct has a field of unknown type (validation rule 6)
+    Unsupported,        // reference fields (research R1), appending to a struct with no data block
+    DependencyFailed,   // uses an instance whose AddInstance failed
+    Corrupt,            // the file's data points outside its pools or blocks
+    Limit,              // a count or the value-string pool would pass 32 bits
+    Revalidation,       // Emit: the patched file fails the parser
+};
+const char* RefusalName(Refusal);
+
+struct Status {
+    Refusal     category = Refusal::None;
+    std::string message;
+    bool ok() const { return category == Refusal::None; }
+    explicit operator bool() const { return ok(); }
+};
+
+// An instance in a struct's data block: (struct index, index in that struct's instances), as a
+// strong or weak pointer stores it. Default-constructed it is invalid: a failed AddInstance leaves
+// it so, and every operation using it is refused with DependencyFailed.
+struct InstanceId {
+    static constexpr uint32_t kNone = 0xFFFFFFFFu;
+    uint32_t structIndex = kNone, index = kNone;
+    bool valid() const { return structIndex != kNone; }
+    bool operator==(const InstanceId&) const = default;
+};
+
+// A record by GUID (preferred) or name (fallback, and the readable alias in messages).
+struct RecordRef {
+    std::optional<Guid> guid;
+    std::string        name;
+};
+
+// Where AddInstance copies from: a record and a field path resolving to an instance (the record's
+// root for an empty path; strong pointers are followed). No record: the new instance is zero-filled.
+struct InstanceSource {
+    std::optional<RecordRef> record;
+    std::string              field;
+};
+
+struct Value {
+    enum class Kind : uint8_t { Null, Bool, Int, UInt, Float, String, Guid, Enum, Instance };
+    Kind        kind = Kind::Null;   // Null: a null strong or weak pointer
+    bool        b = false;
+    int64_t     i = 0;
+    uint64_t    u = 0;
+    double      f = 0;               // float and double fields (Int and UInt fit them too)
+    std::string s;                   // String; Enum: the option name
+    Guid        guid;
+    InstanceId  instance;            // Instance: a pointer target, or the element to copy into an array of structs
+
+    static Value OfBool(bool v) { Value x; x.kind = Kind::Bool; x.b = v; return x; }
+    static Value OfInt(int64_t v) { Value x; x.kind = Kind::Int; x.i = v; return x; }
+    static Value OfUInt(uint64_t v) { Value x; x.kind = Kind::UInt; x.u = v; return x; }
+    static Value OfFloat(double v) { Value x; x.kind = Kind::Float; x.f = v; return x; }
+    static Value OfString(std::string v) { Value x; x.kind = Kind::String; x.s = std::move(v); return x; }
+    static Value OfGuid(const Guid& v) { Value x; x.kind = Kind::Guid; x.guid = v; return x; }
+    static Value OfEnum(std::string option) { Value x; x.kind = Kind::Enum; x.s = std::move(option); return x; }
+    static Value OfInstance(InstanceId v) { Value x; x.kind = Kind::Instance; x.instance = v; return x; }
+};
+
+struct PatchOptions {
+    bool atomic = true;   // Emit refuses the whole batch if any operation was refused (design: per pack)
+};
+
+struct OpReport {
+    std::string op;       // "OverrideField record \"ShipA\" speed"
+    Status      status;
+};
+
+// One batch of semantic overrides against one parsed file. Field paths walk from a record's root
+// instance (or an added instance): `name` (a property, inherited ones included), `name[3]` (array
+// element), `name[Type]` (the first element whose struct is Type or derives from it); inline structs
+// and strong pointers are followed, weak pointers and references are not.
+//
+// Every operation is checked in full before it changes anything: a refused one leaves the patch as
+// it was and is recorded in Reports(). Nothing existing is renumbered: values are overwritten in
+// place, and instances, array copies and strings are appended to the end of their block or pool.
+// The Schema (and its bytes) must outlive the Patch. Not thread-safe; const use is.
+class Patch {
+public:
+    explicit Patch(const Schema& base, PatchOptions options = {});
+    ~Patch();
+    Patch(Patch&&) noexcept;
+    Patch& operator=(Patch&&) noexcept;
+
+    // Scalars, strings, enums (by option name), locales, guids and pointers (Instance or Null), in place.
+    Status OverrideField(const RecordRef& rec, std::string_view fieldPath, const Value& v);
+    Status OverrideField(InstanceId inst, std::string_view fieldPath, const Value& v);
+    // A new instance at the end of struct `type`'s block, copied from `cloneFrom` (an instance of
+    // exactly that struct) or zero-filled. `out` is usable as a pointer value; invalid on refusal.
+    Status AddInstance(std::string_view type, const InstanceSource& cloneFrom, InstanceId& out);
+    // Points a strong or weak pointer field (or pointer array element) at an instance of its type.
+    Status SetPointer(const RecordRef& rec, std::string_view fieldPath, InstanceId target);
+    Status SetPointer(InstanceId inst, std::string_view fieldPath, InstanceId target);
+    // Appends an element to an array field: the existing elements and the new one are copied to the
+    // end of the pool (or, for an array of structs, the struct's block; `v` is then the instance to
+    // copy), unless the array already ends there. The old range is left unreferenced.
+    Status AppendElement(const RecordRef& rec, std::string_view arrayPath, const Value& v);
+    Status AppendElement(InstanceId inst, std::string_view arrayPath, const Value& v);
+    // An existing instance (record root, array element or strong pointer target) as a pointer target.
+    Status FindInstance(const InstanceSource& source, InstanceId& out) const;
+
+    // Turns the accepted operations into base-offset splices (sorted, non-overlapping, each with its
+    // expected old bytes; the header rewritten as one 120-byte overwrite when a count changes), then
+    // re-validates: applies them to the base and re-parses the result. Any failure leaves `out` empty.
+    // With options.atomic, a batch with a refused operation is refused here with that operation's
+    // category.
+    Status Emit(std::vector<vfs::Splice>& out) const;
+
+    const std::vector<OpReport>& Reports() const;   // one per operation, in call order
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// Applies splices (as Emit returns them) to a base held in memory through sco::vfs's Compose and
+// Reader, checking each splice's expected old bytes. For tests and tools; the game reads through
+// sco::vfs mounts instead.
+Status ApplySplices(std::span<const uint8_t> base, std::span<const vfs::Splice> splices, std::vector<uint8_t>& out);
 
 }  // namespace sco::datacore

@@ -101,9 +101,11 @@ target_include_directories(sco_vfs PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_vfs PUBLIC Threads::Threads)
 sco_project_target(sco_vfs)
 
-# The DataCore parser and validation (sco/datacore.h): bytes in, tables out. No engine, no Windows.
-add_library(sco_datacore STATIC src/datacore/datacore.cpp)
+# The DataCore parser, validation and patcher (sco/datacore.h): bytes in, tables and sco::vfs splices
+# out. No engine, no Windows.
+add_library(sco_datacore STATIC src/datacore/datacore.cpp src/datacore/patch.cpp)
 target_include_directories(sco_datacore PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_datacore PUBLIC sco_vfs)
 sco_project_target(sco_datacore)
 
 add_library(sco_plugins STATIC
@@ -242,6 +244,12 @@ if(SCO_BUILD_TESTS)
   sco_project_target(test_datacore)
   add_test(NAME test_datacore COMMAND test_datacore "${SCO_TEST_OUT}")
   set_tests_properties(test_datacore PROPERTIES FIXTURES_SETUP dcb_fixtures)
+  # The patcher: each operation, drift across moved tables and both record sizes, refusals by
+  # category, per-batch atomicity, truncated and corrupted inputs.
+  add_executable(test_datacore_patch tests/test_datacore_patch.cpp)
+  target_link_libraries(test_datacore_patch PRIVATE sco_datacore)
+  sco_project_target(test_datacore_patch)
+  add_test(NAME test_datacore_patch COMMAND test_datacore_patch)
   add_test(NAME dcb_tool
            COMMAND "${CMAKE_COMMAND}" "-DDCB=$<TARGET_FILE:sco-dcb>" "-DDIR=${SCO_TEST_OUT}"
                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dcb_tool.cmake")
