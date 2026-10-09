@@ -4,6 +4,7 @@ What each change means for plugin authors and for products built on sco-core (sc
 
 ## Unreleased
 
+- **Design: co-presence multiplayer and cross-game bridges** ([`docs/design/multiplayer.md`](docs/design/multiplayer.md)), for review, no code: the scope change of 2026-10-09 (sessions between players running sc-offline, local links to other games), updated to the maintainer's directive — co-presence by ghost replication (no dedicated server, the excluded patches named and never ported), the `sco.net` channel service and the `sco.ipc` / MIT `sc_ipc.h` bridge wire, a vendored SHA-256/HMAC/PBKDF2, `spawn.entities` 1.2, and the 7-PR plan.
 ## sdk-v1.1.0 (2026-10-09)
 
 The first SDK release. The plugin ABI is version 1.1 and stable from here on: version 1 only grows at the end of structs, so plugins built with this SDK keep loading in later 1.x hosts.
