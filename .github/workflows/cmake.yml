@@ -47,4 +47,4 @@ jobs:
         run: cmake --build build --config RelWithDebInfo --parallel
 
       - name: Test
-        run: ctest --test-dir build -C RelWithDebInfo --timeout 300 -V
+        run: ctest --test-dir build -C RelWithDebInfo --output-on-failure --timeout 300

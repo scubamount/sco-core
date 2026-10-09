@@ -31,10 +31,17 @@ static void* OpenModule(const fs::path& file, std::string& error) {
     std::error_code ec;
     fs::path full = fs::absolute(file, ec);
     if (ec) full = file;
+    // A file that isn't a valid image (a broken or truncated plugin DLL) makes the loader raise a
+    // "Bad Image" hard-error message box and wait for someone to close it: the game thread would
+    // hang on it. Fail the load quietly instead, for this thread and this call only.
+    DWORD oldMode = 0;
+    const BOOL quiet = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &oldMode);
     HMODULE m = LoadLibraryExW(full.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    const DWORD loadError = m ? 0 : GetLastError();
+    if (quiet) SetThreadErrorMode(oldMode, nullptr);
     if (!m) {
         char buf[48];
-        std::snprintf(buf, sizeof(buf), "LoadLibraryExW error %lu", GetLastError());
+        std::snprintf(buf, sizeof(buf), "LoadLibraryExW error %lu", loadError);
         error = buf;
     }
     return reinterpret_cast<void*>(m);
