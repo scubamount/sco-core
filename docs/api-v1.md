@@ -214,7 +214,7 @@ Not settled for 1.0: how the menu reads lists it shows today (ship classes, book
 |---|---|---|
 | `game.ready` | After the offline patches and the signature report, before the first tick | `NULL` |
 | `tick` | Every main-thread tick (about 10 per second), on the game thread | `const uint32_t*`: milliseconds now |
-| `game.exit` | Before the DLL unloads | `NULL` |
+| `game.exit` | When the game quits, before plugins unload. Best effort: a crash or a killed process never sends it, so don't rely on it to save data | `NULL` |
 
 `data` is valid only during the callback.
 
