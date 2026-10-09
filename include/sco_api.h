@@ -151,7 +151,8 @@ typedef struct sco_api {
     int (*has)(const char* capability);
 
     /* Any thread. Runs fn(ctx) on the game thread, in order, on the next
-     * tick. SCO_TOO_MANY when the queue (256) is full. */
+     * tick. SCO_TOO_MANY only when 65536 tasks are already waiting (the
+     * host's cap) or memory runs out. */
     sco_result (*run_on_game_thread)(sco_plugin* self, sco_task_fn fn, void* ctx);
     /* Any thread. Applies from the next dispatch. */
     sco_result (*subscribe)(sco_plugin* self, const char* event, sco_event_fn fn, void* ctx);

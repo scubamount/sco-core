@@ -261,6 +261,12 @@ sc-offline adds sco-core with `add_subdirectory(external/sco-core EXCLUDE_FROM_A
 
 **Rule:** plugin loading never shows UI; every failure is a reason in `mod.log` and `status`. See [Plugins § Native plugins](plugins.md#native-plugins).
 
+### 6. Services hand out ids, never pointers
+
+Friction point 1 in the services spec: what a service should give a caller for "that ship" or "the player". A pointer into the game is the obvious answer and the wrong one: Star Citizen streams objects in and out (object container streaming), so a pointer a plugin keeps across ticks dangles once its object streams out, and the next call through it faults in the caller. The ids are not what they look like either: in the sc-offline spawn test the player's entity id is `0xCAE11A7400000000`, a tagged value, not a small index.
+
+**Rule for services:** take and return entity and zone ids, opaque `uint64_t` values as the game's are; pass them back, never decode them. Resolve the id on every call, on the game thread, and answer `SCO_NOT_FOUND` or `SCO_UNAVAILABLE` when the entity has streamed out. Never hand out a game pointer. See [API § Services](api-v1.md#services-11) and [C++ SDK § Services](sdk-cpp.md#services).
+
 ## Testing
 
 - sco-core: unit tests and CTest on Linux (sanitizers) and Windows MSVC, the ABI pin, the SDK zip built and checked on both. From Phase 2 on, `sco-host-sim` runs the SDK examples and built-in plugins through the real host in CI. Storage: each backend against the same test suite, plus the SQLite hardening (refused `ATTACH`, `PRAGMA`, oversized statements, quota, cancelled queries).

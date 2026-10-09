@@ -102,7 +102,7 @@ Features tell the player what happened through `sco::Status("Spawning %s...", na
 
 [`sco/runtime.h`](../include/sco/runtime.h) is how work reaches the game thread. The host calls `SetGameThread()` once from the game's main thread and `GameThreadTick(nowMs)` on every main-thread tick. Each tick first runs the tasks queued with `Post()`, in order, then dispatches the `tick` event.
 
-- **Task queue.** A fixed ring of 256 tasks; posting never allocates. A full queue refuses with `TooMany` rather than growing or dropping work. Tasks posted while the queue drains wait for the next tick.
+- **Task queue.** A fixed ring of 256 tasks, the fast path: posting into it never allocates. When the ring is full, posts go to an overflow list under the same lock, and while the overflow holds anything new posts go there too, so tasks run in posting order across both; each drain moves what fits back into the ring. The total waiting is capped at 65,536 (`kMaxQueuedTasksHard`) so a runaway plugin can't eat memory: past it, or out of memory, `Post` refuses with `TooMany` and queues nothing. A drain runs only the tasks queued when it started; tasks posted while it runs (a task re-posting itself too) wait for the next tick. `Release` drops an owner's tasks from both stages without allocating.
 - **Event bus.** Subscribers are keyed by owner, event name and callback. The subscriber list is replaced on every change and a dispatch walks the list it started with, so changes never invalidate the walk. A new subscriber is called from the next dispatch; a removed one is flagged and skipped at once, even by a dispatch already running. Since tasks never run during a dispatch, a task posted after `Unsubscribe` is the safe place to free `ctx`.
 - **Commands.** Features register named actions (`spawn.ship`) with typed arguments. `Invoke()` checks the argument count and types and the command's capability before calling it. On the game thread it runs at once; from another thread it copies the name and arguments, queues a task, and reports the result through the `done` callback on the game thread. The registry copies each command's strings and arg defs into a slot that never moves, so `ListCommands()` pointers stay readable.
 - **Owners.** Subscriptions, commands, tasks and queued `Invoke` calls carry an owner handle. `Release(owner)` removes them all at once and is final: later calls naming that owner are refused, so nothing it adds can outlive it. That is what unloading or disabling a plugin needs.
@@ -118,7 +118,7 @@ The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../includ
 | Pattern length | 96 bytes (`kMaxPatternBytes`) | The pattern matches nothing (`MISSING`), never a shortened match |
 | Log line | 511 characters | Truncated |
 | Status message | 255 characters | Truncated |
-| Queued tasks | 256 (`kMaxQueuedTasks`) | `Post` returns `TooMany` |
+| Queued tasks | 65,536 in all (`kMaxQueuedTasksHard`); the first 256 (`kMaxQueuedTasks`) in an allocation-free ring, the rest in an overflow | `Post` returns `TooMany` |
 | Event subscriptions | 512 (`kMaxSubscriptions`) | `Subscribe` returns `TooMany` |
 | Commands | 512 registrations (`kMaxCommands`); released ones still use a slot | `RegisterCommand` returns `TooMany` |
 | Command strings | name, title, capability 63; help 255; arg name 31; arg help 127 | `RegisterCommand` returns `BadArg` |
