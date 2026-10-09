@@ -87,6 +87,13 @@ target_include_directories(sco_hook PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_hook PUBLIC Threads::Threads)
 sco_project_target(sco_hook)
 
+# Engine-agnostic spatial math (sco/engine/types.h, header-only) and the zone tree (sco/engine/zone.h)
+# the host feeds each tick. No game offsets, no game memory.
+add_library(sco_engine STATIC src/engine/zone.cpp)
+target_include_directories(sco_engine PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_engine PUBLIC Threads::Threads)
+sco_project_target(sco_engine)
+
 add_library(sco_plugins STATIC
   src/plugins/manifest.cpp src/plugins/discover.cpp src/plugins/loader.cpp src/plugins/content.cpp)
 if(WIN32)
