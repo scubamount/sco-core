@@ -145,7 +145,7 @@ Done when: `mod.log` shows `[core] signatures: N/N OK` and `[plugin] N found, ..
 
 ## Phase 4: sc-offline's features become built-in plugins
 
-**Status: in progress.** First come the two Phase 3 fixes: a `system.quit` signature row for `CSystem::Quit` in sco-core, which sc-offline hooks to call `sco::app::Stop`, and starting the host kit whatever teleport does. Then the features, in the order below.
+**Status: in progress.** First come the two Phase 3 fixes: the `system.quit` signature row for `CSystem::Quit` (sco-core PR #9, merged), which sc-offline hooks to call `sco::app::Stop` (sc-offline PR #58), and starting the host kit whatever teleport does (sc-offline PR #57, which also makes teleport the first built-in plugin). Then the features, in the order below.
 
 One feature per pull request, each the same moves:
 
@@ -235,7 +235,7 @@ What the finished phases taught, each with the rule it produced. **Lessons flow 
 
 The game's menu Quit calls `CSystem::Quit` (`Quit via console command`), then `System Fast Shutdown (ExitOnQuit enabled)`: the process ends without the message loop ever getting `WM_QUIT`. sc-offline's `WM_QUIT` hook (Phase 3) therefore never ran `sco::app::Stop`, and plugins never saw `game.exit`.
 
-**Rule for hosts:** call `sco::app::Stop` from the game's own quit path, on the game thread. The next step adds a `system.quit` signature row for `CSystem::Quit`, and sc-offline hooks it. Never call `Stop` from `DLL_PROCESS_DETACH`: it runs under the loader lock, at the wrong time. **Rule for plugins:** `game.exit` is best effort; a crash or a killed process never sends it, so a plugin must not rely on it for durability. See [`sco/app.h`](api.md#scoapph-the-host-kit) and [Plugins § Unloading](plugins.md#unloading).
+**Rule for hosts:** call `sco::app::Stop` from the game's own quit path, on the game thread. sco-core's `system.quit` signature row finds `CSystem::Quit` ([`sco/game/system.h`](api.md#scoapph-the-host-kit), `QuitFunction`), and sc-offline hooks it (sc-offline PR #58). Never call `Stop` from `DLL_PROCESS_DETACH`: it runs under the loader lock, at the wrong time. **Rule for plugins:** `game.exit` is best effort; a crash or a killed process never sends it, so a plugin must not rely on it for durability. See [`sco/app.h`](api.md#scoapph-the-host-kit) and [Plugins § Unloading](plugins.md#unloading).
 
 ### 2. The host kit starts whatever any feature does
 

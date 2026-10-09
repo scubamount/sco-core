@@ -60,7 +60,7 @@ Calling `ResolveAll()` again re-resolves everything from scratch and gives the s
 `sco::LogSignatureReport(false)` writes:
 
 ```
-[core] signatures: 3/4 OK
+[core] signatures: 4/5 OK
 [core] FAILED   teleport.to_camera (layout changed at +0x2b0)
 ```
 

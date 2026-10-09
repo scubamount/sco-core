@@ -64,7 +64,7 @@ tools/sigcheck.sh /path/to/StarCitizen.exe      # exit 0 = every row OK
 ```
 
 ```
-[core] signatures: 0/4 OK
+[core] signatures: 1/5 OK
 [core] FAILED   teleport.to_camera (layout changed at +0x2b0)
 [core] BLOCKED  teleport.client_mgr (needs teleport.to_camera)
 ```
