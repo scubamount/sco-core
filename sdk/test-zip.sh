@@ -93,6 +93,26 @@ else
   { [ -n "$LUA" ] && "$LUA" -v 2>&1 | grep -q 'Lua 5\.4'; } || { echo "need Lua 5.4 (lua5.4) for the Lua example"; exit 1; }
   "$LUA" "$ROOT/tools/lua-check.lua" "$P/greeter" --invoke greeter.greet "Pilot One" true | tee "$WORK/greeter.txt"
   grep -q 'invoke  greeter.greet -> ok "HI, PILOT ONE!"' "$WORK/greeter.txt"
+  # lua-check's sandbox and sco table behave like the runtime's (plugins/lua/sco_lua.c).
+  mkdir -p "$CASES/parity"
+  printf 'id = parity\nname = Parity\nversion = 1.0\napi = 1.0\nkind = lua\nentry = main.lua\n' > "$CASES/parity/plugin.ini"
+  cat > "$CASES/parity/main.lua" <<'EOF'
+assert(string.dump == nil, "string.dump")
+assert(not pcall(setmetatable, {}, { __gc = print }), "__gc")
+assert(sco.subscribe("tick", print))
+assert(select(2, sco.subscribe("tick", print)) == "bad_arg", "same function twice")
+for i = 1, 63 do assert(sco.subscribe("tick", function() return i end)) end
+assert(select(2, sco.subscribe("tick", function() end)) == "too_many", "65th function on one event")
+sco.register_command{ name = "parity.add", title = "Add", args = {{ name = "a", type = "int" }},
+                      fn = function(a) return tostring(a + 1) end }
+assert(select(2, sco.invoke("parity.add", 2.0)) == "bad_arg", "int takes no float")
+assert(select(2, sco.invoke("parity.add")) == "bad_arg", "argument count")
+local ok, reply = sco.invoke("parity.add", 2)
+assert(ok and reply == "3", "invoke")
+print("parity", true, nil)
+EOF
+  "$LUA" "$ROOT/tools/lua-check.lua" "$CASES/parity" | tee "$WORK/parity.txt"
+  grep -q "\[parity\] info: parity$(printf '\t')true$(printf '\t')nil" "$WORK/parity.txt"
 fi
 
 # A copied template must build outside the SDK folder with -DSCO_SDK.
@@ -101,10 +121,15 @@ cmake -S "$WORK/mine" -B "$WORK/mine/build" -DSCO_SDK="$ROOT" -DCMAKE_BUILD_TYPE
 cmake --build "$WORK/mine/build" --config Release
 
 # The Lua and data-pack examples configure and install on their own too: project(... NONE), so
-# no compiler is enabled and the 64-bit check must not fire.
+# no compiler is enabled and the 64-bit check must not fire. greeter builds in its own folder
+# (cmake -B build inside the pack): that build folder must not be installed with the pack.
 for ex in greeter travel_pack; do
-  cmake -S "$ROOT/examples/$ex" -B "$WORK/$ex-build"
-  cmake --install "$WORK/$ex-build" --config Release --prefix "$WORK/$ex-out"
+  if [ $ex = greeter ]; then B="$ROOT/examples/$ex/build"; else B="$WORK/$ex-build"; fi
+  cmake -S "$ROOT/examples/$ex" -B "$B"
+  cmake --install "$B" --config Release --prefix "$WORK/$ex-out"
   "$CHECK" "$WORK/$ex-out/data/plugins/$ex"
+  for f in build CMakeLists.txt; do
+    [ ! -e "$WORK/$ex-out/data/plugins/$ex/$f" ] || { echo "sco_add_pack($ex) installed $f"; exit 1; }
+  done
 done
 echo "sdk zip: every example built and checked from $(basename "$ZIP")"

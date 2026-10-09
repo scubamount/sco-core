@@ -342,6 +342,7 @@ static int list_content(const char* dir, const char* sub, const char* ext, int d
 #define MAX_CMDS 64
 #define MAX_TASKS 256
 #define MAX_ARGS 16
+#define MAX_DEPTH 8   /* nested invokes, as in sco-lua */
 
 typedef struct sub  { char event[64]; sco_event_fn fn; void* ctx; int live; } sub;
 typedef struct task { sco_task_fn fn; void* ctx; } task;
@@ -523,12 +524,23 @@ static sco_result run_command(const cmd* c, const sco_arg* args, uint32_t nargs,
 
 static sco_result invoke(sco_plugin* self, const char* name, const sco_arg* args, uint32_t nargs,
                          sco_invoke_done done, void* ctx) {
+    static int depth;   /* a command invoking itself would otherwise overflow the stack */
     char reply[256];
     sco_result r = SCO_NOT_FOUND;
     int i;
     if (self != &the_plugin || !name || (nargs && !args)) { api_fail("invoke with a bad self, name or args"); return SCO_BAD_ARG; }
     for (i = 0; i < ncmds; ++i)
-        if (!strcmp(cmds[i].name, name)) { r = run_command(&cmds[i], args, nargs, reply, sizeof reply); break; }
+        if (!strcmp(cmds[i].name, name)) {
+            if (depth >= MAX_DEPTH) {
+                snprintf(reply, sizeof reply, "calls nested too deep");
+                r = SCO_TOO_MANY;
+            } else {
+                ++depth;
+                r = run_command(&cmds[i], args, nargs, reply, sizeof reply);
+                --depth;
+            }
+            break;
+        }
     if (i == ncmds) reply[0] = 0;
     if (done) done(r, reply, ctx);
     return r;
