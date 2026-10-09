@@ -24,6 +24,16 @@ sco-core is the game-facing core of [sc-offline](https://github.com/scubamount/s
 
 sc-offline pins sco-core as a submodule at `external/sco-core`. After a sco-core change merges, a sc-offline PR moves the pin (`git -C external/sco-core checkout <sha>` then commit `external/sco-core`) along with any code that uses the change. That PR is where the Windows build and in-game testing happen.
 
+## Lessons flow back
+
+A product built on sco-core (sc-offline first) sometimes has to work around something sco-core gets wrong or doesn't say: a missing API, an undocumented rule, a signature it scans for itself. Every such workaround becomes sco-core work in the same cycle, not later:
+
+1. Open an issue or pull request here labelled `lesson`, linking the product change that taught it. A pull request fixes the gap in whichever form fits: docs, an API change, a test, or a signature row.
+2. Add an entry to [Framework plan § Lessons](docs/framework.md#lessons): what happened, and the rule it produced for hosts, plugins or adopters.
+3. Where the lesson can be checked without the game, add a test that fails without the fix (`tests/`, or a CTest case through `sco-host-sim`). Where it can't (game behavior such as the quit path), name the in-game check in the pull request.
+
+The product change and its sco-core counterpart can merge in either order; the product moves its submodule pin once the sco-core side is in.
+
 ## Code style
 
 - C++20 in the style of the surrounding code. Code the DLL compiles stays small: no `std::regex`, iostreams or other heavy headers outside `tools/`.

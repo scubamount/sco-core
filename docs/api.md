@@ -154,7 +154,9 @@ struct Platform {
 | `const std::vector<plugins::Plugin>& app::Plugins()` | The list of the last `Start` (built-ins first), final states after `Stop`. Never resized between two `Start`s |
 | `const plugins::ContentIndex& app::Content()` | The data-pack index of the last `Start` |
 
-`Platform` is copied; `builtins`, `scripts` and `hostVersion` must outlive `Stop`. Storage and services ([framework plan, Phase 5](framework.md#phase-5-services-and-storage)) will be further `Platform` fields with defaults.
+`Platform` is copied; `builtins`, `scripts` and `hostVersion` must outlive `Stop`.
+
+Call `Stop` from the game's own quit path, on the game thread. The game's menu Quit calls `CSystem::Quit` (`Quit via console command`), then `System Fast Shutdown (ExitOnQuit enabled)`: the process ends without the message loop ever getting `WM_QUIT`, so a `WM_QUIT` hook never runs `Stop` and plugins never see `game.exit`. sc-offline hooks `CSystem::Quit` through a `system.quit` signature row (being added). Never call `Stop` from `DLL_PROCESS_DETACH`: it runs under the loader lock, at the wrong time. Even from the quit path, `game.exit` is best effort: a crash or a killed process never sends it. Start the host kit regardless of whether any one feature resolved. Why: [framework plan, Lessons](framework.md#lessons). Storage and services ([framework plan, Phase 5](framework.md#phase-5-services-and-storage)) will be further `Platform` fields with defaults.
 
 ## `sco/pe_file.h`: host tools only
 

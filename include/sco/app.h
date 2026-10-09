@@ -17,7 +17,7 @@
 //   pf.setCapabilities = SetFeatureCaps;       // reads the resolved rows
 //   sco::app::Start(pf);                       // game thread, after the product's own patches
 //   ... sco::app::Tick(nowMs) on every main-thread tick ...
-//   sco::app::Stop();                          // game thread, when the game closes
+//   sco::app::Stop();                          // game thread, from the game's own quit path
 //
 // Start, in order:
 //   1. SetGameThread (the caller's thread)
@@ -67,6 +67,12 @@ void Tick(uint32_t nowMs);
 // Dispatches "game.exit", then unloads every plugin (UnloadAll: newest first, built-ins last)
 // and removes the callout guard. Game thread. No-op unless started. The list stays readable
 // (final states) until the next Start.
+// Call it from the game's own quit path, on the game thread (sc-offline: a hook on the
+// system.quit row, CSystem::Quit). Not from a WM_QUIT hook: the game's Quit ends the process
+// with "System Fast Shutdown (ExitOnQuit enabled)" and the message loop never sees WM_QUIT.
+// Never from DLL_PROCESS_DETACH: that runs under the loader lock, at the wrong time.
+// game.exit is best effort: a crash or a killed process never sends it (docs/framework.md,
+// Lessons).
 void Stop();
 
 // Every plugin of the last Start: built-ins first, then discovered folders. Stable from Start

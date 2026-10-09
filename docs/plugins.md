@@ -44,6 +44,8 @@ requires = teleport, spawn.ship   ; optional capabilities
 
 `self` is the host's owner handle for the plugin; the host never reuses one. On refusal the DLL is closed.
 
+On Windows `LoadLibraryExW` runs under `SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX)`: a file that isn't a valid 64-bit PE (a broken download, a 32-bit DLL) is refused with a reason instead of raising Windows' modal "Bad Image" box over the game. Loading never shows UI.
+
 ### Crash containment
 
 Every call into plugin code goes through `Guarded()`: on Windows a `__try/__except` that catches any SEH exception. `query`, `load` and `unload` are guarded by the loader itself. Everything a plugin registers through `sco_api` (event callbacks, `run_on_game_thread` tasks, command functions and `invoke` `done` callbacks) runs from the runtime, so the host installs a runtime callout guard once, right after `Discover`:
@@ -67,7 +69,9 @@ This limits damage. It is not a sandbox: stack corruption, `__fastfail` and `/GS
 
 ### Unloading
 
-`UnloadAll(list, ops, &runtime)` at `game.exit`: plugins last loaded first, [built-ins](#built-in-plugins) after every other plugin. For a native plugin: `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`. If `Release` fails (out of memory, or `UnloadAll` called off the game thread) the runtime may still hold the plugin's callbacks, so the DLL is never unmapped: the plugin becomes `crashed: release failed: <RESULT>` instead.
+`UnloadAll(list, ops, &runtime)` right after `game.exit` (`sco::app::Stop`): plugins last loaded first, [built-ins](#built-in-plugins) after every other plugin. For a native plugin: `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`. If `Release` fails (out of memory, or `UnloadAll` called off the game thread) the runtime may still hold the plugin's callbacks, so the DLL is never unmapped: the plugin becomes `crashed: release failed: <RESULT>` instead.
+
+`game.exit` is best effort. The host sends it from the game's own quit path (the game's Quit never reaches the message loop as `WM_QUIT`; see [`sco/app.h`](api.md#scoapph-the-host-kit)), but a crash or a killed process never sends it, and nothing unloads then. A plugin must not rely on `game.exit` or `sco_plugin_unload` for durability: save as it goes.
 
 `LoadNative` passes the plugin path to `LoadLibraryExW` as an absolute path, so the host may discover from a relative root such as `data/plugins`.
 

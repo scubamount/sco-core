@@ -11,7 +11,7 @@ It has two halves:
 - **Game core.** Finds the game's code and data by byte pattern. Every game address sc-offline uses is one named row in a signature table (`teleport.to_camera`), resolved once at startup and reported in one block of `mod.log`. The same tables run against a `StarCitizen.exe` on disk, so a new game build can be checked without starting the game.
 - **Plugin platform.** Lets features and plugins work through one small, versioned C interface instead of raw game access: a game-thread runtime (tasks, events, commands), capabilities, the host's `sco_api` table, discovery and loading of native, Lua and data-pack plugins, and the SDK.
 
-> **Status: pre-release.** The plugin ABI is `1.0-pre` and can still change until the `sdk-v1.0.0` tag; from then on version 1 only grows. The C++ headers in `include/sco/` are internal and change with sc-offline. sc-offline compiles the game core today; wiring the plugin platform into sc-offline (and switching on plugin loading, off by default) is a separate sc-offline change.
+> **Status: pre-release.** The plugin ABI is `1.0-pre` and can still change until the `sdk-v1.0.0` tag; from then on version 1 only grows. The C++ headers in `include/sco/` are internal and change with sc-offline. sc-offline's `main` runs on sco-core: a submodule pinned at `94ba952`, the game core for its scanners, log, status and teleport rows, and the host kit on the game thread, with plugin loading behind `plugins = on` (off by default). That isn't in a tagged sc-offline release yet. Where it goes next: [Framework plan](docs/framework.md).
 
 ## How it fits together
 
@@ -32,6 +32,8 @@ It has two halves:
  game core  sco/signatures.h, sco/scan.h, sco/game/*   rows, scanners, report
             sco/log.h, sco/status.h                     mod.log, status line
 ```
+
+`sco-host-sim` (`tools/`) runs this whole stack, from the host kit down, outside the game: CI loads the SDK examples through it on Linux and Windows.
 
 A plugin only ever sees `sco_api.h`. Everything it adds (subscriptions, commands, queued tasks) is owned by its handle, so unloading, refusing or disabling a plugin removes all of it in one call.
 
@@ -113,20 +115,20 @@ Only `src/sco_image_win.cpp`, the Windows halves of the loader and its crash gua
 | [Plugin SDK](sdk/README.md) | Building, checking and installing plugins |
 | [C++ API reference](docs/api.md) | Every function and type in `include/sco/` |
 | [Building and testing](docs/building.md) | `tools/test.sh`, CMake, the Windows run, CI |
-| [Framework plan](docs/framework.md) | Proposal: sco-core as the heart (host kit, built-in plugins, storage and services), sc-offline rebuilt on it |
-| [Contributing](CONTRIBUTING.md) | What fits, tests, and how changes reach sc-offline |
+| [Framework plan](docs/framework.md) | sco-core as the heart of a mod framework: phase status (1-3 done, 4 in progress), lessons learned, storage and services ahead |
+| [Contributing](CONTRIBUTING.md) | What fits, tests, how changes reach sc-offline and how lessons come back |
 | [Changelog](CHANGELOG.md) | What changed |
 
 ## Use from sc-offline
 
-sc-offline includes this repository as a git submodule at `external/sco-core` and compiles its sources into the one `dinput8.dll`; there is no second DLL. At startup sc-offline:
+sc-offline includes this repository as a git submodule at `external/sco-core` and links sco-core's libraries into the one `dinput8.dll` (`add_subdirectory`, see [Building § Using sco-core from another CMake project](docs/building.md#using-sco-core-from-another-cmake-project)); there is no second DLL. At startup sc-offline:
 
 1. sends sco-core's log lines to `mod.log` (`sco::SetLogSink`),
 2. registers and resolves the game tables (`sco::game::RegisterGameSignatures`, `sco::ResolveAll(sco::ModuleImage())`),
 3. starts each feature only if its rows are OK, and
 4. writes the report (`sco::LogSignatureReport(false)`).
 
-With the plugin platform wired in, it then sets capabilities from feature readiness (`sco::caps`), builds the `sco_api` table (`sco::host::BuildApi`), and after `game.ready` discovers and loads plugins (`sco::plugins`), driving the runtime from its main-thread tick (`sco::GameThreadTick`). See [How it works § Startup](docs/architecture.md#startup) and [Plugins](docs/plugins.md).
+On the first main-thread tick it starts the host kit (`sco::app::Start`): capabilities from feature readiness, the `sco_api` table, and with `plugins = on` the plugins in `data/plugins/`, Lua through sco-lua; then `game.ready`. Every main-thread tick calls `sco::app::Tick`. sc-offline has no built-in plugins yet; its features become built-ins in Phase 4. See [How it works § Startup](docs/architecture.md#startup) and [Plugins](docs/plugins.md).
 
 ## Scope
 
