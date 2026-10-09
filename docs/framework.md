@@ -8,7 +8,7 @@
 | [2. The host kit in sco-core](#phase-2-the-host-kit-in-sco-core) | Done | sco-core PR #8, merged as `94ba952` |
 | [3. sc-offline runs on the host kit](#phase-3-sc-offline-runs-on-the-host-kit) | Done, played in game 2026-10-09 | sc-offline PR #56, merged as `78756af` |
 | [4. Features become built-in plugins](#phase-4-sc-offlines-features-become-built-in-plugins) | In progress | |
-| [5. Services and storage](#phase-5-services-and-storage) | Planned | |
+| [5. Services and storage](#phase-5-services-and-storage) | In progress: sco_api 1.1 services and raw handlers, host-owned services and `sco.storage` landed | sco-core (this change) |
 | [6. The framework grows](#phase-6-the-framework-grows) | Planned | |
 
 ## Goal
@@ -171,9 +171,20 @@ When the last tab is done, `dllmain.cpp` is the bootstrap only, and plugins' com
 
 ## Phase 5: services and storage
 
-The first additions to the ABI: `sco_api` 1.1. **Landed early (sco_api 1.1):** `SCO_FAILED` (issue #12); services, `provide_service(self, name, version, vtable)` / `query_service(name, min_version, out)` / `release_service`, with direct tables ([API v1 § Services](api-v1.md#services-11)); raw handlers, `register_raw` / `invoke_raw`, for byte-in byte-out calls ([API v1 § Raw handlers](api-v1.md#raw-handlers-11)); and outside the ABI `sco/hook.h`, the detour engine sc-offline's hooks move onto. Storage and settings are still to come. Additions follow [Plugin API v1 § Compatibility](api-v1.md#compatibility): new functions at the end of `sco_api`, `SCO_API_MINOR` up by one, `tests/abi_v1.c` extended, each with its own design review before code.
+The first additions to the ABI: `sco_api` 1.1. **Landed early (sco_api 1.1):** `SCO_FAILED` (issue #12); services, `provide_service(self, name, version, vtable)` / `query_service(name, min_version, out)` / `release_service`, with direct tables ([API v1 § Services](api-v1.md#services-11)); raw handlers, `register_raw` / `invoke_raw`, for byte-in byte-out calls ([API v1 § Raw handlers](api-v1.md#raw-handlers-11)); and outside the ABI `sco/hook.h`, the detour engine sc-offline's hooks move onto. **Landed: host-owned services and `sco.storage` 1.0** ([Storage](storage.md)): services the host publishes under the reserved id `sco` ([API v1 § Host-owned services](api-v1.md#host-owned-services)), and per-plugin storage over vendored SQLite as the first one, with `sco_api.h` unchanged. Settings are still to come. Additions follow [Plugin API v1 § Compatibility](api-v1.md#compatibility): new functions at the end of `sco_api`, `SCO_API_MINOR` up by one, `tests/abi_v1.c` extended, each with its own design review before code.
 
 ### Storage
+
+**Status: landed as the host service `sco.storage` 1.0** ([docs](storage.md)). What changed from the sketch below, and why:
+
+- **A host-owned service, not new `sco_api` functions.** `query_service` (1.1) already reaches it, so `sco_api.h` and `tests/abi_v1.c` stay as they are; the table has its own header (`sco_storage.h`) and pin (`tests/abi_storage.c`), and versions on its own.
+- **One backend, SQLite.** Key-value is a table (`sco_kv`) in the plugin's database; `memory` and `files` backends were not needed by any product. There is no `Backend` interface yet.
+- **SQL is synchronous**, with a time budget per call (1 s, then interrupted), instead of a storage thread with `row` / `done` callbacks. Calls work from any thread and are serialized per plugin; a query returns a cursor id, never a pointer. An asynchronous form can be added as a later minor if a plugin needs long queries off the game thread.
+- **Where data lives:** `<dataRoot>/storage/<plugin id>.db` (sc-offline: `data/storage/`), set by `Platform::dataRoot`. Still outside the plugin's folder.
+- **Durability:** WAL and `synchronous = FULL`; a child process killed mid-transaction keeps the last committed state (`tests/test_storage.cpp`).
+- **Lua** has no service bindings yet; `sco.store.*` for scripts is a follow-up (G018).
+
+The original plan, kept as written:
 
 **For plugins** (native and Lua), every key and database private to the plugin:
 

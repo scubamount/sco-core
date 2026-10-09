@@ -12,6 +12,7 @@ The C++20 layer of the sco plugin SDK: header-only, over [`sco_api.h`](api-v1.md
 - [Commands](#commands)
 - [Services](#services)
 - [Raw handlers](#raw-handlers)
+- [Storage](#storage)
 - [Lifetimes](#lifetimes)
 - [The exception boundary](#the-exception-boundary)
 - [Threads](#threads)
@@ -25,6 +26,7 @@ The C++20 layer of the sco plugin SDK: header-only, over [`sco_api.h`](api-v1.md
 | [`scosdk/command.hpp`](../include/scosdk/command.hpp) | `CommandBuilder`, `Args`, `Reply` |
 | [`scosdk/service.hpp`](../include/scosdk/service.hpp) | `Provide`, `Release`, `ServiceRef<T>`, `HasMember`, `ServiceVersion` |
 | [`scosdk/raw.hpp`](../include/scosdk/raw.hpp) | `RegisterRaw<In, Out>`, `InvokeRaw`, `RegisterRawBytes`, `InvokeRawBytes` |
+| [`scosdk/storage.hpp`](../include/scosdk/storage.hpp) | `Storage`, `StorageCursor`, `StorageTransaction`, `SqlInt` / `SqlFloat` / `SqlText` / `SqlBlob` / `SqlNull` (the host service `sco.storage`, [`sco_storage.h`](../include/sco_storage.h)); not in `scosdk.hpp`, include it when you use storage |
 | [`scosdk/scosdk.hpp`](../include/scosdk/scosdk.hpp) | All of the above |
 
 Put the SDK's `include/` folder on the include path; the headers find `sco_api.h` there.
@@ -115,6 +117,31 @@ if (g.Query(*this, "hello.greeter", sco::sdk::ServiceVersion(1, 0)) == SCO_OK) g
 - `InvokeRaw` writes `out` only on `SCO_OK`, and answers `SCO_BAD_ARG` if the handler wrote a size other than `sizeof(Out)` (the two sides disagree about the struct).
 
 For variable-size data use `RegisterRawBytes` and `InvokeRawBytes` with `std::span<const std::byte>` in and `std::span<std::byte>` out; the handler sets `written` to the bytes written, or to the bytes needed with `SCO_TOO_MANY`. Raw calls run on the game thread only (`SCO_WRONG_THREAD` elsewhere).
+
+## Storage
+
+`sco::sdk::Storage` wraps the host service [`sco.storage`](storage.md): per-plugin key-value and SQL. `Open(*this)` queries it once; a host service outlives every plugin, so keep the `Storage` for the plugin's life.
+
+```cpp
+#include "scosdk/storage.hpp"
+
+sco::sdk::Storage store;
+if (store.Open(*this) == SCO_OK) {
+    store.Put("spots.home", spot);                       // trivially copyable: stored as its bytes
+    Spot back{};
+    store.Get("spots.home", back);                       // SCO_BAD_ARG if the stored size differs
+    std::string name;
+    store.Get("player.name", name);                      // any size; the handshake is done here
+    sco::sdk::StorageTransaction tx(store);              // rolled back unless committed
+    store.Exec("INSERT INTO visits VALUES (?, ?)", { sco::sdk::SqlText("Lorville"), sco::sdk::SqlInt(1) });
+    tx.Commit();
+    for (auto c = store.Query("SELECT place FROM visits"); c.Next() == SCO_OK;) { std::string p; c.Text(0, p); }
+}
+```
+
+- Every call is `noexcept` and answers `sco_result` (out of memory is `SCO_TOO_MANY`); `LastError()` has the message of the last failure.
+- `StorageCursor` is move-only and closes its cursor on destruction; `Int`, `Float`, `Text`, `Blob` and `Value` read the current row. `Keys(prefix, out)` lists keys in byte order.
+- The transaction is the plugin's, not the thread's ([Storage § Threads](storage.md#threads)).
 
 ## Lifetimes
 
