@@ -8,6 +8,7 @@
 #include "sco/plugins.h"
 #include "sco/runtime.h"
 #include "sco/status.h"
+#include "sco/ui.h"
 #include "../plugins/lua/sco_lua.h"
 #include <csignal>
 #include <cstdio>
@@ -170,6 +171,39 @@ static void TestTable() {
     CHECK(Invoke(g_caller, "table.list").text == "Add 2 float second");
     CHECK(Invoke(g_caller, "table.print").r == SCO_OK && Logged("[table] a\t1\tnil"));
     Unload(l);
+}
+
+// ---- sco.ui hotkeys ---------------------------------------------------------------------------
+
+static void TestHotkeys() {
+    CHECK(sco::ui::Start() == Result::Ok);
+    CHECK(sco::ui::ReserveChord("f6") == Result::Ok);
+    Write("keys", R"(
+        sco.register_command{ name = "keys.add", title = "Add",
+          args = {{ name = "a", type = "int" }, { name = "b", type = "float" }},
+          fn = function(a, b) return tostring(a + b) end }
+        assert(sco.bind_hotkey("Ctrl+Alt+K", "keys.add", 40, 2))                 -- 2 is a float: keys.add says so
+        assert(sco.bind_hotkey("ctrl+alt+l", "later.cmd", "x", true, 1.5))      -- not registered: Lua types
+        local ok, why, msg = sco.bind_hotkey("f6", "keys.add", 1, 2)
+        assert(not ok and why == "bad_arg" and msg == "f6 is reserved by the host", tostring(msg))
+        ok, why, msg = sco.bind_hotkey("alt+ctrl+k", "keys.add", 1, 2)
+        assert(not ok and msg == "ctrl+alt+k is bound by 'keys' to keys.add", tostring(msg))
+        assert(select(2, sco.bind_hotkey("ctrl+alt+m", "keys.add", 1)) == "bad_arg")        -- arg count
+        assert(select(2, sco.bind_hotkey("ctrl+alt+m", "keys.add", "1", 2)) == "bad_arg")  -- arg type
+        assert(select(2, sco.bind_hotkey("ctrl+alt+m", "later.cmd", {})) == "bad_arg")    -- a table
+        assert(select(2, sco.bind_hotkey("ctrl++", "keys.add", 1, 2)) == "bad_arg")
+        assert(select(2, sco.unbind_hotkey("f12")) == "not_found")
+        assert(sco.bind_hotkey("f12", "keys.add", 1, 2) and sco.unbind_hotkey("F12"))
+    )");
+    Loaded l = Load("keys");
+    CHECK(l.p && l.p->state == State::Loaded);
+    std::string reply;
+    CHECK(sco::ui::Dispatch("alt+ctrl+k", &reply) == Result::Ok && reply == "42.0");
+    const auto keys = sco::ui::Hotkeys();
+    CHECK(keys.size() == 2 && keys[0].chord == "ctrl+alt+k" && keys[0].owner == "keys" && keys[1].nargs == 3);
+    Unload(l);
+    CHECK(sco::ui::Hotkeys().empty());   // withdrawn with the script
+    sco::ui::Stop();
 }
 
 // ---- the sandbox ------------------------------------------------------------------------------
@@ -441,6 +475,7 @@ int main(int argc, char** argv) {
     fs::create_directories(g_root);
     TestGreeterExample(argv[1]);
     TestTable();
+    TestHotkeys();
     TestSandbox();
     TestLimits();
     std::printf("sco-lua tests: %d passed, %d failed\n", g_pass, g_fail);

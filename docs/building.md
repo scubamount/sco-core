@@ -22,11 +22,11 @@ CC=clang CXX=clang++ tools/test.sh     # what CI runs
 
 In order, it:
 
-1. compiles the ABI pins `tests/abi_v1.c` and `tests/abi_storage.c` with `-Werror` as C11 and C++20, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc` (compile-only),
+1. compiles the ABI pins `tests/abi_v1.c`, `tests/abi_storage.c` and `tests/abi_ui.c` with `-Werror` as C11 and C++20, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc` (compile-only),
 2. compiles the SDK template, the `hello` and `cpp_hello` examples, each `include/scosdk/` header and `sco-plugin-check` against `sco_api.h`,
 3. builds and runs `test_core` and `test_hook` (ASan+UBSan), `test_runtime`, `test_host`, `test_spatial` and `test_sdk` (each under ASan+UBSan and again under ThreadSanitizer),
    then builds vendored SQLite once per sanitizer set and runs `test_storage` under both (it also spawns and kills copies of itself for the crash tests),
-4. builds the fake plugins from `tests/fixtures/plugins/native/fake_plugin.c` into `tests/out/plugins/` and runs `test_plugins` (ASan+UBSan),
+4. builds the fake plugins from `tests/fixtures/plugins/native/fake_plugin.c` into `tests/out/plugins/` and runs `test_plugins` (ASan+UBSan), then `test_ui` under ASan+UBSan and ThreadSanitizer,
 5. builds Lua and sco-lua and runs `test_lua` (ASan+UBSan), which also loads `sdk/examples/greeter` through the real loader,
 6. runs `test_app` (ASan+UBSan): the host kit with built-in plugins, two fake plugins, `greeter` and `travel_pack`,
 7. builds `hello` as a shared library into `tests/out/sim/plugins/` next to copies of `greeter` and `travel_pack`, builds `sco-host-sim` (ASan+UBSan) and runs `sco-host-sim tests/out/sim/plugins --ticks 3 --invoke hello.wave "Pilot One"`, which must exit 0 and answer `Hello, Pilot One`.
@@ -74,7 +74,8 @@ The build is 64-bit only; configuring for 32 bits stops with an error.
 | `sco_lua` | `plugins/lua/sco_lua.c` | `sco_lua_vendor` |
 | `sco_sqlite` | `third_party/sqlite/sqlite3.c` ([options](../third_party/sqlite/README.md)), `-std=gnu11`, warnings off | `Threads`, `m` on Unix |
 | `sco_storage` | `src/storage/storage.cpp`: the `sco.storage` host service, `sco/storage.h` ([docs](storage.md)) | `sco_host`, `sco_sqlite` |
-| `sco_app` | `src/app/sco_app.cpp`: the host kit, `sco/app.h` | `sco_host`, `sco_plugins`, `sco_core`, `sco_storage` |
+| `sco_ui` | `src/ui/ui.cpp`: the `sco.ui` host service, `sco/ui.h` ([docs](ui.md)) | `sco_host` |
+| `sco_app` | `src/app/sco_app.cpp`: the host kit, `sco/app.h` | `sco_host`, `sco_plugins`, `sco_core`, `sco_storage`, `sco_ui` |
 | `sco-sigcheck` | `tools/sco-sigcheck.cpp` | `sco_core` |
 | `sco-host-sim` | `tools/sco-host-sim.cpp` | `sco_app`, `sco_lua` |
 | `sco_datacore` | `src/datacore/datacore.cpp`: the DataCore parser, `sco/datacore.h` | |
@@ -110,6 +111,8 @@ add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
 |---|---|
 | `abi_v1` | Rebuilds the ABI pin objects (C11, C++20 and, off MSVC, `-fshort-enums`); fails if any static assert breaks |
 | `abi_storage` | The same for the `sco.storage` table pin, `tests/abi_storage.c` |
+| `abi_ui` | The same for the `sco.ui` table pin, `tests/abi_ui.c` |
+| `test_ui` | `sco.ui`: tab order, ids outside the plugin's prefix, badges, overlays, the chord grammar, conflicts and reserved chords, dispatch with arguments, unload, a fault in a draw under the loader's guard, threads registering beside frames |
 | `test_storage` | Host-owned services and `sco.storage`: key-value and the size handshake, transactions, SQL, isolation (no `ATTACH`, `PRAGMA` or `VACUUM INTO` escape), the quota, unload, threads, and a child process killed mid-transaction |
 | `test_core` | Scanners and the signature registry against a synthetic image |
 | `test_runtime` | Task queue, event bus, command registry, `Release` |
