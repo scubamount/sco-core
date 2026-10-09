@@ -106,6 +106,7 @@ Only `src/sco_image_win.cpp`, the Windows halves of the loader and its crash gua
 | [Plugin SDK](sdk/README.md) | Building, checking and installing plugins |
 | [C++ API reference](docs/api.md) | Every function and type in `include/sco/` |
 | [Building and testing](docs/building.md) | `tools/test.sh`, CMake, the Windows run, CI |
+| [Framework plan](docs/framework.md) | Proposal: sc-offline on CMake and the SDK, then a framework for mods of any kind |
 | [Contributing](CONTRIBUTING.md) | What fits, tests, and how changes reach sc-offline |
 | [Changelog](CHANGELOG.md) | What changed |
 
