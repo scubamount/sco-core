@@ -17,6 +17,7 @@ Plugins are native DLLs and run with the game's full rights. Only install plugin
 - [Events](#events)
 - [Capabilities](#capabilities)
 - [Services (1.1)](#services-11)
+- [Host-owned services](#host-owned-services)
 - [Raw handlers (1.1)](#raw-handlers-11)
 - [Threading](#threading)
 - [Compatibility](#compatibility)
@@ -271,6 +272,20 @@ if (api->size > offsetof(sco_api, query_service) &&
 - **Faults:** a call into another plugin's table runs under the caller's crash guard, so a fault in the provider's code marks the caller crashed.
 - Threads: both functions work from any thread; what thread the table's own functions may be called from is part of the provider's contract.
 - **Entity ids, never pointers.** A service that deals with game objects takes and returns entity and zone ids: opaque `uint64_t` values, as the game's own are. It resolves the id on every call, on the game thread, and answers `SCO_NOT_FOUND` (or `SCO_UNAVAILABLE`) when the entity has streamed out. It never hands out a pointer into the game: Star Citizen streams objects in and out (object container streaming), so a pointer a caller stores dangles once its object goes, and the next call through it crashes the caller, not the provider. Treat an id as a value to pass back, not a number to decode: the player's id in the sc-offline spawn test is `0xCAE11A7400000000`, a tagged value, not a small index. See [Framework § Lessons](framework.md#6-services-hand-out-ids-never-pointers).
+
+## Host-owned services
+
+Some services are published by the host itself rather than by a plugin. They live under the reserved plugin id `sco` ([design decision 10](design/vfs-datacore.md#decisions-maintainer-2026-10-09)), so their names are `sco.<name>`, and plugins find them with the same `query_service`; `sco_api.h` doesn't change for them. No plugin can publish under `sco`: the id is reserved (`plugin.ini` and the host refuse it, and discovery refuses a folder named `sco`), and `provide_service` only takes names under the caller's own id.
+
+- **Lifetime:** host services are published before any plugin loads and withdrawn at host shutdown, after every plugin has unloaded. So unlike another plugin's table, a host service's table may be kept for the plugin's whole life.
+- **Optional:** a host or a game build that doesn't offer one doesn't publish it, and `query_service` answers `SCO_NOT_FOUND`.
+- **Versioned on their own**, `(major << 16) | minor` like any service, each with its own plain-C header beside `sco_api.h` and its own layout pin.
+
+| Service | Version | Header | What |
+|---|---|---|---|
+| `sco.storage` | 1.0 | [`sco_storage.h`](../include/sco_storage.h) | Per-plugin persistent storage: key-value and SQL over SQLite, in the plugin's own database. [Storage](storage.md) |
+
+`sco.datacore` ([design § 6](design/vfs-datacore.md#6-plugins-the-scodatacore-service)) will be the next one. The host side is `sco::host::ProvideHostService` ([API: sco/host.h](api.md#scohosth-the-hosts-sco_api-table)).
 
 ## Raw handlers (1.1)
 

@@ -190,6 +190,31 @@ long detail::ReleaseTasks(const void* owner) {
     return static_cast<long>(nDropped + droppedOverflow.size());
 }
 
+static std::mutex  g_hookLock;
+static ReleaseHook g_hooks[kMaxReleaseHooks];
+static size_t      g_hookCount = 0;
+
+Result AddReleaseHook(ReleaseHook hook) {
+    if (!hook) return Result::BadArg;
+    std::lock_guard<std::mutex> hold(g_hookLock);
+    for (size_t i = 0; i < g_hookCount; ++i)
+        if (g_hooks[i] == hook) return Result::Ok;
+    if (g_hookCount == kMaxReleaseHooks) return Result::TooMany;
+    g_hooks[g_hookCount++] = hook;
+    return Result::Ok;
+}
+
+Result RemoveReleaseHook(ReleaseHook hook) {
+    std::lock_guard<std::mutex> hold(g_hookLock);
+    for (size_t i = 0; i < g_hookCount; ++i)
+        if (g_hooks[i] == hook) {
+            for (size_t j = i + 1; j < g_hookCount; ++j) g_hooks[j - 1] = g_hooks[j];
+            --g_hookCount;
+            return Result::Ok;
+        }
+    return Result::NotFound;
+}
+
 Result Release(const void* owner, size_t* removed) {
     if (removed) *removed = 0;
     if (!owner) return Result::BadArg;
@@ -219,6 +244,15 @@ Result Release(const void* owner, size_t* removed) {
     const long services = detail::ReleaseServices(owner);
     const long raw = detail::ReleaseRaw(owner);
     if (removed) *removed = static_cast<size_t>(subs + cmds + tasks + services + raw);
+    // Hooks run outside g_hookLock (a hook may add or remove hooks), from a copy.
+    ReleaseHook hooks[kMaxReleaseHooks];
+    size_t nHooks;
+    {
+        std::lock_guard<std::mutex> hold(g_hookLock);
+        nHooks = g_hookCount;
+        for (size_t i = 0; i < nHooks; ++i) hooks[i] = g_hooks[i];
+    }
+    for (size_t i = 0; i < nHooks; ++i) hooks[i](owner);
     return Result::Ok;
 }
 

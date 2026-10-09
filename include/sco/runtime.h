@@ -50,6 +50,18 @@ Result GameThreadTick(uint32_t nowMs);
 // `removed` (optional) gets the number of items removed.
 Result Release(const void* owner, size_t* removed = nullptr);
 
+// Host modules that keep per-owner state outside the runtime (sco::storage: a plugin's open
+// database) learn of a Release through a hook: once Release(owner) has removed the owner's
+// items, it calls every hook with owner, on the game thread, in the order they were added. A
+// hook must not call Release. At most kMaxReleaseHooks; adding one already added is Ok and
+// changes nothing. AddReleaseHook: BadArg for null, TooMany when full. RemoveReleaseHook:
+// NotFound when not added. Any thread; a Release already running may still call a hook being
+// removed.
+using ReleaseHook = void (*)(const void* owner);
+constexpr size_t kMaxReleaseHooks = 8;
+Result AddReleaseHook(ReleaseHook hook);
+Result RemoveReleaseHook(ReleaseHook hook);
+
 // ---- services (any thread) -------------------------------------------------------------------
 //
 // A service is a function table one owner publishes under a name for others to call directly

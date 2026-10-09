@@ -114,9 +114,44 @@ endif()
 target_link_libraries(sco_plugins PUBLIC sco_runtime sco_core ${CMAKE_DL_LIBS})
 sco_project_target(sco_plugins)
 
+# Vendored SQLite (third_party/sqlite, see its README): the amalgamation as-is, with conservative
+# options, its own warnings off for this target only. Multi-thread mode: sco::storage serializes
+# each connection itself.
+set(SCO_SQLITE_OPTIONS
+  SQLITE_THREADSAFE=2 SQLITE_DEFAULT_WAL_SYNCHRONOUS=1 SQLITE_OMIT_LOAD_EXTENSION SQLITE_DQS=0
+  SQLITE_TEMP_STORE=2 SQLITE_TRUSTED_SCHEMA=0 SQLITE_USE_URI=0 SQLITE_OMIT_SHARED_CACHE
+  SQLITE_OMIT_DEPRECATED SQLITE_DEFAULT_MEMSTATUS=0 SQLITE_LIKE_DOESNT_MATCH_BLOBS SQLITE_ENABLE_API_ARMOR)
+add_library(sco_sqlite STATIC third_party/sqlite/sqlite3.c)
+target_include_directories(sco_sqlite SYSTEM PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sqlite")
+target_compile_definitions(sco_sqlite PRIVATE ${SCO_SQLITE_OPTIONS})
+# -std=gnu11: the amalgamation uses POSIX functions that strict C11 headers hide.
+set_target_properties(sco_sqlite PROPERTIES C_EXTENSIONS ON)
+if(MSVC)
+  target_compile_options(sco_sqlite PRIVATE /w)
+else()
+  target_compile_options(sco_sqlite PRIVATE -w)
+endif()
+if(SCO_SANITIZE AND NOT MSVC)
+  target_compile_options(sco_sqlite PRIVATE -fsanitize=${SCO_SANITIZE})
+  # SQLite calls through function pointers cast to a common type (its destructors), which
+  # clang's -fsanitize=function (part of undefined) would flag inside SQLite itself.
+  if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    target_compile_options(sco_sqlite PRIVATE -fno-sanitize=function)
+  endif()
+endif()
+target_link_libraries(sco_sqlite PUBLIC Threads::Threads)
+if(UNIX)
+  target_link_libraries(sco_sqlite PUBLIC m)
+endif()
+
+# sco.storage (sco/storage.h, include/sco_storage.h): per-plugin databases, a host-owned service.
+add_library(sco_storage STATIC src/storage/storage.cpp)
+target_link_libraries(sco_storage PUBLIC sco_host sco_sqlite)
+sco_project_target(sco_storage)
+
 # The host kit (sco/app.h): Start / Tick / Stop over the host table, caps, signatures and loader.
 add_library(sco_app STATIC src/app/sco_app.cpp)
-target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core)
+target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage)
 sco_project_target(sco_app)
 
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
@@ -199,6 +234,28 @@ if(SCO_BUILD_TESTS)
   add_test(NAME abi_v1
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_targets})
 
+  # The sco.storage table pin (tests/abi_storage.c), the same three ways.
+  set(_abi_storage_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_storage.cpp")
+  file(CONFIGURE OUTPUT "${_abi_storage_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_storage.c\"\n")
+  add_library(sco_abi_storage_c OBJECT tests/abi_storage.c)
+  add_library(sco_abi_storage_cxx OBJECT "${_abi_storage_cxx}")
+  set(_abi_storage_targets sco_abi_storage_c sco_abi_storage_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_storage_short_enums OBJECT tests/abi_storage.c)
+    target_compile_options(sco_abi_storage_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_storage_targets sco_abi_storage_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_storage_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME abi_storage
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_storage_targets})
+
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
   sco_project_target(test_core)
@@ -219,6 +276,12 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_sdk PRIVATE sco_host)
   sco_project_target(test_sdk)
   add_test(NAME test_sdk COMMAND test_sdk)
+
+  # sco.storage over the real host table and SQLite; spawns itself to test crash safety.
+  add_executable(test_storage tests/test_storage.cpp)
+  target_link_libraries(test_storage PRIVATE sco_storage)
+  sco_project_target(test_storage)
+  add_test(NAME test_storage COMMAND test_storage "${SCO_TEST_OUT}")
 
   add_executable(test_hook tests/test_hook.cpp)
   target_link_libraries(test_hook PRIVATE sco_hook)

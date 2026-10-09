@@ -47,6 +47,10 @@ constexpr size_t kMaxIdLen = 31, kMaxNameLen = 63, kMaxVersionLen = 31, kMaxAuth
 constexpr size_t kMaxCapabilityLen = 63, kMaxRequires = 16, kMaxEntryLen = 63;
 constexpr size_t kMaxManifestBytes = 16 * 1024;
 
+// Ids no plugin may take: "sco" is the host's own (its services are "sco.<name>",
+// docs/design/vfs-datacore.md decision 10); the others are reserved command prefixes.
+constexpr const char* kReservedIds[] = { "sco", "host", "menu", "game" };
+
 struct Manifest {
     std::string id, name, version, author;        // author may be empty
     uint16_t    apiMajor = 0, apiMinor = 0;
@@ -117,7 +121,9 @@ constexpr size_t kMaxPlugins = 128;               // folders beyond this are lis
 // without one and plain files are skipped. root missing or not a folder: empty list.
 // Symlinked folders are skipped. Each entry ends Off, Disabled, Refused or Ready. Refused
 // reasons, in check order: "too many plugins" (past kMaxPlugins; with opts.enabled false those
-// folders are Off like the rest), "plugin.ini: unreadable",
+// folders are Off like the rest), "the folder name 'sco' is reserved for the host" (any of
+// kReservedIds, checked before the disabled switch and before plugin.ini is parsed),
+// "plugin.ini: unreadable",
 // "plugin.ini: <parse error>" (incl. "plugin.ini: too big"), "id 'x' does not match folder 'y'"
 // (so ids are unique), "the id belongs to a built-in plugin" (opts.builtins), "built for api M.m" (major differs or minor newer than the host),
 // "entry 'x' not found", "missing capability 'x'".
