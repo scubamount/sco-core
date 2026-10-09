@@ -46,6 +46,7 @@ so nothing can call into the script, then `sco_lua_unload` frees the Lua state.
 | Errors in callbacks | 3 | The script is disabled |
 | Functions subscribed to one event | 64 | `sco.subscribe` returns `false, "too_many"` |
 | Event names subscribed to | 16 | `sco.subscribe` returns `false, "too_many"` |
+| `run_on_game_thread` tasks waiting | 16 | `sco.run_on_game_thread` returns `false, "too_many"` |
 | Entry script | 1 MiB | Refused |
 | Scripts | 64 | Refused |
 | Nested entries (a command invoking a command ...) | 8 | `SCO_TOO_MANY` |

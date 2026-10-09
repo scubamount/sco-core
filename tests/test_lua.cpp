@@ -371,6 +371,32 @@ static void TestLimits() {
     sco::Dispatch("game.ready", nullptr);
     CHECK(Logged("[evt] error: event game.ready: main.lua:1: nope"));
     Unload(l);
+
+    // Each task gets a fresh budget, so a script may have at most 16 waiting: a task that queues
+    // two more each tick levels off at 16 instead of filling the host's 256-slot queue.
+    Write("fan", R"(
+        local queued, most, refused = 0, 0, 0
+        local function task()
+          queued = queued - 1
+          for _ = 1, 2 do
+            local ok, why = sco.run_on_game_thread(task)
+            if ok then queued = queued + 1; most = math.max(most, queued)
+            elseif why == "too_many" then refused = refused + 1 end
+          end
+        end
+        assert(sco.run_on_game_thread(task))
+        queued, most = 1, 1
+        sco.register_command{ name = "fan.state", title = "State",
+          fn = function() return string.format("most=%d refused=%s", most, tostring(refused > 0)) end }
+    )");
+    l = Load("fan");
+    CHECK(l.p && l.p->state == State::Loaded);
+    for (uint32_t t = 1; t <= 10; ++t) sco::GameThreadTick(t * 100);
+    const Reply fan = Invoke(g_caller, "fan.state");
+    CHECK(fan.text == "most=16 refused=true");
+    if (fan.text != "most=16 refused=true") std::printf("  fan.state -> %s\n", fan.text.c_str());
+    CHECK(sco_lua_alive(l.p->self));
+    Unload(l);
 }
 
 #ifndef _WIN32

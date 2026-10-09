@@ -46,6 +46,7 @@ struct Script {
     CmdCtx cmds[SCO_LUA_MAX_COMMANDS];
     int ncmds;
     Task* tasks;   /* queued run_on_game_thread calls */
+    int ntasks;    /* how many: each runs with a fresh budget, so they are capped */
 };
 
 void sco_lua_event_(const char* event, const void* data, void* ctx);   /* every Lua subscription */
@@ -303,6 +304,7 @@ static sco_result CmdThunk(const sco_arg* args, uint32_t nargs, void* ctx, char*
 static void Unlink(Task* t) {
     if (t->prev) t->prev->next = t->next; else t->s->tasks = t->next;
     if (t->next) t->next->prev = t->prev;
+    --t->s->ntasks;
 }
 
 static int TaskBody(lua_State* L) {
@@ -453,6 +455,7 @@ static int L_unsubscribe(lua_State* L) {
 static int L_run_on_game_thread(lua_State* L) {
     Script* s = Of(L);
     luaL_checktype(L, 1, LUA_TFUNCTION);
+    if (s->ntasks >= SCO_LUA_MAX_TASKS) return PushResult(L, SCO_TOO_MANY);
     Task* t = (Task*)malloc(sizeof(Task));
     if (!t) return PushResult(L, SCO_TOO_MANY);
     lua_pushvalue(L, 1);
@@ -468,6 +471,7 @@ static int L_run_on_game_thread(lua_State* L) {
     t->next = s->tasks;
     if (s->tasks) s->tasks->prev = t;
     s->tasks = t;
+    ++s->ntasks;
     return PushResult(L, SCO_OK);
 }
 

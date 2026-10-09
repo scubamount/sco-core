@@ -26,6 +26,7 @@ extern "C" {
 #define SCO_LUA_MAX_EVENTS    16                 /* distinct event names one script subscribes to */
 #define SCO_LUA_MAX_SUBSCRIBERS 64               /* functions one script subscribes to one event */
 #define SCO_LUA_MAX_COMMANDS  64                 /* commands one script registers */
+#define SCO_LUA_MAX_TASKS     16                 /* run_on_game_thread calls one script has waiting */
 
 /* Creates a sandboxed state for plugin `self`, then runs `source` (text only; bytecode is
  * refused) once, under the step budget. `chunkname` names the script in error messages
