@@ -481,11 +481,13 @@ assert(p:append("ShipA", "parts", nil))
 local ok, err = p:set("ShipA", "speed..x", 1)
 assert(not ok and err == "bad_arg", "path syntax")
 assert(select(2, p:set("ShipA", "flag", {})) == "bad_arg", "a table that is no value")
-assert(select(2, p:add_record("Ship", "ShipC")) == "unavailable", "add_record")
+assert(p:add_record("Ship", "ShipC", "ShipA"), "add_record")
+assert(select(2, p:add_record("Ship", "ShipC", "ShipB")) == "bad_arg", "a name added twice")
+assert(p:set("ShipC", "speed", 9.5))
 assert(p:commit())
 assert(select(2, p:commit()) == "bad_arg", "committed twice")
 local r = p:report()
-assert(#r == 9 and r[1].state == "queued" and r[1].op == 1 and r[9].op == 0, "report before the load")
+assert(#r == 11 and r[1].state == "queued" and r[1].op == 1 and r[11].op == 0, "report before the load")
 local q = assert(dc.begin({ atomic = false }))
 assert(q:discard())
 assert(select(2, q:commit()) == "not_found", "discarded")
@@ -504,7 +506,7 @@ end }
     P::ContentIndex index;
     const svc::LoadResult r = svc::Load(s, l.list, index, data);
     CHECK(r.result.status.ok() && r.result.packs.size() == 1 && r.result.packs[0].state == sco::datacore::PackState::Applied);
-    CHECK(r.result.packs.size() == 1 && r.result.packs[0].applied == 8);
+    CHECK(r.result.packs.size() == 1 && r.result.packs[0].applied == 10);
     const Reply rep = Invoke(g_caller, "dcmod.report");
     CHECK(rep.r == SCO_OK && rep.text == "applied applied loaded");
     Unload(l);

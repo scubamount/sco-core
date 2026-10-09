@@ -1,0 +1,7 @@
+# expect: 5: [[record]]: needs clone = { record = "..." }
+# clone is required in v1: a zero-filled record would have null required sub-objects.
+format = 1
+
+[[record]]
+struct = "Ship"
+name = "ShipC"

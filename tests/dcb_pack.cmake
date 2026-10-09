@@ -48,4 +48,22 @@ if(NOT rc STREQUAL "0" OR NOT diff MATCHES "spoolUpTime\"\nvalue = 3\\.5" OR NOT
 endif()
 run(0 "APPLIED" check "${DIR}/quantum_fixture.dcb" "${DIR}/quantum_diff.toml")
 run(0 "# sco-dcb diff.*format = 1" diff "${DIR}/quantum_fixture.dcb" "${DIR}/quantum_fixture.dcb")
+
+# [[record]]: lint, check, show of the added record, and diff emitting it (which applies back).
+set(REC "${ROOT}/tests/fixtures/datacore/new_record")
+set(NEW "EntityClassDefinition.QDRV_SCO_Test_SCItem")
+run(0 "OK [^\n]*record.toml: 1 operation\n" lint "${REC}")
+run(1 "FAIL [^\n]*bad_record_file.toml:9: \\[\\[record\\]\\]: bad file path" lint "${G}/bad_record_file.toml")
+run(0 "APPLIED 1/1\n  line 5: OK   AddRecord record \"${NEW}\" \\(EntityClassDefinition\\).*emit: OK" check "${DIR}/quantum_fixture.dcb" "${REC}")
+run(0 "record \"${NEW}\" guid [0-9a-f-]+ struct EntityClassDefinition file libs/foundry/records/sco/new_record/${NEW}\\.xml\n.*Components\\[1\\]\\.params\\.spoolUpTime = 5\\.1"
+    show "${DIR}/quantum_fixture_record.dcb" "${NEW}")
+execute_process(COMMAND "${DCB}" diff "${DIR}/quantum_fixture.dcb" "${DIR}/quantum_fixture_record.dcb"
+                RESULT_VARIABLE rc OUTPUT_FILE "${DIR}/record_diff.toml" ERROR_VARIABLE err)
+file(READ "${DIR}/record_diff.toml" diff)
+message("$ sco-dcb diff (exit ${rc})\n${diff}${err}")
+if(NOT rc STREQUAL "0" OR NOT diff MATCHES "\\[\\[record\\]\\]\nid = \"new1\"\nstruct = \"EntityClassDefinition\"\nname = \"${NEW}\"\nguid = \"[0-9a-f-]+\"\nclone = { record = \"EntityClassDefinition\\.QDRV_WETK_S01_Beacon_SCItem\"")
+  message("dcb_pack: FAIL (diff of an added record)")
+  message(FATAL_ERROR "diff")
+endif()
+run(0 "APPLIED 1/1\n  line [0-9]+: OK   AddRecord record \"${NEW}\".*emit: OK" check "${DIR}/quantum_fixture.dcb" "${DIR}/record_diff.toml")
 message("dcb_pack: OK")

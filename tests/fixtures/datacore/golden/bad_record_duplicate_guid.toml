@@ -1,0 +1,15 @@
+# expect: 14: [[record]]: guid d4c3b2a1-0001-4000-8000-000000000001 is already added at line 5
+# One file adds a GUID once.
+format = 1
+
+[[record]]
+struct = "Ship"
+name = "ShipC"
+guid = "d4c3b2a1-0001-4000-8000-000000000001"
+clone = { record = "ShipA" }
+
+[[record]]
+struct = "Ship"
+name = "ShipD"
+guid = "D4C3B2A1-0001-4000-8000-000000000001"
+clone = { record = "ShipA" }

@@ -1,0 +1,32 @@
+# expect: ok 5
+# [[record]]: new records cloned from existing ones, then used by "@id", by name and as a reference.
+format = 1
+
+[[record]]
+id = "c"
+struct = "Ship"
+name = "ShipC"
+clone = { record = "ShipA" }
+set = { "speed" = 7.5 }
+
+[[record]]
+struct = "Part"
+name = "PartZ"
+guid = "d4c3b2a1-0001-4000-8000-000000000001"
+clone = { guid = "47464544-4342-4140-4f4e-4d4c4b4a4948" }
+file = "libs/foundry/records/test/part_z.xml"
+
+[[set]]
+instance = "@c"
+field = "label"
+value = "new ship"
+
+[[set]]
+record = "ShipB"
+field = "maker"
+value = { ref = "ShipC" }
+
+[[set]]
+record = "ShipC"
+field = "engine"
+pointer = { record = "PartZ" }

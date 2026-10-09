@@ -1,0 +1,13 @@
+# expect: 12: [[record]]: record name "ShipC" is already added at line 5
+# One file adds a record name once.
+format = 1
+
+[[record]]
+struct = "Ship"
+name = "ShipC"
+clone = { record = "ShipA" }
+
+[[record]]
+struct = "Ship"
+name = "ShipC"
+clone = { record = "ShipB" }
