@@ -30,7 +30,7 @@ requires = teleport, spawn.ship   ; optional capabilities
 |---|---|
 | `off` | `plugins = off` in `sc-offline.ini` (the default). Listed so `status` can show it |
 | `disabled` | `data/plugins/<id>/disabled` exists (a file or a folder) |
-| `refused: <reason>` | `plugin.ini: <parse error>`, `id 'x' does not match folder 'y'`, `built for api M.m` (major differs or minor newer than the host), `entry 'x' not found`, `missing capability 'x'`, `too many plugins` (over 128) |
+| `refused: <reason>` | `plugin.ini: <parse error>`, `id 'x' does not match folder 'y'`, `the id belongs to a built-in plugin` (a folder named like one of the host's built-ins, whatever its kind), `built for api M.m` (major differs or minor newer than the host), `entry 'x' not found`, `missing capability 'x'`, `too many plugins` (over 128) |
 | `ready` | Passed; the loader, the Lua runtime or the content index takes it |
 
 ## Native plugins

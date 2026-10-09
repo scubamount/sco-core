@@ -216,7 +216,7 @@ static void TestBuiltinLoader(const sco_api* api, const fs::path& plugins) {
     P::Plugin p = TryLoad("wrongname", kWrongName, api);
     CHECK(p.state == State::Refused && p.reason == "built-in name 'other' does not match id 'wrongname'");
     p = TryLoad("newapi", kApi2, api);
-    CHECK(p.state == State::Refused && p.reason == "built-in built for api 2.0");
+    CHECK(p.state == State::Refused && p.reason == "built-in built for api 2." + std::to_string(SCO_API_MINOR));
     p = TryLoad("small", kSmallInfo, api);
     CHECK(p.state == State::Refused && p.reason == "sco_plugin_info.size too small");
     p = TryLoad("fails", kLoadFails, api);
@@ -225,7 +225,7 @@ static void TestBuiltinLoader(const sco_api* api, const fs::path& plugins) {
     p = TryLoad("crashes", kLoadCrashes, api);
     CHECK(p.state == State::Crashed && p.reason == "crashed in sco_plugin_load (0xC0000005)");
     CHECK(sco::SubscriptionCount() == subs);
-    CHECK(Logged("[plugin] refused newapi: built-in built for api 2.0"));
+    CHECK(Logged(("[plugin] refused newapi: built-in built for api 2." + std::to_string(SCO_API_MINOR) + "").c_str()));
 
     // A clean load fills the manifest from the query; UnloadAll unloads built-ins after every
     // other plugin, even one loaded before them.
@@ -245,7 +245,7 @@ static void TestBuiltinLoader(const sco_api* api, const fs::path& plugins) {
     CHECK(late.state == State::Loaded && late.loadOrder > list[0].loadOrder && !late.module);
     CHECK(late.manifest.version == "2.3.4" && late.manifest.author == "tests" && late.manifest.apiMajor == 1);
     CHECK(P::Describe(late) == "late 2.3.4 builtin loaded");
-    CHECK(Logged("[plugin] loaded late 2.3.4 (api 1.0) built in"));
+    CHECK(Logged(("[plugin] loaded late 2.3.4 (api 1." + std::to_string(SCO_API_MINOR) + ") built in").c_str()));
     CHECK(!P::LoadBuiltin(list[1], api, sco::host::NewPlugin("late2"), on));   // not Ready any more
     g_log.clear();
     g_tUnloads = 0;
@@ -301,7 +301,7 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     if (list.size() != 6) return;
     CHECK(list[0].loadOrder < list[1].loadOrder && list[1].loadOrder < list[2].loadOrder &&
           list[2].loadOrder < list[3].loadOrder && list[3].loadOrder < list[4].loadOrder && list[5].loadOrder == 0);
-    CHECK(Logged("[plugin] loaded core1 1.0.0 (api 1.0) built in"));
+    CHECK(Logged(("[plugin] loaded core1 1.0.0 (api 1." + std::to_string(SCO_API_MINOR) + ") built in").c_str()));
     CHECK(Logged("[plugin] 6 found, 6 loaded (plugins = on)"));
     CHECK(Logged("[plugin] core1 1.0.0 builtin loaded"));
     CHECK(Logged("[m0] hello from m0"));

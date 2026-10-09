@@ -43,6 +43,8 @@ bool Start(const Platform& platform) {
     plugins::Options opts;
     opts.enabled = pf.pluginsEnabled;
     opts.has = HasCap;
+    opts.builtins = pf.builtins;
+    opts.nBuiltins = pf.nBuiltins;
 
     // The whole list exists before ContainCallouts, so it never moves while the guard holds it.
     std::vector<plugins::Plugin> found;

@@ -213,6 +213,26 @@ static void TestTable() {
     sco_plugin* other = sco::host::NewPlugin(std::string(31, 'o').c_str());
     CHECK(other != nullptr);
     sco_plugin* forged = reinterpret_cast<sco_plugin*>(reinterpret_cast<char*>(hello) + 1);
+
+    // Services (1.1): published under the plugin's own id, found by any plugin.
+    CHECK(api->provide_service && api->query_service);
+    static const int kTable = 7;
+    sco_service_def def = { sizeof(sco_service_def), "hello.greeter", 0x00010000, &kTable };
+    CHECK(api->provide_service(hello, &def) == SCO_OK);
+    const void* tab = nullptr;
+    CHECK(api->query_service(other, "hello.greeter", 0x00010000, &tab) == SCO_OK && tab == &kTable);
+    CHECK(api->query_service(other, "hello.greeter", 0x00020000, &tab) == SCO_UNAVAILABLE && tab == nullptr);
+    CHECK(api->query_service(other, "hello.nothing", 0x00010000, &tab) == SCO_NOT_FOUND);
+    sco_service_def theirs = def;
+    theirs.name = "teleport.spatial";
+    CHECK(api->provide_service(hello, &theirs) == SCO_BAD_ARG);   // not hello's prefix
+    sco_service_def shortDef = def;
+    shortDef.name = "hello.short";
+    shortDef.size = 8;
+    CHECK(api->provide_service(hello, &shortDef) == SCO_BAD_ARG);
+    CHECK(api->provide_service(hello, nullptr) == SCO_BAD_ARG && api->provide_service(forged, &def) == SCO_BAD_ARG);
+    tab = &kTable;
+    CHECK(api->query_service(forged, "hello.greeter", 0x00010000, &tab) == SCO_BAD_ARG && tab == nullptr);
     static char notAHandle[64];
     sco_plugin* fake = reinterpret_cast<sco_plugin*>(notAHandle);
     CHECK(sco::host::PluginId(forged) == nullptr && sco::host::PluginId(fake) == nullptr && sco::host::PluginId(nullptr) == nullptr);
@@ -334,7 +354,7 @@ static void TestTable() {
     CHECK(api->run_on_game_thread(hello, Task, &n) == SCO_OK);
     CHECK(api->subscribe(hello, "tick", Ev, &n) == SCO_OK);
     size_t removed = 0;
-    CHECK(sco::Release(hello, &removed) == Result::Ok && removed == 6);   // 3 commands, 1 sub, 2 tasks
+    CHECK(sco::Release(hello, &removed) == Result::Ok && removed == 7);   // 3 commands, 1 sub, 2 tasks, 1 service
     const int nBefore = n;
     sco::GameThreadTick(5);
     CHECK(dropped.calls == 0 && n == nBefore);

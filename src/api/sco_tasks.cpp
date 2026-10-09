@@ -17,6 +17,7 @@ const char* ResultName(Result r) {
     case Result::Crashed:     return "CRASHED";
     case Result::WrongThread: return "WRONG_THREAD";
     case Result::TooMany:     return "TOO_MANY";
+    case Result::Failed:      return "FAILED";
     }
     return "?";
 }
@@ -168,7 +169,8 @@ Result Release(const void* owner, size_t* removed) {
     }
     const long cmds = detail::ReleaseCommands(owner);
     const long tasks = detail::ReleaseTasks(owner);
-    if (removed) *removed = static_cast<size_t>(subs + cmds + tasks);
+    const long services = detail::ReleaseServices(owner);
+    if (removed) *removed = static_cast<size_t>(subs + cmds + tasks + services);
     return Result::Ok;
 }
 

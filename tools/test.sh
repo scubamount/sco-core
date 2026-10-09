@@ -29,7 +29,8 @@ done
 echo "sdk: template, hello and sco-plugin-check compile against sco_api.h"
 
 FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include")
-RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp")
+RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp"
+         "$ROOT/src/api/sco_services.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined \
   "$ROOT/tests/test_core.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_signatures.cpp" \
   "$ROOT/src/sco_log_status.cpp" "$ROOT/src/sco_pe_file.cpp" "$ROOT/src/game/"*.cpp -o "$OUT/test_core"
@@ -45,6 +46,9 @@ HOST=("$ROOT/tests/test_host.cpp" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/s
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${HOST[@]}" -o "$OUT/test_host"
 "$OUT/test_host"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${HOST[@]}" -o "$OUT/test_host_tsan"
+# Detours over small functions written into executable memory (x86-64 only; skipped elsewhere).
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_hook.cpp" "$ROOT/src/hook/sco_hook.cpp" -o "$OUT/test_hook"
+"$OUT/test_hook"
 "$OUT/test_host_tsan"
 
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load

@@ -101,10 +101,14 @@ struct Plugin {
 
 using CapabilityCheck = int (*)(const char* capability);
 
+struct Builtin;
+
 struct Options {
     bool     enabled = false;                     // `plugins = on` in sc-offline.ini
     uint16_t hostMajor = SCO_API_MAJOR, hostMinor = SCO_API_MINOR;
     CapabilityCheck has = nullptr;                // nullptr: every `requires` is missing
+    const Builtin*  builtins = nullptr;           // the host's built-ins: a folder with one of their
+    size_t          nBuiltins = 0;                // ids is refused (sco::app::Start fills these)
 };
 
 constexpr size_t kMaxPlugins = 128;               // folders beyond this are listed as Refused
@@ -115,7 +119,7 @@ constexpr size_t kMaxPlugins = 128;               // folders beyond this are lis
 // reasons, in check order: "too many plugins" (past kMaxPlugins; with opts.enabled false those
 // folders are Off like the rest), "plugin.ini: unreadable",
 // "plugin.ini: <parse error>" (incl. "plugin.ini: too big"), "id 'x' does not match folder 'y'"
-// (so ids are unique), "built for api M.m" (major differs or minor newer than the host),
+// (so ids are unique), "the id belongs to a built-in plugin" (opts.builtins), "built for api M.m" (major differs or minor newer than the host),
 // "entry 'x' not found", "missing capability 'x'".
 // Discover never runs plugin code and never opens the entry file.
 std::vector<Plugin> Discover(const fs::path& root, const Options& opts);

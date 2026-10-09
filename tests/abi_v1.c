@@ -29,7 +29,7 @@ PIN(sizeof(void (*)(void)) == 8);
 
 /* ---- versions ---- */
 PIN(SCO_API_MAJOR == 1);
-PIN(SCO_API_MINOR == 0);
+PIN(SCO_API_MINOR == 1);
 
 /* ---- sco_result ---- */
 SIZE(sco_result, 4);
@@ -40,6 +40,7 @@ PIN(SCO_BAD_ARG == 3);
 PIN(SCO_CRASHED == 4);
 PIN(SCO_WRONG_THREAD == 5);
 PIN(SCO_TOO_MANY == 6);
+PIN(SCO_FAILED == 7);
 PIN(SCO_RESULT_FORCE32 == 0x7fffffff);
 
 /* ---- sco_log_level ---- */
@@ -87,8 +88,15 @@ AT(sco_command, arg_def_size, 52);
 AT(sco_command, fn, 56);
 AT(sco_command, ctx, 64);
 
+/* ---- sco_service_def ---- */
+SIZE(sco_service_def, 32);
+AT(sco_service_def, size, 0);
+AT(sco_service_def, name, 8);
+AT(sco_service_def, version, 16);
+AT(sco_service_def, vtable, 24);
+
 /* ---- sco_api ---- */
-SIZE(sco_api, 88);
+SIZE(sco_api, 104);
 AT(sco_api, size, 0);
 AT(sco_api, major, 4);
 AT(sco_api, minor, 6);
@@ -102,6 +110,8 @@ AT(sco_api, log, 56);
 AT(sco_api, register_command, 64);
 AT(sco_api, invoke, 72);
 AT(sco_api, list_commands, 80);
+AT(sco_api, provide_service, 88);
+AT(sco_api, query_service, 96);
 
 /* ---- sco_plugin_info ---- */
 SIZE(sco_plugin_info, 32);
@@ -128,12 +138,14 @@ static void pin_api_signatures(const sco_api* a) {
     sco_result (*reg)(sco_plugin*, const sco_command*) = a->register_command;
     sco_result (*inv)(sco_plugin*, const char*, const sco_arg*, uint32_t, sco_invoke_done, void*) = a->invoke;
     uint32_t (*list)(const sco_command**, uint32_t) = a->list_commands;
+    sco_result (*prov)(sco_plugin*, const sco_service_def*) = a->provide_service;
+    sco_result (*qry)(sco_plugin*, const char*, uint32_t, const void**) = a->query_service;
     void (*task)(void*) = (sco_task_fn)0;
     void (*event)(const char*, const void*, void*) = (sco_event_fn)0;
     sco_result (*cmd)(const sco_arg*, uint32_t, void*, char*, uint32_t) = (sco_command_fn)0;
     void (*done)(sco_result, const char*, void*) = (sco_invoke_done)0;
     (void)host_version; (void)has; (void)run; (void)sub; (void)unsub; (void)status;
-    (void)log; (void)reg; (void)inv; (void)list; (void)task; (void)event; (void)cmd; (void)done;
+    (void)log; (void)reg; (void)inv; (void)list; (void)prov; (void)qry; (void)task; (void)event; (void)cmd; (void)done;
 }
 
 /* Keeps the pins referenced so -Wunused does not fire. */
