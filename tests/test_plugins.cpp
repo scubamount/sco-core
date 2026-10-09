@@ -466,7 +466,7 @@ static void TestNative() {
     CHECK(P::LoadNative(ok, &api, NewOwner(), on, kRecOps));
     CHECK(ok.state == State::Loaded && ok.module && ok.loadOrder > 0);
     CHECK(Logged("[m0] hello from m0"));
-    CHECK(Logged("[plugin] loaded m0 1.0.0 (api 1.0) from m0/"));
+    CHECK(Logged(("[plugin] loaded m0 1.0.0 (api 1." + std::to_string(SCO_API_MINOR) + ") from m0/").c_str()));
     CHECK(sco::SubscriptionCount() == subs0 + 1);
     CHECK(sco::GameThreadTick(1) == sco::Result::Ok);
     CHECK(Ticks(ok) == 1);
@@ -476,7 +476,7 @@ static void TestNative() {
     struct { const char* id; const char* reason; } refused[] = {
         { "m1",  "sco_plugin_load returned UNAVAILABLE" },
         { "m2",  "sco_plugin_query returned NULL" },
-        { "m3",  "DLL built for api 2.0" },
+        { "m3",  "DLL built for api 2." },   // the fake reports SCO_API_MINOR
         { "m4",  "DLL name 'someone_else' does not match id 'm4'" },
         { "m7",  "missing export sco_plugin_unload" },
         { "m9",  "sco_plugin_info.size too small" },
@@ -493,7 +493,7 @@ static void TestNative() {
         CHECK(g_closed.size() == closes + (std::strcmp(r.id, "text") == 0 ? 0 : 1));
     }
     CHECK(sco::SubscriptionCount() == subs0 + 1);   // m1 subscribed, then was released
-    CHECK(Logged("[plugin] refused m3: DLL built for api 2.0"));
+    CHECK(Logged(("[plugin] refused m3: DLL built for api 2." + std::to_string(SCO_API_MINOR) + "").c_str()));
 
     // Null api / owner are refused before any plugin code runs.
     P::Plugin& m10 = get("m10");

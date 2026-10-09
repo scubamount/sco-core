@@ -354,7 +354,7 @@ static void TestTable() {
     CHECK(api->run_on_game_thread(hello, Task, &n) == SCO_OK);
     CHECK(api->subscribe(hello, "tick", Ev, &n) == SCO_OK);
     size_t removed = 0;
-    CHECK(sco::Release(hello, &removed) == Result::Ok && removed == 6);   // 3 commands, 1 sub, 2 tasks
+    CHECK(sco::Release(hello, &removed) == Result::Ok && removed == 7);   // 3 commands, 1 sub, 2 tasks, 1 service
     const int nBefore = n;
     sco::GameThreadTick(5);
     CHECK(dropped.calls == 0 && n == nBefore);
