@@ -105,7 +105,7 @@ Features tell the player what happened through `sco::Status("Spawning %s...", na
 - **Commands.** Features register named actions (`spawn.ship`) with typed arguments. `Invoke()` checks the argument count and types and the command's capability before calling it. On the game thread it runs at once; from another thread it copies the name and arguments, queues a task, and reports the result through the `done` callback on the game thread. The registry copies each command's strings and arg defs into a slot that never moves, so `ListCommands()` pointers stay readable.
 - **Owners.** Subscriptions, commands, tasks and queued `Invoke` calls carry an owner handle. `Release(owner)` removes them all at once and is final: later calls naming that owner are refused, so nothing it adds can outlive it. That is what unloading or disabling a plugin needs.
 
-The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../include/sco_api.h) is a thin layer over it: `Result` and `ArgType` share their numbers with `sco_result` and `sco_arg_type`, and `Arg` and `ArgDef` share their layout with `sco_arg` and `sco_arg_def` (checked at compile time). `Command` is not `sco_command`: in step 4 the host builds `sco_command` views of registered commands for `list_commands`.
+The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../include/sco_api.h) is a thin layer over it: `Result` and `ArgType` share their numbers with `sco_result` and `sco_arg_type`, and `Arg` and `ArgDef` share their layout with `sco_arg` and `sco_arg_def` (checked at compile time). `Command` is not `sco_command`: the host table ([`sco/host.h`](../include/sco/host.h)) builds `sco_command` views of registered commands for `list_commands`.
 
 ## Limits
 
@@ -135,9 +135,12 @@ The runtime is C++ and internal (version 0). The plain-C [`sco_api.h`](../includ
 | `src/api/sco_tasks.cpp` | Game-thread identity, task queue, `GameThreadTick`, `Release` |
 | `src/api/sco_events.cpp` | Event bus |
 | `src/api/sco_commands.cpp` | Command registry and `Invoke` |
+| `src/api/sco_caps.cpp` | Capability registry |
+| `src/host/sco_host.cpp` | The host's `sco_api` table and per-plugin handles |
 | `src/api/internal.h` | Callout depth and the per-module halves of `Release`, shared by `src/api/` |
 | `src/game/signatures.cpp` | `RegisterGameSignatures()`: the list of game tables |
 | `src/game/<feature>_sigs.cpp` | One feature's rows and its typed accessor |
 | `tests/test_core.cpp` | Unit tests against a synthetic image |
 | `tests/test_runtime.cpp` | Runtime tests (run under ASan+UBSan and ThreadSanitizer) |
+| `tests/test_host.cpp` | Capability and `sco_api` table tests (ASan+UBSan and ThreadSanitizer) |
 | `tools/sco-sigcheck.cpp` | The offline checker |

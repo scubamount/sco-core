@@ -1,0 +1,62 @@
+name: sdk
+
+# Packages the plugin SDK (sdk/package.py) and builds every example from the zip alone, on
+# Linux and on Windows with MSVC. The zip is kept as an artifact; nothing is released here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Lua 5.4
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
+
+      - name: Package the SDK
+        run: python3 sdk/package.py --out dist
+
+      - name: Build and check the examples from the zip
+        run: sdk/test-zip.sh dist/sco-sdk-*.zip
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sco-sdk
+          path: dist/sco-sdk-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  windows:
+    needs: package
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      # Only the test script comes from the repository; everything it builds comes from the zip.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: sdk/test-zip.sh
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: sco-sdk
+          path: dist
+
+      - name: Build and check the examples from the zip (MSVC x64)
+        shell: bash
+        env:
+          SCO_SDK_NO_LUA: "1"            # no Lua on the image; the Linux job runs the Lua example
+          PYTHON: python                 # python3 on Windows can be the Store stub
+          CMAKE_GENERATOR_PLATFORM: x64
+        run: sdk/test-zip.sh dist/sco-sdk-*.zip

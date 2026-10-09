@@ -1,0 +1,1 @@
+ignored: scripts are .xml

@@ -1,0 +1,230 @@
+cmake_minimum_required(VERSION 3.20)
+project(sco_core C CXX)
+
+# sco-core libraries, sco-sigcheck and the unit tests. tools/test.sh and tools/test-win.sh stay the
+# reference scripts (they add the TSan runs and the x86_64-pc-windows-msvc ABI pin); this is the
+# same build for any CMake toolchain, MSVC included.
+#
+#   cmake -S . -B build && cmake --build build && ctest --test-dir build --output-on-failure
+#
+# Multi-config generators (Visual Studio): add --config <cfg> to the build and -C <cfg> to ctest.
+
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  set(_sco_top_level ON)
+else()
+  set(_sco_top_level OFF)
+endif()
+
+option(SCO_BUILD_TESTS "Build the sco-core unit tests and register them with CTest" ${_sco_top_level})
+option(SCO_WERROR "Treat warnings in sco-core's own code as errors" ON)
+set(SCO_SANITIZE "" CACHE STRING "Sanitizers for project code, e.g. address,undefined (not MSVC)")
+
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+  message(FATAL_ERROR "sco-core is 64-bit only. On Windows configure with -A x64.")
+endif()
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+find_package(Threads REQUIRED)
+
+# Warnings (and sanitizers) for sco-core's own code. Vendored Lua gets neither.
+function(sco_warnings target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4 /utf-8 $<$<BOOL:${SCO_WERROR}>:/WX>)
+    # C4996 flags every standard fopen/strcpy as "unsafe" in favour of the non-portable _s
+    # variants; the code stays ISO C/C++, so turn off that one CRT deprecation, nothing else.
+    target_compile_definitions(${target} PRIVATE _CRT_SECURE_NO_WARNINGS)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra $<$<BOOL:${SCO_WERROR}>:-Werror>)
+  endif()
+endfunction()
+
+function(sco_project_target target)
+  sco_warnings(${target})
+  if(SCO_SANITIZE AND NOT MSVC)
+    target_compile_options(${target} PRIVATE -fsanitize=${SCO_SANITIZE} -fno-omit-frame-pointer)
+    target_link_options(${target} PUBLIC -fsanitize=${SCO_SANITIZE})
+  endif()
+endfunction()
+
+set(SCO_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
+
+# ---- libraries --------------------------------------------------------------------------------
+
+# Pattern scanning, signatures, log/status, PE files and the game signature tables.
+file(GLOB SCO_GAME_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.cpp")
+add_library(sco_core STATIC
+  src/sco_scan.cpp src/sco_signatures.cpp src/sco_log_status.cpp src/sco_pe_file.cpp
+  ${SCO_GAME_SOURCES})
+if(WIN32)
+  target_sources(sco_core PRIVATE src/sco_image_win.cpp)
+endif()
+target_include_directories(sco_core PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_core PUBLIC Threads::Threads)
+sco_project_target(sco_core)
+
+# Tasks, events and commands: the cross-thread runtime under the plugin ABI.
+add_library(sco_runtime STATIC src/api/sco_tasks.cpp src/api/sco_events.cpp src/api/sco_commands.cpp)
+target_include_directories(sco_runtime PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_runtime PUBLIC Threads::Threads)
+sco_project_target(sco_runtime)
+
+# Capability registry and the host's sco_api table.
+add_library(sco_host STATIC src/api/sco_caps.cpp src/host/sco_host.cpp)
+target_link_libraries(sco_host PUBLIC sco_runtime sco_core)
+sco_project_target(sco_host)
+
+# Plugin discovery, plugin.ini, the native loader (with the SEH guard on Windows), content index.
+add_library(sco_plugins STATIC
+  src/plugins/manifest.cpp src/plugins/discover.cpp src/plugins/loader.cpp src/plugins/content.cpp)
+if(WIN32)
+  target_sources(sco_plugins PRIVATE src/plugins/guard_win.cpp)
+endif()
+target_link_libraries(sco_plugins PUBLIC sco_runtime sco_core ${CMAKE_DL_LIBS})
+sco_project_target(sco_plugins)
+
+# Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
+file(GLOB SCO_LUA_VENDOR_SOURCES CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/plugins/lua/third_party/lua/src/*.c")
+list(FILTER SCO_LUA_VENDOR_SOURCES EXCLUDE REGEX "/(lua|luac)\\.c$")
+add_library(sco_lua_vendor STATIC ${SCO_LUA_VENDOR_SOURCES})
+target_include_directories(sco_lua_vendor PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/plugins/lua/third_party/lua/src")
+if(MSVC)
+  target_compile_options(sco_lua_vendor PRIVATE /w)
+else()
+  target_compile_options(sco_lua_vendor PRIVATE -w)
+endif()
+if(SCO_SANITIZE AND NOT MSVC)
+  target_compile_options(sco_lua_vendor PRIVATE -fsanitize=${SCO_SANITIZE})
+endif()
+if(UNIX)
+  target_link_libraries(sco_lua_vendor PUBLIC m)
+endif()
+
+# sco-lua: the sandboxed runtime for kind = lua plugins.
+add_library(sco_lua STATIC plugins/lua/sco_lua.c)
+target_include_directories(sco_lua PUBLIC "${SCO_INCLUDE_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}/plugins/lua")
+target_link_libraries(sco_lua PUBLIC sco_lua_vendor)
+sco_project_target(sco_lua)
+if(NOT MSVC)
+  target_compile_options(sco_lua PRIVATE -Wpedantic)
+endif()
+
+# ---- tools ------------------------------------------------------------------------------------
+
+add_executable(sco-sigcheck tools/sco-sigcheck.cpp)
+target_link_libraries(sco-sigcheck PRIVATE sco_core)
+sco_project_target(sco-sigcheck)
+
+# ---- tests ------------------------------------------------------------------------------------
+
+if(SCO_BUILD_TESTS)
+  enable_testing()
+  set(SCO_TEST_OUT "${CMAKE_CURRENT_BINARY_DIR}/tests/out")
+  file(MAKE_DIRECTORY "${SCO_TEST_OUT}")
+
+  # Plugin ABI pin (tests/abi_v1.c): compile-only, as C11 and as C++20, plus -fshort-enums where
+  # the compiler has it. The abi_v1 test rebuilds these objects, so a broken pin fails ctest.
+  set(_abi_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_v1.cpp")
+  file(CONFIGURE OUTPUT "${_abi_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_v1.c\"\n")
+  add_library(sco_abi_v1_c OBJECT tests/abi_v1.c)
+  add_library(sco_abi_v1_cxx OBJECT "${_abi_cxx}")
+  set(_abi_targets sco_abi_v1_c sco_abi_v1_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_v1_short_enums OBJECT tests/abi_v1.c)
+    target_compile_options(sco_abi_v1_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_targets sco_abi_v1_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  get_property(_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+  if(_multi_config)
+    set(_abi_config --config $<CONFIG>)
+  else()
+    set(_abi_config)
+  endif()
+  add_test(NAME abi_v1
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_targets})
+
+  add_executable(test_core tests/test_core.cpp)
+  target_link_libraries(test_core PRIVATE sco_core)
+  sco_project_target(test_core)
+  add_test(NAME test_core COMMAND test_core)
+
+  add_executable(test_runtime tests/test_runtime.cpp)
+  target_link_libraries(test_runtime PRIVATE sco_runtime)
+  sco_project_target(test_runtime)
+  add_test(NAME test_runtime COMMAND test_runtime)
+
+  add_executable(test_host tests/test_host.cpp)
+  target_link_libraries(test_host PRIVATE sco_host)
+  sco_project_target(test_host)
+  add_test(NAME test_host COMMAND test_host)
+
+  # Fake native plugins for test_plugins, laid out like tools/test.sh (tools/test-win.sh on
+  # Windows): <out>/plugins/m<mode>/{plugin.ini,m<mode>.<ext>}, m11 a second clean plugin, and
+  # text/ an entry that is not a library.
+  if(WIN32)
+    set(_ext dll)
+  else()
+    set(_ext so)
+  endif()
+  set(_plug "${SCO_TEST_OUT}/plugins")
+  file(REMOVE_RECURSE "${_plug}")
+  # One plugin m<n> per FAKE_MODE n in fake_plugin.c; keep in step with tools/test.sh.
+  set(SCO_FAKE_PLUGIN_MODES 0 1 2 3 4 5 6 7 8 9 10)
+  set(_fakes)
+  foreach(m IN LISTS SCO_FAKE_PLUGIN_MODES)
+    list(APPEND _fakes "m${m}:${m}")
+  endforeach()
+  list(APPEND _fakes "m11:0")   # a second clean plugin
+  set(_fake_targets)
+  foreach(fake IN LISTS _fakes)
+    string(REPLACE ":" ";" fake "${fake}")
+    list(GET fake 0 id)
+    list(GET fake 1 mode)
+    file(WRITE "${_plug}/${id}/plugin.ini"
+         "id = ${id}\nname = Fake ${id}\nversion = 1.0.0\napi = 1.0\nkind = native\nentry = ${id}.${_ext}\n")
+    add_library(sco_fake_${id} SHARED tests/fixtures/plugins/native/fake_plugin.c)
+    target_include_directories(sco_fake_${id} PRIVATE "${SCO_INCLUDE_DIR}")
+    target_compile_definitions(sco_fake_${id} PRIVATE FAKE_MODE=${mode} "FAKE_ID=\"${id}\"")
+    # $<1:...> keeps multi-config generators from adding a per-config subfolder.
+    set_target_properties(sco_fake_${id} PROPERTIES
+      OUTPUT_NAME ${id} PREFIX "" SUFFIX ".${_ext}"
+      LIBRARY_OUTPUT_DIRECTORY "$<1:${_plug}/${id}>"
+      RUNTIME_OUTPUT_DIRECTORY "$<1:${_plug}/${id}>")
+    sco_warnings(sco_fake_${id})
+    list(APPEND _fake_targets sco_fake_${id})
+  endforeach()
+  file(WRITE "${_plug}/text/plugin.ini"
+       "id = text\nname = Not a library\nversion = 1\napi = 1.0\nkind = native\nentry = text.${_ext}\n")
+  if(WIN32)
+    file(WRITE "${_plug}/text/text.dll" "not a DLL\n")
+  else()
+    file(WRITE "${_plug}/text/text.so" "not a shared library\n")
+  endif()
+
+  add_executable(test_plugins tests/test_plugins.cpp)
+  target_link_libraries(test_plugins PRIVATE sco_plugins)
+  add_dependencies(test_plugins ${_fake_targets})
+  sco_project_target(test_plugins)
+  add_test(NAME test_plugins
+           COMMAND test_plugins "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugins" "${SCO_TEST_OUT}")
+
+  add_executable(test_lua tests/test_lua.cpp)
+  target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua)
+  sco_project_target(test_lua)
+  add_test(NAME test_lua COMMAND test_lua "${CMAKE_CURRENT_SOURCE_DIR}/sdk" "${SCO_TEST_OUT}")
+endif()

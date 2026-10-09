@@ -19,6 +19,15 @@ clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_v1.c"
 echo "abi_v1: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
+# SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
+# header change that breaks them fails here. The full build from the packaged zip, with MSVC on
+# Windows and the plugin checks, is sdk/test-zip.sh (CI: .github/workflows/sdk.yml).
+for f in "$ROOT/sdk/template/plugin.c" "$ROOT/sdk/examples/hello/hello.c"; do
+  "$CC" -std=c11 "${ABI[@]}" "$f"
+done
+"$CC" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -I "$ROOT/include" -fsyntax-only "$ROOT/sdk/tools/sco-plugin-check.c"
+echo "sdk: template, hello and sco-plugin-check compile against sco_api.h"
+
 FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include")
 RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined \
@@ -30,3 +39,50 @@ RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src
 "$OUT/test_runtime"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "$ROOT/tests/test_runtime.cpp" "${RUNTIME[@]}" -o "$OUT/test_runtime_tsan"
 "$OUT/test_runtime_tsan"
+# Capabilities and the host's sco_api table, over the same runtime, under both sanitizer sets.
+HOST=("$ROOT/tests/test_host.cpp" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "${RUNTIME[@]}"
+      "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_log_status.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${HOST[@]}" -o "$OUT/test_host"
+"$OUT/test_host"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${HOST[@]}" -o "$OUT/test_host_tsan"
+"$OUT/test_host_tsan"
+
+# Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load
+# real shared libraries built from tests/fixtures/plugins/native/fake_plugin.c, one per behavior
+# (FAKE_MODE), into tests/out/plugins/m<mode>/ with a generated plugin.ini; m11 is a second clean
+# plugin and text/ an entry that is not a library.
+PLUG=$OUT/plugins
+rm -rf "$PLUG"
+SHARED=(-shared -fPIC); [ "$(uname)" = Darwin ] && SHARED=(-dynamiclib)
+plugin() {   # plugin <id> <mode>
+  mkdir -p "$PLUG/$1"
+  printf 'id = %s\nname = Fake %s\nversion = 1.0.0\napi = 1.0\nkind = native\nentry = %s.so\n' "$1" "$1" "$1" > "$PLUG/$1/plugin.ini"
+  "$CC" -std=c11 -O1 -Wall -Wextra -Werror -I "$ROOT/include" "${SHARED[@]}" -DFAKE_MODE="$2" -DFAKE_ID="\"$1\"" \
+    "$ROOT/tests/fixtures/plugins/native/fake_plugin.c" -o "$PLUG/$1/$1.so"
+}
+for m in 0 1 2 3 4 5 6 7 8 9 10; do plugin "m$m" "$m"; done
+plugin m11 0
+mkdir -p "$PLUG/text"
+printf 'id = text\nname = Not a library\nversion = 1\napi = 1.0\nkind = native\nentry = text.so\n' > "$PLUG/text/plugin.ini"
+echo "not a shared library" > "$PLUG/text/text.so"
+PLUGINS=("$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" \
+         "$ROOT/src/plugins/content.cpp" "$ROOT/src/sco_log_status.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_plugins.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
+  -ldl -o "$OUT/test_plugins"
+"$OUT/test_plugins" "$ROOT/tests/fixtures/plugins" "$OUT"
+
+# sco-lua (plugins/lua): the sandboxed Lua runtime, loaded through the real loader and host table.
+# Vendored Lua is built as C with its own warnings off; sco_lua.c with -Werror like the rest.
+LUA_SRC=$ROOT/plugins/lua/third_party/lua/src
+mkdir -p "$OUT/lua"
+LUA_OBJS=()
+for f in "$LUA_SRC"/*.c "$ROOT/plugins/lua/sco_lua.c"; do
+  o="$OUT/lua/$(basename "$f" .c).o"
+  if [ "$f" = "$ROOT/plugins/lua/sco_lua.c" ]; then W=(-Wall -Wextra -Wpedantic -Werror); else W=(-w); fi
+  "$CC" -std=c11 -O1 -g "${W[@]}" -fsanitize=address,undefined -I "$ROOT/include" -I "$LUA_SRC" -c "$f" -o "$o"
+  LUA_OBJS+=("$o")
+done
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_lua.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
+  "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
+  "${LUA_OBJS[@]}" -ldl -o "$OUT/test_lua"
+"$OUT/test_lua" "$ROOT/sdk" "$OUT"

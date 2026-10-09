@@ -87,6 +87,12 @@ size_t SubscriptionCount() {
     return g_subs->size();
 }
 
+struct EventCall { const Subscription* sub; const char* event; const void* data; };
+static void EventThunk(void* c) {
+    const EventCall* e = static_cast<const EventCall*>(c);
+    e->sub->fn(e->event, e->data, e->sub->ctx);
+}
+
 Result Dispatch(const char* event, const void* data, size_t* called) {
     if (called) *called = 0;
     if (!event) return Result::BadArg;
@@ -99,8 +105,8 @@ Result Dispatch(const char* event, const void* data, size_t* called) {
     size_t n = 0;
     for (const auto& s : *subs) {
         if (s->event != event || !s->live.load()) continue;
-        detail::CallScope scope;
-        s->fn(event, data, s->ctx);
+        EventCall call{ s.get(), event, data };
+        detail::Callout(s->owner, event, EventThunk, &call);
         ++n;
     }
     if (called) *called = n;

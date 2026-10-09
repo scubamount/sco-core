@@ -1,9 +1,9 @@
 #pragma once
 // Game-thread runtime: the task queue, the event bus and the command registry.
-// C++ and internal. The plain-C sco_api.h (SDK step 4) is a thin layer over it: results share
+// C++ and internal. The plain-C sco_api.h (filled by sco/host.h) is a thin layer over it: results share
 // their numbers with sco_result, and Arg / ArgDef share their layout with sco_arg /
 // sco_arg_def (static_asserts in src/api/sco_commands.cpp). Command is NOT sco_command: the
-// host builds sco_command views of registered commands for list_commands in step 4.
+// host table (sco/host.h) builds sco_command views of registered commands for list_commands.
 //
 // Threading model:
 //   - The host calls SetGameThread() once from the game's main thread, then GameThreadTick()
@@ -129,8 +129,9 @@ constexpr const char* kReservedPrefixes[] = { "sco", "host", "menu", "game" };
 // "<prefix>.", the prefix may not be reserved, and no other owner may hold live commands
 // whose first segment is the prefix. nullptr for host features (any "<x>.<y>" name).
 // BadArg: null fn, name not "<x>.<y>" (lowercase letters, digits, '_' and '.'), a prefix rule
-// broken, a string too long, nargs > kMaxCommandArgs, an arg def with a null name or unknown
-// type, a live command with the same name, or owner released.
+// broken, a string too long, a capability that isn't a capability name (lowercase letters,
+// digits and '_' segments joined by '.', as caps::Set requires), nargs > kMaxCommandArgs, an arg
+// def with a null name or unknown type, a live command with the same name, or owner released.
 // TooMany: kMaxCommands registrations used (released ones still count: slots never move), or
 // out of memory.
 Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd);
@@ -140,8 +141,8 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
 // command drops out of later lists.
 size_t ListCommands(const Command** out, size_t max);
 
-// Answers a command's `capability`. Until a check is installed (step 3), every command that
-// names a capability is Unavailable.
+// Answers a command's `capability`. Until a check is installed (sco::host::BuildApi installs
+// sco::caps::Has), every command that names a capability is Unavailable.
 using CapabilityCheck = bool (*)(const char* capability);
 void SetCapabilityCheck(CapabilityCheck check);
 
@@ -153,10 +154,31 @@ void SetCapabilityCheck(CapabilityCheck check);
 //   Release(owner) drops the queued call first. If Invoke returns anything other than Ok
 //   (BadArg for a null name, too many args or a released owner, TooMany when the task queue is
 //   full or memory runs out) done is never called.
+//   Either way, done is not called if `owner` was released while the command ran (the command,
+//   or something it called, ran Release(owner)): after Release the runtime never calls an
+//   owner's functions again.
 // Results from the command run: NotFound (no such live command), BadArg (arg count or a type
 // differs from the defs, a null string, a Bool not 0 or 1), Unavailable (capability check
 // says no), else fn's result.
 Result Invoke(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx,
               const void* owner = nullptr);
+
+// ---- crash containment ----------------------------------------------------------------------
+
+// Runs one callout for `owner`: calls thunk(ctx) (or skips it) and returns true when the call
+// completed, false when it did not (it faulted, or the owner may not be called any more).
+using CalloutGuard = bool (*)(const void* owner, const char* where, TaskFn thunk, void* ctx);
+
+// Installs the guard every owned callout runs through; nullptr (the default) calls straight
+// through. When set, every task, event callback, command fn and Invoke done callback whose owner
+// is non-null runs as guard(owner, where, thunk, ctx); nullptr-owner callouts never see it.
+//   owner: the task's, the subscription's or the command's owner; for done, the owner passed to
+//          Invoke
+//   where: "task" for tasks, the event name for events, the command name for commands,
+//          "invoke done" for done callbacks
+// A false return means the callout did not complete: a command that faults answers Crashed (with
+// an empty reply, and done still gets Crashed); nothing else is retried or reported.
+// Install from the game thread while nothing runs (sco::plugins::ContainCallouts does).
+void SetCalloutGuard(CalloutGuard guard);
 
 }  // namespace sco
