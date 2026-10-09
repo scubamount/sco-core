@@ -52,12 +52,13 @@ so nothing can call into the script, then `sco_lua_unload` frees the Lua state.
 
 A step is one VM instruction, or one iteration of a C loop in the string and table libraries that
 the VM's count hook can't see. Those loops are patched to call `SCO_LUA_STEP`; every patched line
-is marked `/* sco-lua */`:
+is marked `/* sco-lua */`. Calls that move many values at once are charged in proportion to the
+work, 1 step plus 1 per 64 values or bytes (1 per 16 bytes of a `[...]` class):
 
 | File | Loops |
 |---|---|
-| `lstrlib.c` | `string.rep`, pattern matching (`match`, `max_expand`, `%b`), plain `find`, `gsub` |
-| `ltablib.c` | `table.insert`, `table.remove`, `table.move`, `table.concat`, `table.sort` |
+| `lstrlib.c` | `string.rep`, pattern matching (`match`, `max_expand`, `%b`), plain `find` (per candidate, plus the needle length), `gsub`, `string.byte` and `string.char` (by count), `[...]` classes (per test, by class length) |
+| `ltablib.c` | `table.insert`, `table.remove`, `table.move`, `table.concat`, `table.sort`, `table.pack` and `table.unpack` (by count) |
 | `luaconf.h` | Includes `sco_lua_user.h` |
 
 Once a script is past its budget, every further instruction raises, so a `pcall` in the script

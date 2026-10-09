@@ -220,6 +220,7 @@ static void TestLimits() {
 
     Write("limits", R"(
         local n = 0
+        local function big(len, c) local s = c or "x" while #s < len do s = s .. s end return s:sub(1, len) end
         sco.register_command{ name = "limits.spin", title = "Spin", fn = function() while true do end end }
         sco.register_command{ name = "limits.shield", title = "Shield",
           fn = function() while true do pcall(function() while true do end end) end end }
@@ -227,6 +228,20 @@ static void TestLimits() {
           fn = function() return tostring(#string.rep("x", 5000000)) end }
         sco.register_command{ name = "limits.find", title = "Find",
           fn = function() local s = string.rep(string.rep("a", 1000), 2000) return tostring(s:find(string.rep("a", 30) .. "b", 1, true)) end }
+        -- One library call, many values: charged by size, not 1 step per call.
+        sco.register_command{ name = "limits.unpack", title = "Unpack", fn = function()
+          local t = table.pack(big(500000):byte(1, -1))
+          for _ = 1, 1000 do table.unpack(t, 1, t.n) end
+          return "unpacked" end }
+        sco.register_command{ name = "limits.byte", title = "Byte", fn = function()
+          local s = big(500000)
+          for _ = 1, 1000 do s:byte(1, -1) end
+          return "bytes" end }
+        sco.register_command{ name = "limits.needle", title = "Needle", fn = function()
+          local s = big(4194304)
+          return tostring(s:find(s:sub(1, 2097152) .. "y", 1, true)) end }
+        sco.register_command{ name = "limits.class", title = "Class", fn = function()
+          return tostring(big(1000000):find("[" .. big(1048576, "y") .. "x]*")) end }
         sco.register_command{ name = "limits.sort", title = "Sort",
           fn = function() local t = {} for i = 1, 60000 do t[i] = -i end table.sort(t) return "sorted" end }
         sco.register_command{ name = "limits.ok", title = "OK",
@@ -235,7 +250,8 @@ static void TestLimits() {
     )");
     // Each budget case gets a fresh copy of the script: an overrun disables it.
     struct Case { const char* cmd; };
-    for (const char* cmd : { "limits.spin", "limits.shield", "limits.rep", "limits.find", "limits.sort" }) {
+    for (const char* cmd : { "limits.spin", "limits.shield", "limits.rep", "limits.find", "limits.sort",
+                             "limits.unpack", "limits.byte", "limits.needle", "limits.class" }) {
         l = Load("limits");
         CHECK(l.p && l.p->state == State::Loaded);
         CHECK(Invoke(g_caller, "limits.ok").text == "5000050000");             // fits the budget

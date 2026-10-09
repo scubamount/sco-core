@@ -18,7 +18,7 @@ There is no `io`, `os`, `package`, `require`, `debug`, `dofile`, `loadfile` or F
 
 Limits, per script:
 
-- **Steps**: loading the script, and each event callback, command or `run_on_game_thread` task, may take 1 million steps (a step is about one VM instruction; long `string.rep`, `find`, `gsub`, `table.sort` and `table.concat` calls count per item). Past that the call fails and the script is disabled; `pcall` can't catch it.
+- **Steps**: loading the script, and each event callback, command or `run_on_game_thread` task, may take 1 million steps (a step is about one VM instruction; long `string.rep`, `find`, `gsub`, `table.sort` and `table.concat` calls count per item, and `string.byte`, `string.char`, `table.pack`, `table.unpack`, long `find` needles and long `[...]` classes count by size). Past that the call fails and the script is disabled; `pcall` can't catch it.
 - **Memory**: 64 MiB. An allocation past it fails with `not enough memory` and the script is disabled.
 - **Subscriptions**: 64 functions per event name, 16 event names. Past that `sco.subscribe` returns `false, "too_many"`.
 - **Errors**: an error raised in a callback is caught and logged; a command that raises fails with the error text as its reply. After 3 errors the script is disabled.
