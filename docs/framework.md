@@ -224,6 +224,7 @@ Each item gets its own design review before code; every ABI change is a 1.x mino
 | More events | Mods that react to the game | `player.spawned`, `zone.changed`, `ship.spawned`, `menu.opened`; each `data` struct starts with a size |
 | Plugin dependencies | Plugins built on other plugins | `depends = <id> >= <version>`, on the same load-order machinery as `uses` |
 | Game services | Plugins that spawn, teleport or query entities | sc-offline's built-in features as capability-gated commands and services, so no plugin needs a raw game address |
+| Game-file overrides and DataCore patches | Data mods (sc-offline's quantum drive first) that survive game patches instead of turning off at every one | `sco::vfs` serves virtual game files (base ranges plus replacement bytes) through the engine's file calls; `sco::datacore` turns named record/field overrides from data packs into splices computed from the loaded file's own tables. [Design: vfs-datacore.md](design/vfs-datacore.md) (proposal) |
 | Developer reload | Faster plugin development | Unload and reload one plugin from the menu or `sco-host-sim`, behind a developer switch |
 | Mod manager | Players install and switch mods | The launcher lists `data/plugins/`, switches them with the `disabled` file, shows the `LogReport` states, and removes a plugin's data on request |
 
