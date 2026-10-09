@@ -24,6 +24,7 @@
 //     view fn and ctx are NULL and args has stride sizeof(sco_arg_def): run commands with invoke.
 //   - log writes "[<id>] message", "[<id>] warning: message" or "[<id>] error: message".
 #include "sco_api.h"
+#include "sco/runtime.h"
 #include <cstddef>
 
 namespace sco::host {
@@ -48,5 +49,31 @@ sco_plugin* NewPlugin(const char* id);
 
 // The id a handle was made with; nullptr for a pointer NewPlugin didn't return.
 const char* PluginId(const sco_plugin* p);
+
+// ---- host-owned services ----------------------------------------------------------------------
+//
+// Services the host itself publishes (docs/design/vfs-datacore.md decision 10): they live under
+// the reserved plugin id "sco", so their names are "sco.<name>" ("sco.storage"), which no plugin
+// can take (NewPlugin and plugin.ini refuse the id, discovery refuses a folder named sco).
+// Plugins find them with the ordinary query_service; sco_api.h is unchanged. The owner is the
+// host's own token (HostOwner()), never released, so a service withdrawn at shutdown can be
+// published again by the next start. Host services outlive every plugin: sco::app::Stop
+// withdraws them after UnloadAll. Any thread.
+
+constexpr const char* kHostId = "sco";
+
+// The runtime owner of every host-owned service. Never released.
+const void* HostOwner();
+
+// Publishes table under name, which must be "sco.<name>" (the service name rule of
+// sco/runtime.h: [a-z0-9_.], at most 63 characters). BadArg: a null table, a name outside
+// "sco.", a bad or taken name. TooMany: out of memory.
+Result ProvideHostService(const char* name, uint32_t version, const void* table);
+
+// Withdraws one host service. NotFound: the host publishes nothing by that name.
+Result WithdrawHostService(const char* name);
+
+// Withdraws every host service (host shutdown); returns how many.
+size_t WithdrawHostServices();
 
 }  // namespace sco::host

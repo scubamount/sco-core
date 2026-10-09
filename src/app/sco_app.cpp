@@ -7,6 +7,7 @@
 #include "sco/log.h"
 #include "sco/runtime.h"
 #include "sco/signatures.h"
+#include "sco/storage.h"
 #include <utility>
 
 namespace sco::app {
@@ -39,6 +40,12 @@ bool Start(const Platform& platform) {
 
     const char* version = pf.hostVersion ? pf.hostVersion : "sco-core host";
     const sco_api* api = host::BuildApi({ version });
+    if (!pf.dataRoot.empty()) {   // before any plugin loads, built-ins included
+        storage::Options so;
+        so.dataRoot = pf.dataRoot;
+        const Result sr = storage::Start(so);
+        if (sr != Result::Ok) Log("[app] storage not started: %s", ResultName(sr));
+    }
 
     plugins::Options opts;
     opts.enabled = pf.pluginsEnabled;
@@ -101,6 +108,8 @@ void Stop() {
     const Result r = Dispatch("game.exit", nullptr);
     if (r != Result::Ok) Log("[app] game.exit: %s", ResultName(r));
     plugins::UnloadAll(g_list, g_platform.moduleOps, g_platform.scripts);
+    storage::Stop();
+    host::WithdrawHostServices();
     plugins::ContainCallouts(nullptr);
     g_started = false;
 }
