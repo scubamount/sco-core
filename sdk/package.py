@@ -4,7 +4,7 @@
     sdk/package.py [--out DIR]          # writes DIR/sco-sdk-<version>.zip (default: sdk/out)
 
 The zip holds one folder, sco-sdk-<version>/, with everything a modder needs and nothing else:
-sco_api.h, the CMake helper, the template, the examples, sco-plugin-check, the docs, LICENSE
+sco_api.h and the C++20 headers (include/scosdk/), the CMake helper, the template, the examples, sco-plugin-check, the docs, LICENSE
 and SHA256SUMS. It needs only Python 3 (no zip tool), and the same sources always give the same
 bytes: entries are sorted and carry a fixed timestamp.
 
@@ -25,6 +25,7 @@ FIXED_TIME = (2026, 1, 1, 0, 0, 0)
 # (source relative to the repo root, path inside the SDK folder). Folders are copied whole.
 CONTENT = [
     ("include/sco_api.h", "include/sco_api.h"),
+    ("include/scosdk", "include/scosdk"),
     ("LICENSE", "LICENSE"),
     ("sdk/VERSION", "VERSION"),
     ("sdk/README.md", "README.md"),
@@ -35,6 +36,7 @@ CONTENT = [
     ("sdk/tools", "tools"),
     ("sdk/docs", "docs"),
     ("docs/api-v1.md", "docs/api-v1.md"),
+    ("docs/sdk-cpp.md", "docs/sdk-cpp.md"),
 ]
 SKIP_DIRS = {"build", "out", ".DS_Store"}
 
