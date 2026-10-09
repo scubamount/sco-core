@@ -236,9 +236,9 @@ Signature rows, moved byte for byte from `quantum.cpp` per [Adding a signature](
 Hooking: the slots are virtual functions, so there are two options.
 
 - **Vtable slot swap** (today). No stolen-byte analysis, trivially reversible, and it only affects calls through `ICryPak` (all engine file access goes that way). Proposal: add `sco::hook::SwapSlot(void** slot, void* fn, void** original)` to `sco/hook.h`. It goes through the same registry, so two features can't swap the same slot, and it writes through `WriteCode` for protection handling.
-- **Detours on the slot targets** with `sco::hook::InstallDetour`. These catch direct (devirtualized) calls too, but they need stolen-byte counts pinned by rows, and they hook the implementation for every caller.
+- **Detours on the slot targets** with `sco::hook::InstallDetour`. These catch direct (devirtualized) calls too. Since hook v2, `StolenLength` counts the stolen bytes, and a `Transaction` installs all four or none. But they hook the implementation for every caller, and they refuse a prologue the decoder can't count.
 
-Recommendation: slot swap, via the new `SwapSlot`, so sco::hook stays the one place that patches the game. The open question is listed below.
+Recommendation: slot swap, via the new `SwapSlot` (joining `Transaction` so the four slots switch together), so sco::hook stays the one place that patches the game. The open question is listed below.
 
 ## 4. The semantic DataCore patcher
 
