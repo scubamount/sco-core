@@ -119,7 +119,7 @@ std::vector<Plugin> Discover(const fs::path& root, const Options& opts);
 
 // ---- native loader --------------------------------------------------------------------------
 
-// How the loader maps a module. PlatformModuleOps(): Windows LoadLibraryExW(path,
+// How the loader maps a module. PlatformModuleOps(): Windows LoadLibraryExW(absolute path,
 // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32) / GetProcAddress /
 // FreeLibrary; elsewhere dlopen(RTLD_NOW | RTLD_LOCAL) / dlsym / dlclose (host tests).
 struct ModuleOps {

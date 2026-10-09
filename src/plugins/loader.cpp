@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <system_error>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -24,8 +25,13 @@ namespace sco::plugins {
 #ifdef _WIN32
 static void* OpenModule(const fs::path& file, std::string& error) {
     // Dependencies resolve from the plugin's own folder and System32 only: never the game folder,
-    // the current directory or PATH.
-    HMODULE m = LoadLibraryExW(file.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // the current directory or PATH. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs a fully qualified
+    // path (a relative one fails with ERROR_INVALID_PARAMETER), and the plugin root may be
+    // relative ("data/plugins").
+    std::error_code ec;
+    fs::path full = fs::absolute(file, ec);
+    if (ec) full = file;
+    HMODULE m = LoadLibraryExW(full.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!m) {
         char buf[48];
         std::snprintf(buf, sizeof(buf), "LoadLibraryExW error %lu", GetLastError());
