@@ -8,7 +8,7 @@
 | [2. The host kit in sco-core](#phase-2-the-host-kit-in-sco-core) | Done | sco-core PR #8, merged as `94ba952` |
 | [3. sc-offline runs on the host kit](#phase-3-sc-offline-runs-on-the-host-kit) | Done, played in game 2026-10-09 | sc-offline PR #56, merged as `78756af` |
 | [4. Features become built-in plugins](#phase-4-sc-offlines-features-become-built-in-plugins) | In progress | |
-| [5. Services and storage](#phase-5-services-and-storage) | In progress: sco_api 1.1 services and raw handlers, host-owned services and `sco.storage` landed | sco-core (this change) |
+| [5. Services and storage](#phase-5-services-and-storage) | In progress: sco_api 1.1 services and raw handlers, host-owned services and `sco.storage` landed | sco-core PR #24 |
 | [6. The framework grows](#phase-6-the-framework-grows) | Planned | |
 
 ## Goal
