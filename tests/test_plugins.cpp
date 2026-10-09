@@ -298,7 +298,8 @@ static void TestContentIndex() {
         for (size_t i = 1; i < P::kMaxPackFiles + 1; ++i) {
             const fs::path p = root / "big" / "lists" / (std::to_string(i) + ".txt");
             fs::create_directories(p.parent_path());
-            if (fs::create_hard_link(seed, p, hl)) continue;
+            fs::create_hard_link(seed, p, hl);
+            if (!hl) continue;
             std::ofstream(p, std::ios::binary);
         }
     }
