@@ -29,7 +29,7 @@ requires = teleport, spawn.ship   ; optional capabilities
 | State | When |
 |---|---|
 | `off` | `plugins = off` in `sc-offline.ini` (the default). Listed so `status` can show it |
-| `disabled` | `data/plugins/<id>/disabled` exists |
+| `disabled` | `data/plugins/<id>/disabled` exists (a file or a folder) |
 | `refused: <reason>` | `plugin.ini: <parse error>`, `id 'x' does not match folder 'y'`, `built for api M.m` (major differs or minor newer than the host), `entry 'x' not found`, `missing capability 'x'`, `too many plugins` (over 128) |
 | `ready` | Passed; the loader, the Lua runtime or the content index takes it |
 
@@ -46,10 +46,18 @@ requires = teleport, spawn.ship   ; optional capabilities
 
 ### Crash containment
 
-Every call into plugin code goes through `Guarded()`: on Windows a `__try/__except` that catches any SEH exception. Host trampolines for event callbacks, commands and tasks call `CallPlugin(plugin, where, thunk, ctx)`. A fault:
+Every call into plugin code goes through `Guarded()`: on Windows a `__try/__except` that catches any SEH exception. `query`, `load` and `unload` are guarded by the loader itself. Everything a plugin registers through `sco_api` (event callbacks, `run_on_game_thread` tasks, command functions and `invoke` `done` callbacks) runs from the runtime, so the host installs a runtime callout guard once, right after `Discover`:
+
+```cpp
+auto list = sco::plugins::Discover(root, opts);
+sco::plugins::ContainCallouts(&list);   // every plugin callout -> CallPlugin(plugin, where, ...)
+```
+
+`ContainCallouts` (over `sco::SetCalloutGuard`) finds the plugin whose `self` owns the callout and runs it through `CallPlugin(plugin, where, thunk, ctx)`, where `where` is the event name (`tick`), the command name, `task` or `invoke done`. Host features' own callouts, and calls a plugin makes into itself while its `sco_plugin_load` is still running (already inside the load guard), are called directly. A fault:
 
 - `sco::Release(self)`: its subscriptions, commands, queued tasks and queued invokes are gone;
 - the plugin is `crashed` and never called again;
+- a command that faulted answers `SCO_CRASHED` (with an empty reply) to whoever invoked it;
 - one `[plugin] hello crashed in tick (0xC0000005) and was disabled` line in `mod.log` and a status message;
 - the DLL stays mapped, because its code may still be on a stack.
 
@@ -59,7 +67,9 @@ This limits damage. It is not a sandbox: stack corruption, `__fastfail` and `/GS
 
 ### Unloading
 
-`UnloadAll(list, ops, &runtime)` at `game.exit`: plugins last loaded first. For a native plugin: `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`.
+`UnloadAll(list, ops, &runtime)` at `game.exit`: plugins last loaded first. For a native plugin: `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`. If `Release` fails (out of memory, or `UnloadAll` called off the game thread) the runtime may still hold the plugin's callbacks, so the DLL is never unmapped: the plugin becomes `crashed: release failed: <RESULT>` instead.
+
+`LoadNative` passes the plugin path to `LoadLibraryExW` as an absolute path, so the host may discover from a relative root such as `data/plugins`.
 
 ## Lua plugins
 
@@ -81,7 +91,7 @@ A script talks to the host only through the `sco_api` table, like a native plugi
 | `script` | `scripts/**.xml` (any depth) |
 | `list` | `lists/*.txt` |
 
-Extensions match in any case. Anything else in the folder is ignored, and symlinks are skipped so a pack can't reach outside itself. A pack with more than 4096 matching files is refused (`too many files`). Features query the index with `Items(kind)`, `Find(kind, "missions/a.cwmission")` (one entry per pack that ships that name, in plugin order) or `FromPlugin(id)`, and read the files themselves.
+Extensions match in any case. Anything else in the folder is ignored, and symlinks are skipped so a pack can't reach outside itself. `scripts/` is read at most 16 folders deep. A pack with more than 4096 matching files is refused (`too many files`), and so is one whose content folders can't be read to the end (`cannot read scripts: ...`), so a pack never loads with only part of its files. `Build` can run again at any time: it re-reads every ready or loaded pack. Features query the index with `Items(kind)`, `Find(kind, "missions/a.cwmission")` (one entry per pack that ships that name, in plugin order) or `FromPlugin(id)`, and read the files themselves.
 
 ## Status
 

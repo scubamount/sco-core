@@ -1,0 +1,117 @@
+# Building and testing
+
+sco-core has two equivalent builds: the shell scripts in `tools/` (the reference, with every sanitizer run) and a root `CMakeLists.txt` (any CMake toolchain, MSVC included, and the way to consume sco-core from another CMake project). CI runs both.
+
+## Requirements
+
+| For | You need |
+|---|---|
+| `tools/test.sh` | bash, clang or gcc with C11 and C++20, and the sanitizer runtimes (ASan, UBSan, TSan). `clang` must be on `PATH` for the `x86_64-pc-windows-msvc` ABI pin |
+| CMake | CMake 3.20 or newer and a 64-bit C/C++20 toolchain: clang, gcc, or Visual Studio 2019 or newer (MSVC x64) |
+| `tools/test-win.sh` | `x86_64-w64-mingw32-g++`, clang with the `x86_64-w64-mingw32` target, and Wine |
+| The SDK zip | Python 3, CMake, a C compiler; Lua 5.4 for the Lua example check |
+
+Nothing needs the game, and only the Windows build needs Windows.
+
+## `tools/test.sh`
+
+```sh
+tools/test.sh                          # picks clang/clang++, else gcc/g++
+CC=clang CXX=clang++ tools/test.sh     # what CI runs
+```
+
+In order, it:
+
+1. compiles the ABI pin `tests/abi_v1.c` with `-Werror` as C11 and C++20, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc` (compile-only),
+2. compiles the SDK template, the `hello` example and `sco-plugin-check` against `sco_api.h`,
+3. builds and runs `test_core` (ASan+UBSan), `test_runtime` and `test_host` (each under ASan+UBSan and again under ThreadSanitizer),
+4. builds the fake plugins from `tests/fixtures/plugins/native/fake_plugin.c` into `tests/out/plugins/` and runs `test_plugins` (ASan+UBSan),
+5. builds Lua and sco-lua and runs `test_lua` (ASan+UBSan), which also loads `sdk/examples/greeter` through the real loader.
+
+Each test binary ends with `N passed, M failed` and exits non-zero on any failure; the script stops at the first failure. Output goes to `tests/out/` (ignored by git).
+
+## CMake
+
+```sh
+cmake -S . -B build
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+Windows, from a Developer PowerShell for VS (the Visual Studio generator is multi-config, so name the config):
+
+```powershell
+cmake -S . -B build -A x64
+cmake --build build --config RelWithDebInfo
+ctest --test-dir build -C RelWithDebInfo --output-on-failure
+```
+
+### Options
+
+| Option | Default | Does |
+|---|---|---|
+| `SCO_BUILD_TESTS` | `ON` when sco-core is the top-level project, else `OFF` | Builds the tests and the fake plugins and registers them with CTest |
+| `SCO_WERROR` | `ON` | Warnings in sco-core's own code are errors (`-Wall -Wextra -Werror`; MSVC `/W4 /WX /utf-8`). Vendored Lua is always built with warnings off |
+| `SCO_SANITIZE` | empty | Sanitizers for sco-core's code and tests, for example `address,undefined` (not MSVC) |
+
+The build is 64-bit only; configuring for 32 bits stops with an error.
+
+### Targets
+
+| Target | Sources | Links |
+|---|---|---|
+| `sco_core` | Scanners, signatures, log/status, PE file loader, `src/game/*.cpp`; on Windows also `sco_image_win.cpp` | |
+| `sco_runtime` | `src/api/sco_tasks.cpp`, `sco_events.cpp`, `sco_commands.cpp` | |
+| `sco_host` | `src/api/sco_caps.cpp`, `src/host/sco_host.cpp` | `sco_runtime`, `sco_core` |
+| `sco_plugins` | `src/plugins/*.cpp` (`guard_win.cpp` on Windows only) | `sco_runtime`, `sco_core`, `dl` |
+| `sco_lua_vendor` | `plugins/lua/third_party/lua/src/*.c` without `lua.c`/`luac.c` | `m` on Unix |
+| `sco_lua` | `plugins/lua/sco_lua.c` | `sco_lua_vendor` |
+| `sco-sigcheck` | `tools/sco-sigcheck.cpp` | `sco_core` |
+
+Every library exposes `include/` as a public include directory. To use sco-core from another CMake project:
+
+```cmake
+add_subdirectory(external/sco-core)            # tests stay off when not top level
+target_link_libraries(my_host PRIVATE sco_host sco_plugins sco_lua)
+```
+
+### Tests
+
+| CTest name | What |
+|---|---|
+| `abi_v1` | Rebuilds the ABI pin objects (C11, C++20 and, off MSVC, `-fshort-enums`); fails if any static assert breaks |
+| `test_core` | Scanners and the signature registry against a synthetic image |
+| `test_runtime` | Task queue, event bus, command registry, `Release` |
+| `test_host` | Capabilities and the `sco_api` table |
+| `test_plugins` | `plugin.ini`, discovery, the content index and the native loader against the fake plugins in `<build>/tests/out/plugins/` |
+| `test_lua` | sco-lua through the real loader and host table, including `sdk/examples/greeter` |
+
+On Windows `test_plugins` loads real DLLs with `LoadLibraryExW` and runs the real `__try/__except` crash guard. The TSan runs and the `x86_64-pc-windows-msvc` cross-compile of the ABI pin stay in `tools/test.sh`.
+
+## `tools/test-win.sh`
+
+Builds `test_plugins` and the fake plugins as a Windows program with mingw (the crash guard with clang, since GCC has no `__try`) and runs it under Wine. Useful on macOS or Linux when you change the loader; on Windows, the CMake build runs the same test natively.
+
+## The SDK
+
+`sdk/` builds on its own (see the [SDK README](../sdk/README.md)). To build the zip modders download and check it the way CI does:
+
+```sh
+python3 sdk/package.py --out dist        # dist/sco-sdk-<version>.zip, reproducible, with SHA256SUMS
+sdk/test-zip.sh dist/sco-sdk-*.zip       # builds and checks every example from the unpacked zip alone
+```
+
+## CI
+
+| Workflow | Runs on | Does |
+|---|---|---|
+| [`test`](../.github/workflows/test.yml) | ubuntu-24.04 | `CC=clang CXX=clang++ tools/test.sh`, and checks that `sco-sigcheck` builds |
+| [`cmake`](../.github/workflows/cmake.yml) | ubuntu-24.04 (clang, ASan+UBSan), windows-2025 (MSVC x64) | Configure, build and `ctest` |
+| [`sdk`](../.github/workflows/sdk.yml) | ubuntu-24.04, then windows-2025 (MSVC x64) | Packages the SDK zip, builds and checks every example from it, keeps the zip as an artifact |
+| [`discord`](../.github/workflows/discord.yml) | ubuntu | Posts repository activity to the sc-offline Discord channel |
+
+Every workflow has `contents: read` permissions and pins its actions to commit SHAs. A pull request needs `test`, `cmake` and `sdk` green.
+
+## Adding a source file
+
+The two builds list sources separately. A new `.cpp` goes into both `tools/test.sh` (and `tools/test-win.sh` if `test_plugins` links it) and the matching library in `CMakeLists.txt`; a new fake-plugin mode goes into the `for m in ...` loops of both scripts and `SCO_FAKE_PLUGIN_MODES`.
