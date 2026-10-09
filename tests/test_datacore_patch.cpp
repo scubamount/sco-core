@@ -5,7 +5,10 @@
 // Drift: the same operations on two fixtures with moved tables (other struct indices, counts, pool
 // offsets, a struct gaining fields, records reordered, a struct split over two mappings) and both
 // record sizes give the same semantic result at different byte offsets. Refusals are checked by
-// category. Truncated and corrupted inputs refuse cleanly (ASan+UBSan).
+// category. Truncated and corrupted inputs refuse cleanly (ASan+UBSan). AddRecord (design "AddRecord",
+// research R1): appended records read back by the independent reader by name and GUID, record +8
+// from the file or the clone, names and paths at the end of their pools, references to the new
+// record as (root instanceIndex, GUID), each refusal, and drift.
 //   tools/test.sh
 #include "dcb_builder.h"
 #include "sco/datacore.h"
@@ -105,6 +108,7 @@ static Scene MakeScene(uint32_t recordSize, bool drift) {
                 { "engine", t::Strong, S("Part") }, { "owner", t::Weak, S("Base") }, { "maker", t::Reference },
                 { "counts", t::Int32, 0, dcb::kArray1 }, { "parts", t::Strong, S("Part"), dcb::kArray2 },
                 { "path", t::Class, S("Vec2"), dcb::kArray3 }, { "names", t::String, 0, dcb::kArray1 },
+                { "refs", t::Reference, 0, dcb::kArray1 },
             };
             s.props.insert(s.props.end(), rest.begin(), rest.end());
         }
@@ -164,7 +168,8 @@ static Scene MakeScene(uint32_t recordSize, bool drift) {
     b.PushString("n1");
     b.PushU32(dcb::Weak, 0);   // a pool entry nobody uses, so the weak pool isn't empty
     b.PushU32(dcb::Weak, 0);
-    b.PushReference(0, dcb::MakeGuid(0x20));
+    const uint32_t refsAt = static_cast<uint32_t>(b.pools[dcb::Reference].size() / 20);
+    b.PushReference(shipB, dcb::MakeGuid(0x20));   // R1: a reference holds the target's root instanceIndex
 
     const struct { uint32_t i; const char* label; const char* kind; float speed; double mass; int8_t small; uint64_t big; uint8_t id; } ships[] = {
         { shipA, "hello", "Large", 100.0f, 5.0, 1, 9, 0x70 },
@@ -190,6 +195,8 @@ static Scene MakeScene(uint32_t recordSize, bool drift) {
     fill("Ship", shipA, "parts", Pair(2, partsAt));
     fill("Ship", shipA, "path", Pair(2, vOff + 1));
     fill("Ship", shipA, "names", Pair(2, namesAt));
+    fill("Ship", shipA, "refs", Pair(1, refsAt));
+    fill("Ship", shipB, "refs", Pair(0, 0));
     fill("Ship", shipB, "pos.x", F32(0));
     fill("Ship", shipB, "pos.y", F32(0));
     fill("Ship", shipB, "engine", Pair(S("SubPart"), 0));
@@ -199,14 +206,14 @@ static Scene MakeScene(uint32_t recordSize, bool drift) {
     fill("Ship", shipB, "names", Pair(0, 0));
 
     const dcb::Record recs[] = {
-        { "ShipA", "libs/foundry/records/test/ships.xml", S("Ship"), dcb::MakeGuid(0x10), static_cast<uint16_t>(shipA), 0x1111 },
-        { "ShipB", "libs/foundry/records/test/ships.xml", S("Ship"), dcb::MakeGuid(0x20), static_cast<uint16_t>(shipB), 0x1111 },
-        { "BaseOne", "libs/foundry/records/test/base.xml", S("Base"), dcb::MakeGuid(0x30), 0, 0x2222 },
-        { "PartX", "libs/foundry/records/test/part_x.xml", S("Part"), dcb::MakeGuid(0x40), static_cast<uint16_t>(pOff), 0x3333 },
-        { "SubY", "libs/foundry/records/test/sub_y.xml", S("SubPart"), dcb::MakeGuid(0x50), 0, 0x4444 },
+        { "ShipA", "libs/foundry/records/test/ships.xml", S("Ship"), dcb::MakeGuid(0x10), static_cast<uint16_t>(shipA), 0, "Ships" },
+        { "ShipB", "libs/foundry/records/test/ships.xml", S("Ship"), dcb::MakeGuid(0x20), static_cast<uint16_t>(shipB), 0, "Ships" },
+        { "BaseOne", "libs/foundry/records/test/base.xml", S("Base"), dcb::MakeGuid(0x30), 0, 0, "Design" },
+        { "PartX", "libs/foundry/records/test/part_x.xml", S("Part"), dcb::MakeGuid(0x40), static_cast<uint16_t>(pOff), 0, "Parts" },
+        { "SubY", "libs/foundry/records/test/sub_y.xml", S("SubPart"), dcb::MakeGuid(0x50), 0, 0, "Parts" },
     };
     if (drift) {
-        b.records = { { "PadRec", "libs/foundry/records/test/pad.xml", S("Pad"), dcb::MakeGuid(0x60), 0, 0 },
+        b.records = { { "PadRec", "libs/foundry/records/test/pad.xml", S("Pad"), dcb::MakeGuid(0x60), 0, 0, "Pad" },
                       recs[4], recs[1], recs[3], recs[0], recs[2] };
     } else {
         b.records.assign(std::begin(recs), std::end(recs));
@@ -268,6 +275,32 @@ struct TestReader {
             i -= counts[m];
         }
         return ~0ull;
+    }
+    // A record's entry offset by name; ~0 when absent.
+    uint64_t Entry(std::string_view name) const {
+        const uint64_t rc = Get32(f, 32);
+        for (uint64_t r = 0; r < rc; ++r) {
+            const uint64_t e = records + r * b.recordSize;
+            if (CStr(names + Get32(f, e)) == name) return e;
+        }
+        return ~0ull;
+    }
+    // A 20-byte reference: "null", the target record's name (its root instance must match), or why not.
+    std::string Reference(uint64_t at) const {
+        const uint32_t item = Get32(f, at);
+        bool zero = true;
+        for (int i = 0; i < 16; ++i) zero &= f[at + 4 + static_cast<uint64_t>(i)] == 0;
+        if (item == kNullPtr && zero) return "null";
+        const uint64_t rc = Get32(f, 32);
+        for (uint64_t r = 0; r < rc; ++r) {
+            const uint64_t e = records + r * b.recordSize, tail = e + b.recordSize - 24;
+            if (!std::equal(f.begin() + static_cast<std::ptrdiff_t>(tail + 4), f.begin() + static_cast<std::ptrdiff_t>(tail + 20),
+                            f.begin() + static_cast<std::ptrdiff_t>(at + 4)))
+                continue;
+            const std::string name = CStr(names + Get32(f, e));
+            return GetN(f, tail + 20, 2) == item ? name : name + "(wrong instance)";
+        }
+        return "unresolved";
     }
     bool Root(std::string_view name, uint32_t& st, uint64_t& at) const {
         const uint64_t rc = Get32(f, 32);
@@ -539,11 +572,19 @@ static void TestDrift() {
     }
 }
 
+// Options for a batch that reports each refusal instead of refusing the whole batch. Assigned, not
+// aggregate-initialized: guidSeed has no default member initializer (clang -Wmissing-field-initializers).
+static PatchOptions NonAtomic() {
+    PatchOptions o;
+    o.atomic = false;
+    return o;
+}
+
 // Applies one operation to a fresh patch over the normal scene and returns its category; the
 // patch must then emit nothing.
 template <class Fn>
 static Refusal One(const Schema& s, Fn&& fn) {
-    Patch p(s, PatchOptions{ false });
+    Patch p(s, NonAtomic());
     const Status st = fn(p);
     std::vector<sco::vfs::Splice> out;
     const Status e = p.Emit(out);
@@ -605,7 +646,13 @@ static void TestRefusals() {
     CHECK(set("ShipA", "kind", Value::OfEnum("Huge")) == R::UnknownEnumOption);
     CHECK(set("ShipA", "kind", Value::OfEnum("Large")) == R::None);
     CHECK(set("ShipA", "label", Value::OfString(std::string("a\0b", 3))) == R::BadArgument);
-    CHECK(set("ShipA", "maker", Value::OfGuid(ToGuid(dcb::MakeGuid(0x10)))) == R::Unsupported);   // research R1
+    // References (research R1): a record or null; anything else doesn't fit.
+    CHECK(set("ShipA", "maker", Value::OfGuid(ToGuid(dcb::MakeGuid(0x10)))) == R::TypeMismatch);
+    CHECK(set("ShipA", "maker", one) == R::TypeMismatch);
+    CHECK(set("ShipA", "maker", Value::OfRecord(Rec("Nope"))) == R::RecordNotFound);
+    CHECK(set("ShipA", "maker", Value::OfRecord(RecordRef{})) == R::BadArgument);
+    CHECK(set("ShipA", "maker", Value::OfRecord(RecG(dcb::MakeGuid(0x40)))) == R::None);
+    CHECK(set("ShipA", "maker", Value{}) == R::None);
     // Pointers.
     CHECK(One(s, [&](Patch& p) {
               InstanceId v;
@@ -630,7 +677,7 @@ static void TestRefusals() {
     CHECK(One(s, [&](Patch& p) { InstanceId x; InstanceSource src; src.field = "x"; return p.AddInstance("Part", src, x); }) == R::BadArgument);
     CHECK(One(s, [&](Patch& p) { InstanceId x; return p.AddInstance("Empty", {}, x); }) == R::None);   // zero-size instances
     {
-        Patch p(s, PatchOptions{ false });
+        Patch p(s, NonAtomic());
         InstanceId bad;
         CHECK(p.AddInstance("Nope", {}, bad).category == R::StructNotFound && !bad.valid());
         CHECK(p.SetPointer(Rec("ShipA"), "engine", bad).category == R::DependencyFailed);
@@ -653,6 +700,9 @@ static void TestRefusals() {
               return p.AppendElement(Rec("ShipA"), "path", Value::OfInstance(x));   // a Part into Vec2[]
           }) == R::TypeMismatch);
     CHECK(append("ShipA", "parts", Value{}) == R::None);   // a null element
+    CHECK(append("ShipA", "refs", Value::OfInstance(InstanceId{ 0, 0 })) == R::TypeMismatch);
+    CHECK(append("ShipA", "refs", Value::OfRecord(Rec("PartX"))) == R::None);
+    CHECK(append("ShipA", "refs", Value{}) == R::None);
 }
 
 // Per-batch atomicity: one refused operation and the batch emits nothing, unless non-atomic.
@@ -670,7 +720,7 @@ static void TestAtomic() {
         CHECK(e.category == Refusal::FieldNotFound && out.empty());
     }
     {
-        Patch p(s, PatchOptions{ false });
+        Patch p(s, NonAtomic());
         CHECK(p.OverrideField(Rec("ShipA"), "speed", Value::OfFloat(3)).ok());
         CHECK(!p.OverrideField(Rec("ShipA"), "nope", Value::OfFloat(3)));
         CHECK(!p.AppendElement(Rec("ShipA"), "names", Value::OfFloat(1)));   // refused before any string is added
@@ -770,7 +820,7 @@ static void TestFuzz(uint32_t recordSize) {
         Schema s;
         if (!s.Parse(f)) continue;
         ++parsed;
-        Patch p(s, PatchOptions{ false });
+        Patch p(s, NonAtomic());
         for (const Status& st : RunOps(p)) {
             if (!st) { ++refusedOps; if (st.message.empty()) ++bad; }
         }
@@ -788,6 +838,230 @@ static void TestFuzz(uint32_t recordSize) {
                 recordSize, layout, parsed, emitted, refusedOps);
 }
 
+// ---- AddRecord and references (design "AddRecord", research R1) --------------------------------
+
+static NewRecord NewRec(std::string type, std::string name, std::string clone, std::string path = {}) {
+    NewRecord n;
+    n.type = std::move(type);
+    n.name = std::move(name);
+    n.clone = Src(std::move(clone));
+    n.filePath = std::move(path);
+    return n;
+}
+
+// One batch: three records added (a default path, an existing file, a given GUID cloning an added
+// record), fields of the new records set by name and GUID, references to them. Returns what the
+// independent reader sees, by name: identical for any layout of the same record size.
+static std::map<std::string, std::string> AddRecordBatch(uint32_t recordSize, bool drift) {
+    std::map<std::string, std::string> o;
+    const Scene sc = MakeScene(recordSize, drift);
+    Schema s;
+    CHECK(s.Parse(sc.file));
+    if (!s.error.empty()) return o;
+    PatchOptions opt;
+    opt.packId = "testpack";
+    opt.guidSeed = 7;
+    Patch p(s, opt);
+    const uint32_t oldRecords = s.header.recordCount;
+    const uint64_t oldShips = s.structInfo[sc.S("Ship")].instances;
+
+    AddedRecord c, z, w;
+    CHECK(p.AddRecord(NewRec("Ship", "ShipC", "ShipA"), c).ok());
+    CHECK(c.index == oldRecords && c.root.structIndex == sc.S("Ship") && c.root.index == oldShips);
+    const std::string g = FormatGuid(c.guid);   // version 4, variant 10xx
+    CHECK(g.size() == 36 && g[14] == '4' && std::strchr("89ab", g[19]) != nullptr);
+    // Addressable in later operations, by name and by GUID.
+    CHECK(p.OverrideField(Rec("ShipC"), "speed", Value::OfFloat(7)).ok());
+    RecordRef byGuid;
+    byGuid.guid = c.guid;
+    CHECK(p.OverrideField(byGuid, "mass", Value::OfFloat(8)).ok());
+    CHECK(p.OverrideField(Rec("ShipC"), "label", Value::OfString("new ship")).ok());
+    // References: to the new record, from it to an existing one, null, and appended to an array.
+    CHECK(p.OverrideField(Rec("ShipB"), "maker", Value::OfRecord(Rec("ShipC"))).ok());
+    CHECK(p.OverrideField(Rec("ShipC"), "maker", Value::OfRecord(Rec("BaseOne"))).ok());
+    CHECK(p.OverrideField(Rec("ShipA"), "maker", Value{}).ok());
+    CHECK(p.AppendElement(Rec("ShipA"), "refs", Value::OfRecord(byGuid)).ok());
+    // A path records already use: their +8 ("Ships"), not the clone's ("Parts"); the path's offset reused.
+    CHECK(p.AddRecord(NewRec("Part", "PartZ", "PartX", "libs/foundry/records/test/ships.xml"), z).ok());
+    // A given GUID, cloning a record this batch added, in a new file: the clone's +8.
+    NewRecord nw = NewRec("Ship", "ShipW", "ShipC", "libs/foundry/records/test/w.xml");
+    nw.guid = ToGuid(dcb::MakeGuid(0xA0));
+    CHECK(p.AddRecord(nw, w).ok());
+    CHECK(w.index == oldRecords + 2 && w.guid == ToGuid(dcb::MakeGuid(0xA0)) && w.root.index == oldShips + 1);
+    InstanceId wroot;
+    CHECK(p.FindInstance(Src("ShipW"), wroot).ok() && wroot == w.root);
+
+    std::vector<sco::vfs::Splice> splices;
+    const Status e = p.Emit(splices);
+    CHECK(e.ok());
+    if (!e) { std::printf("  emit: %s\n", e.message.c_str()); return o; }
+    Bytes f;
+    CHECK(ApplySplices(sc.file, splices, f).ok());
+    Schema re;   // the re-validation Emit ran, run again here
+    CHECK(re.Parse(f) && re.recordSize == recordSize && re.header.recordCount == oldRecords + 3);
+    CHECK(re.FindRecordByName("ShipW") && re.FindRecord(c.guid) && re.Name(re.FindRecord(c.guid)->name) == "ShipC");
+
+    // Pools: the three names at the end of the name pool; the new paths and the label at the end of
+    // the value pool, in operation order; ships.xml not added again.
+    const uint32_t nameLen = Get32(sc.file, 116), valueLen = Get32(sc.file, 112);
+    const std::string cPath = "libs/foundry/records/sco/testpack/ShipC.xml", wPath = "libs/foundry/records/test/w.xml";
+    CHECK(Get32(f, 116) == nameLen + 6 + 6 + 6);
+    CHECK(Get32(f, 112) == valueLen + cPath.size() + 1 + 9 + wPath.size() + 1);
+
+    TestReader r(sc.b, f);
+    o["layout"] = r.ok ? "ok" : "bad";
+    if (!r.ok) return o;
+    const uint64_t ec = r.Entry("ShipC"), ez = r.Entry("PartZ"), ew = r.Entry("ShipW"), ea = r.Entry("ShipA");
+    CHECK(ec != ~0ull && ez != ~0ull && ew != ~0ull);
+    if (ec == ~0ull || ez == ~0ull || ew == ~0ull) return o;
+    // Appended at the end of the table, in order.
+    CHECK(ec == r.records + uint64_t{ oldRecords } * recordSize && ez == ec + recordSize && ew == ez + recordSize);
+    CHECK(Get32(f, ec) == nameLen && Get32(f, ez) == nameLen + 6 && Get32(f, ew) == nameLen + 12);
+    CHECK(Get32(f, ec + 4) == valueLen && Get32(f, ez + 4) == Get32(f, ea + 4));
+    CHECK(std::equal(c.guid.bytes.begin(), c.guid.bytes.end(), f.begin() + static_cast<std::ptrdiff_t>(ec + recordSize - 20)));
+    const std::pair<std::string, uint64_t> entries[] = { { "ShipC", ec }, { "PartZ", ez }, { "ShipW", ew } };
+    for (const auto& [n, e8] : entries) {
+        o[n + ".file"] = r.Text(Get32(f, e8 + 4));
+        if (recordSize > 32) o[n + ".team"] = r.CStr(r.names + Get32(f, e8 + 8));
+        o[n + ".index"] = std::to_string((e8 - r.records) / recordSize - oldRecords);
+    }
+    uint32_t st = 0;
+    uint64_t at = 0;
+    if (r.Root("ShipC", st, at)) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "%g/%g", r.F(r.Field(st, at, "speed")), r.D(r.Field(st, at, "mass")));
+        o["ShipC.speed/mass"] = buf;
+        o["ShipC.label"] = r.Text(Get32(f, r.Field(st, at, "label")));
+        o["ShipC.title"] = r.Text(Get32(f, r.Field(st, at, "title")));
+        const uint64_t eng = r.Field(st, at, "engine");
+        o["ShipC.engine"] = r.Describe(Get32(f, eng), Get32(f, eng + 4));
+        o["ShipC.maker"] = r.Reference(r.Field(st, at, "maker"));
+    }
+    if (r.Root("ShipW", st, at)) o["ShipW.speed"] = std::to_string(r.F(r.Field(st, at, "speed")));
+    if (r.Root("PartZ", st, at)) o["PartZ"] = r.Describe(st, z.root.index);
+    if (r.Root("ShipB", st, at)) o["ShipB.maker"] = r.Reference(r.Field(st, at, "maker"));
+    if (r.Root("ShipA", st, at)) {
+        o["ShipA.maker"] = r.Reference(r.Field(st, at, "maker"));
+        const uint64_t a = r.Field(st, at, "refs");
+        std::string list;
+        for (uint32_t i = 0; i < Get32(f, a); ++i)
+            list += (i ? "," : "") + r.Reference(r.PoolEntry(dcb::Reference, uint64_t{ Get32(f, a + 4) } + i));
+        o["ShipA.refs"] = list;
+    }
+    CHECK(UntouchedSame(sc, f, { "ShipA", "ShipB" }));
+    return o;
+}
+
+static void TestAddRecord() {
+    const std::map<std::string, std::string> want = {
+        { "layout", "ok" },
+        { "ShipC.file", "libs/foundry/records/sco/testpack/ShipC.xml" }, { "ShipC.index", "0" },
+        { "PartZ.file", "libs/foundry/records/test/ships.xml" }, { "PartZ.index", "1" },
+        { "ShipW.file", "libs/foundry/records/test/w.xml" }, { "ShipW.index", "2" },
+        { "ShipC.speed/mass", "7/8" }, { "ShipC.label", "new ship" }, { "ShipC.title", "@title" },
+        { "ShipC.engine", "Part(w=2,n=p1)" }, { "ShipC.maker", "BaseOne" }, { "ShipW.speed", "7.000000" },
+        { "PartZ", "Part(w=1,n=p0)" }, { "ShipB.maker", "ShipC" }, { "ShipA.maker", "null" },
+        { "ShipA.refs", "ShipB,ShipC" },
+    };
+    std::map<std::string, std::string> want36 = want;
+    want36["ShipC.team"] = "Ships";   // a new path: the clone's +8
+    want36["PartZ.team"] = "Ships";   // ships.xml: its records' +8, not PartX's "Parts"
+    want36["ShipW.team"] = "Ships";   // cloned from ShipC
+    for (uint32_t size : { 32u, 36u }) {
+        const auto plain = AddRecordBatch(size, false), drifted = AddRecordBatch(size, true);
+        CHECK(Same(plain, size == 32 ? want : want36));
+        CHECK(plain == drifted);   // drift: other indices, offsets and record order, same result
+    }
+}
+
+static void TestAddRecordRefusals() {
+    using R = Refusal;
+    const Scene sc = MakeScene(36, false);
+    Schema s;
+    CHECK(s.Parse(sc.file));
+    auto add = [&](const NewRecord& n) { return One(s, [&](Patch& p) { AddedRecord a; return p.AddRecord(n, a); }); };
+    const NewRecord ok = NewRec("Ship", "ShipN", "ShipA");
+    CHECK(add(ok) == R::None);
+    auto with = [&](auto&& change) { NewRecord n = ok; change(n); return add(n); };
+    CHECK(with([](NewRecord& n) { n.name = "ShipB"; }) == R::Duplicate);
+    CHECK(with([](NewRecord& n) { n.name = ""; }) == R::BadArgument);
+    CHECK(with([](NewRecord& n) { n.guid = ToGuid(dcb::MakeGuid(0x10)); }) == R::Duplicate);
+    CHECK(with([](NewRecord& n) { n.guid = Guid{}; }) == R::BadArgument);
+    CHECK(with([](NewRecord& n) { n.type = "Nope"; }) == R::StructNotFound);
+    CHECK(with([](NewRecord& n) { n.type = "Vec2"; }) == R::Unsupported);   // no records: not a record type
+    CHECK(with([](NewRecord& n) { n.clone = {}; }) == R::BadArgument);      // zero-filled records are refused
+    CHECK(with([](NewRecord& n) { n.clone = Src("ShipA", "engine"); }) == R::TypeMismatch);
+    CHECK(with([](NewRecord& n) { n.clone = Src("PartX"); }) == R::TypeMismatch);
+    CHECK(with([](NewRecord& n) { n.clone = Src("Nope"); }) == R::RecordNotFound);
+    CHECK(with([](NewRecord& n) { n.filePath = "data/ships.xml"; }) == R::BadArgument);
+    CHECK(with([](NewRecord& n) { n.filePath = "libs/foundry/records/ships.txt"; }) == R::BadArgument);
+    CHECK(with([](NewRecord& n) { n.filePath = "libs/foundry/records/.xml"; }) == R::BadArgument);
+    {   // Within one batch: the name and GUID of a record added earlier are taken too; atomic Emit refuses.
+        Patch p(s);
+        AddedRecord a, b;
+        CHECK(p.AddRecord(ok, a).ok());
+        CHECK(p.AddRecord(ok, b).category == R::Duplicate);
+        NewRecord again = NewRec("Ship", "ShipM", "ShipA");
+        again.guid = a.guid;
+        CHECK(p.AddRecord(again, b).category == R::Duplicate);
+        std::vector<sco::vfs::Splice> out;
+        CHECK(p.Emit(out).category == R::Duplicate && out.empty());
+    }
+    {   // GUIDs: reproducible for a seed, different across seeds.
+        PatchOptions o1, o2, o3;
+        o1.guidSeed = o2.guidSeed = 5;
+        o3.guidSeed = 6;
+        Patch p1(s, o1), p2(s, o2), p3(s, o3);
+        AddedRecord a1, a2, a3;
+        CHECK(p1.AddRecord(ok, a1).ok() && p2.AddRecord(ok, a2).ok() && p3.AddRecord(ok, a3).ok());
+        CHECK(a1.guid == a2.guid && !(a1.guid == a3.guid));
+    }
+    {   // Record +8 of the clone not a name-pool string (Parse refuses such a file, so the schema is
+        // changed after parsing): refused for a new file; ships.xml's records then disagree.
+        Schema m;
+        CHECK(m.Parse(sc.file));
+        m.records[0].unknown = 1;   // ShipA
+        const Refusal clone = One(m, [&](Patch& p) {
+            AddedRecord a;
+            const Status st = p.AddRecord(ok, a);
+            CHECK(st.message.find("record +8 of clone \"ShipA\" is not a name-pool string") != std::string::npos);
+            return st;
+        });
+        CHECK(clone == R::Corrupt);
+        CHECK(One(m, [&](Patch& p) { AddedRecord a; return p.AddRecord(NewRec("Ship", "ShipN", "ShipA", "libs/foundry/records/test/ships.xml"), a); }) == R::Unsupported);
+    }
+    {   // Records of one file that disagree on +8 (not seen in 4.10.193): refused rather than guessed.
+        Scene d = MakeScene(36, false);
+        d.b.records[1].team = "Other";
+        d.file = d.b.Build();
+        Schema ds;
+        CHECK(ds.Parse(d.file));
+        const Refusal r = One(ds, [&](Patch& p) {
+            AddedRecord a;
+            const Status st = p.AddRecord(NewRec("Ship", "ShipN", "ShipA", "libs/foundry/records/test/ships.xml"), a);
+            CHECK(st.message.find("records in file \"libs/foundry/records/test/ships.xml\" disagree on record +8") != std::string::npos);
+            return st;
+        });
+        CHECK(r == R::Unsupported);
+        CHECK(One(ds, [&](Patch& p) { AddedRecord a; return p.AddRecord(ok, a); }) == R::None);   // a new file: the clone's
+        // 32-byte records have no +8: nothing to disagree on.
+        Scene d32 = MakeScene(32, false);
+        d32.b.records[1].team = "Other";
+        d32.file = d32.b.Build();
+        Schema s32;
+        CHECK(s32.Parse(d32.file));
+        CHECK(One(s32, [&](Patch& p) { AddedRecord a; return p.AddRecord(NewRec("Ship", "ShipN", "ShipA", "libs/foundry/records/test/ships.xml"), a); }) == R::None);
+    }
+    {   // Capabilities: on for a valid layout, off for a refused one.
+        Schema bad;
+        CHECK(!bad.Parse(Bytes(sc.file.begin(), sc.file.end() - 1)));
+        CHECK(AddRecordSupported(s) && PatchSupported(s) && !AddRecordSupported(bad));
+        Patch p(bad);
+        AddedRecord a;
+        CHECK(p.AddRecord(ok, a).category == R::Layout);
+    }
+}
+
 int main() {
     TestOperations(32, false);
     TestOperations(36, false);
@@ -797,6 +1071,8 @@ int main() {
     TestRefusals();
     TestAtomic();
     TestOpaqueAndLayout();
+    TestAddRecord();
+    TestAddRecordRefusals();
     TestFuzz(32);
     TestFuzz(36);
     std::printf("sco-core datacore patch tests: %d passed, %d failed\n", g_pass, g_fail);

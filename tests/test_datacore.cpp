@@ -109,7 +109,8 @@ static void TestRoundTrip(uint32_t recordSize) {
         CHECK(s.ValueString(r.fileName) == want.fileName);
         CHECK(r.structIndex == want.structIndex && r.instanceIndex == want.instance);
         CHECK(r.structSize == b.Size(want.structIndex));
-        CHECK(r.unknown == (recordSize > 32 ? want.unknown : 0u));
+        CHECK(r.unknown == (recordSize > 32 ? b.Name(want.team) : 0u));
+        CHECK(recordSize == 32 || s.Name(r.unknown) == want.team);
         CHECK(s.FindRecord(ToGuid(want.id)) == &r);
         CHECK(s.FindRecordByName(want.name) == &r);
     }
@@ -194,6 +195,13 @@ static void TestRefusals(uint32_t recordSize) {
     CHECK(Refused(with([&](Bytes& f) { Put32(f, L.records + 4, 3); }), Check::NameOffset));      // file name
     CHECK(Refused(with([&](Bytes& f) { f[L.data - 1] = 'x'; }), Check::NameOffset));             // pool's last NUL
     CHECK(Refused(with([&](Bytes& f) { f[L.nameStrings - 1] = 'x'; }), Check::NameOffset));      // value pool's
+    // Record +8 (records over 32 bytes) is a name-pool string start too (research R1).
+    if (recordSize > 32) {
+        CHECK(Refused(with([&](Bytes& f) { Put32(f, rec1 + 8, 1); }), Check::NameOffset));           // mid-string
+        CHECK(Refused(with([&](Bytes& f) { Put32(f, L.records + 8, 0x00FFFFFFu); }), Check::NameOffset));
+        Schema s;
+        CHECK(s.Parse(with([&](Bytes& f) { Put32(f, L.records + 8, 0); })));                        // offset 0: a start
+    }
 }
 
 // Rule 6: an unknown type code or array kind makes the struct opaque, not the file invalid.
