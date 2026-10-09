@@ -1,11 +1,11 @@
 /*
- * sco_api.h: the sco plugin ABI, version 1.0-pre.
+ * sco_api.h: the sco plugin ABI, version 1.1.
  *
  * The only header a plugin includes. Plain C; usable from C and C++.
  * Reference: docs/api-v1.md. Layout pinned by tests/abi_v1.c.
  *
- * Status: pre-release. Until the sdk-v1.0.0 tag this can still change;
- * after it, version 1 only grows at the end of structs (see the rules below).
+ * Status: stable since sdk-v1.1.0. Version 1 only grows at the end of
+ * structs (see the rules below); nothing released changes.
  *
  * Rules that keep the ABI stable:
  *  - No C++ types, no exceptions, no varargs across the boundary.

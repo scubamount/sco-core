@@ -6,9 +6,9 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 |---|---|---|
 | `native` | A 64-bit Windows DLL written in C against `sco_api.h`, in C++20 with the `include/scosdk/` headers, or in C# with `csharp/Sco.Sdk` (NativeAOT) | [`examples/hello`](examples/hello), [`examples/cpp_hello`](examples/cpp_hello), [`examples/cs_hello`](examples/cs_hello) |
 | `data` | Files only: missions, rules, scripts, lists and game-data overrides (`datacore\*.toml`). Runs no code | [`examples/travel_pack`](examples/travel_pack), [`examples/quantum_pack`](examples/quantum_pack) |
-| `lua` | A Lua 5.4 script, run in a sandbox by sc-offline's bundled Lua runtime | [`examples/greeter`](examples/greeter) |
+| `lua` | A Lua 5.4 script, run in a sandbox by sc-offline's bundled Lua runtime | [`examples/greeter`](examples/greeter), [`examples/notebook`](examples/notebook) (storage) |
 
-> **Status: 1.0-pre.** The API can still change until the `sdk-v1.0.0` tag. Plugin loading is in sc-offline's `main` branch, switched off by default (`plugins = on` in `sc-offline.ini` turns it on), but not yet in a tagged sc-offline release.
+> **Version 1.1** (`sdk-v1.1.0`). The API is stable: version 1 only grows, so a plugin built with this SDK keeps loading in later 1.x hosts. In sc-offline, plugin loading is switched off by default; `plugins = on` in `sc-offline.ini` turns it on.
 
 **Native plugins run with the game's full rights.** Only install plugins you trust; sc-offline doesn't review them. Plugins must stay offline and single-player: see [Plugin rules](docs/plugin-rules.md).
 
