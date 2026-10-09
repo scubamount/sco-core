@@ -127,6 +127,9 @@ static void TestTable() {
         assert(sco.subscribe("tick", on_tick))
         local ok, err = sco.subscribe("tick", on_tick)
         assert(not ok and err == "bad_arg", "same key twice")
+        for i = 1, 64 do assert(sco.subscribe("game.exit", function() return i end)) end
+        local full, why = sco.subscribe("game.exit", function() end)
+        assert(not full and why == "too_many", "65th function on one event: " .. tostring(why))
         assert(sco.api_major == 1 and sco.api_minor == 0)
         assert(sco.host_version() == "sco-lua test 1.0")
         assert(sco.run_on_game_thread(function() tasks = tasks + 1 end))
@@ -143,7 +146,8 @@ static void TestTable() {
             local ok, reply = sco.invoke("table.add", 2, 0.5)
             local bad, why = sco.invoke("table.add", "2", 0.5)
             local none, nf = sco.invoke("nope.nope")
-            return table.concat({ tostring(ok), reply, tostring(bad), why, tostring(none), nf }, " ")
+            local float, fw = sco.invoke("table.add", 2.0, 0.5)              -- int takes no float
+            return table.concat({ tostring(ok), reply, tostring(bad), why, tostring(none), nf, tostring(float), fw }, " ")
           end }
         sco.register_command{ name = "table.list", title = "List",
           fn = function()
@@ -162,7 +166,7 @@ static void TestTable() {
     sco::GameThreadTick(1200);                                                // unsubscribed after 2
     CHECK(Invoke(g_caller, "table.state").text == "ticks=2 last=1100 tasks=1");
     CHECK(Invoke(g_caller, "table.add", { Int(40), sco_arg{ SCO_ARG_FLOAT, 0, { .f = 2.5 } } }).text == "42.5");
-    CHECK(Invoke(g_caller, "table.call").text == "true 2.5 false bad_arg false not_found");
+    CHECK(Invoke(g_caller, "table.call").text == "true 2.5 false bad_arg false not_found false bad_arg");
     CHECK(Invoke(g_caller, "table.list").text == "Add 2 float second");
     CHECK(Invoke(g_caller, "table.print").r == SCO_OK && Logged("[table] a\t1\tnil"));
     Unload(l);
@@ -205,6 +209,22 @@ static void TestSandbox() {
     l = Load("halfway");
     CHECK(l.p && l.p->state == State::Refused && l.p->reason.find("stop here") != std::string::npos);
     CHECK(!HasCommand("halfway.a") && sco::SubscriptionCount() == subs);
+
+    // Disabled during load (three errors in its own command, reached through sco.invoke): the
+    // load chunk keeps running, but sco.* mutators answer unavailable and the load fails.
+    Write("selfkill", R"(
+        sco.register_command{ name = "selfkill.boom", title = "Boom", fn = function() error("boom") end }
+        for _ = 1, 3 do sco.invoke("selfkill.boom") end
+        local _, a = sco.subscribe("tick", print)
+        local _, b = sco.run_on_game_thread(print)
+        local _, c = sco.register_command{ name = "selfkill.more", title = "More", fn = print }
+        sco.log("info", table.concat({ tostring(a), tostring(b), tostring(c) }, " "))
+    )");
+    l = Load("selfkill");
+    CHECK(l.p && l.p->state == State::Refused && l.p->reason.find("disabled") != std::string::npos);
+    if (l.p && l.p->state != State::Refused) std::printf("  selfkill: loaded\n");
+    CHECK(Logged("[selfkill] unavailable unavailable unavailable"));
+    CHECK(!HasCommand("selfkill.more") && sco::SubscriptionCount() == subs);
 }
 
 // ---- limits -----------------------------------------------------------------------------------
@@ -217,6 +237,7 @@ static void TestLimits() {
 
     Write("limits", R"(
         local n = 0
+        local function big(len, c) local s = c or "x" while #s < len do s = s .. s end return s:sub(1, len) end
         sco.register_command{ name = "limits.spin", title = "Spin", fn = function() while true do end end }
         sco.register_command{ name = "limits.shield", title = "Shield",
           fn = function() while true do pcall(function() while true do end end) end end }
@@ -224,6 +245,20 @@ static void TestLimits() {
           fn = function() return tostring(#string.rep("x", 5000000)) end }
         sco.register_command{ name = "limits.find", title = "Find",
           fn = function() local s = string.rep(string.rep("a", 1000), 2000) return tostring(s:find(string.rep("a", 30) .. "b", 1, true)) end }
+        -- One library call, many values: charged by size, not 1 step per call.
+        sco.register_command{ name = "limits.unpack", title = "Unpack", fn = function()
+          local t = table.pack(big(500000):byte(1, -1))
+          for _ = 1, 1000 do table.unpack(t, 1, t.n) end
+          return "unpacked" end }
+        sco.register_command{ name = "limits.byte", title = "Byte", fn = function()
+          local s = big(500000)
+          for _ = 1, 1000 do s:byte(1, -1) end
+          return "bytes" end }
+        sco.register_command{ name = "limits.needle", title = "Needle", fn = function()
+          local s = big(4194304)
+          return tostring(s:find(s:sub(1, 2097152) .. "y", 1, true)) end }
+        sco.register_command{ name = "limits.class", title = "Class", fn = function()
+          return tostring(big(1000000):find("[" .. big(1048576, "y") .. "x]*")) end }
         sco.register_command{ name = "limits.sort", title = "Sort",
           fn = function() local t = {} for i = 1, 60000 do t[i] = -i end table.sort(t) return "sorted" end }
         sco.register_command{ name = "limits.ok", title = "OK",
@@ -232,7 +267,8 @@ static void TestLimits() {
     )");
     // Each budget case gets a fresh copy of the script: an overrun disables it.
     struct Case { const char* cmd; };
-    for (const char* cmd : { "limits.spin", "limits.shield", "limits.rep", "limits.find", "limits.sort" }) {
+    for (const char* cmd : { "limits.spin", "limits.shield", "limits.rep", "limits.find", "limits.sort",
+                             "limits.unpack", "limits.byte", "limits.needle", "limits.class" }) {
         l = Load("limits");
         CHECK(l.p && l.p->state == State::Loaded);
         CHECK(Invoke(g_caller, "limits.ok").text == "5000050000");             // fits the budget
@@ -285,6 +321,52 @@ static void TestLimits() {
     CHECK(!sco_lua_alive(l.p->self) && Logged("[hog] error: script disabled: out of memory"));
     Unload(l);
 
+    // A non-string error object raised with the heap at the cap: turning it into text must not
+    // allocate outside protected mode ("42" would need a new string, the allocation fails with no
+    // handler, and Lua aborts the process). fill() pins memory to the last few bytes, inside
+    // pcall, then the callback raises 42.
+    static const char* const kFill = R"(
+        local slots, n = {}, 0
+        for i = 1, 1024 do slots[i] = false end
+        local big = "x"
+        for _ = 1, 20 do big = big .. big end
+        local bytes = {}
+        for i = 128, 191 do bytes[#bytes + 1] = string.char(i) end
+        local size, a, b, filled = 0, 1, 0, false
+        local function long() n = n + 1; slots[n] = big:sub(1, size) end
+        local function short()
+          b = b + 1; if b > #bytes then a, b = a + 1, 1 end
+          n = n + 1; slots[n] = bytes[a] .. bytes[b]
+        end
+        local function fill()
+          if filled then return end
+          filled = true
+          for _, s in ipairs{ 1048576, 65536, 4096, 256, 48 } do
+            size = s
+            while pcall(long) do end
+          end
+          while pcall(short) do end
+        end
+    )";
+    Write("full", std::string(kFill) +
+          "sco.register_command{ name = 'full.boom', title = 'Boom', fn = function() fill() error(42) end }\n");
+    l = Load("full");
+    CHECK(l.p && l.p->state == State::Loaded);
+    const Reply full = Invoke(g_caller, "full.boom");
+    CHECK(full.r == SCO_BAD_ARG && full.text == "42");
+    if (full.text != "42") std::printf("  full.boom -> %d %s\n", full.r, full.text.c_str());
+    CHECK(Logged("[full] error: full.boom: 42"));
+    Invoke(g_caller, "full.boom");
+    Invoke(g_caller, "full.boom");
+    CHECK(!sco_lua_alive(l.p->self));                                        // 3 errors (or out of memory)
+    Unload(l);
+    Write("fullevt", std::string(kFill) + "sco.subscribe('game.ready', function() fill() error(42) end)\n");
+    l = Load("fullevt");
+    CHECK(l.p && l.p->state == State::Loaded);
+    sco::Dispatch("game.ready", nullptr);
+    CHECK(Logged("[fullevt] error: event game.ready: 42"));
+    Unload(l);
+
     // Three errors in callbacks disable the script; the first two only log.
     Write("flaky", R"(
         sco.register_command{ name = "flaky.boom", title = "Boom", fn = function() error("boom") end }
@@ -305,6 +387,32 @@ static void TestLimits() {
     l = Load("evt");
     sco::Dispatch("game.ready", nullptr);
     CHECK(Logged("[evt] error: event game.ready: main.lua:1: nope"));
+    Unload(l);
+
+    // Each task gets a fresh budget, so a script may have at most 16 waiting: a task that queues
+    // two more each tick levels off at 16 instead of filling the host's 256-slot queue.
+    Write("fan", R"(
+        local queued, most, refused = 0, 0, 0
+        local function task()
+          queued = queued - 1
+          for _ = 1, 2 do
+            local ok, why = sco.run_on_game_thread(task)
+            if ok then queued = queued + 1; most = math.max(most, queued)
+            elseif why == "too_many" then refused = refused + 1 end
+          end
+        end
+        assert(sco.run_on_game_thread(task))
+        queued, most = 1, 1
+        sco.register_command{ name = "fan.state", title = "State",
+          fn = function() return string.format("most=%d refused=%s", most, tostring(refused > 0)) end }
+    )");
+    l = Load("fan");
+    CHECK(l.p && l.p->state == State::Loaded);
+    for (uint32_t t = 1; t <= 10; ++t) sco::GameThreadTick(t * 100);
+    const Reply fan = Invoke(g_caller, "fan.state");
+    CHECK(fan.text == "most=16 refused=true");
+    if (fan.text != "most=16 refused=true") std::printf("  fan.state -> %s\n", fan.text.c_str());
+    CHECK(sco_lua_alive(l.p->self));
     Unload(l);
 }
 

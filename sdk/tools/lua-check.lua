@@ -70,22 +70,40 @@ function sco.log(level, msg)
   if not levels[level] then fail("sco.log: level must be info, warn or error, got " .. tostring(level)); return end
   print("  log     [" .. id .. "] " .. level .. ": " .. tostring(msg))
 end
+-- Limits of the real runtime (plugins/lua/sco_lua.h).
+local MAX_EVENTS, MAX_SUBSCRIBERS, MAX_TASKS, MAX_DEPTH = 16, 64, 16, 8
+local nevents, tasks, depth = 0, {}, 0
 function sco.subscribe(event, fn)
   if type(event) ~= "string" or type(fn) ~= "function" then fail("sco.subscribe(event, fn): bad arguments"); return false, "bad_arg" end
-  subs[event] = subs[event] or {}
-  table.insert(subs[event], fn)
+  if #event == 0 or #event > 63 then return false, "bad_arg" end
+  local list = subs[event]
+  if list then
+    for _, f in ipairs(list) do if f == fn then return false, "bad_arg" end end   -- same function twice
+    if #list >= MAX_SUBSCRIBERS then return false, "too_many" end
+  else
+    if nevents >= MAX_EVENTS then return false, "too_many" end
+    list = {}
+    subs[event] = list
+    nevents = nevents + 1
+  end
+  table.insert(list, fn)
   return true
 end
 function sco.unsubscribe(event, fn)
-  for i, f in ipairs(subs[event] or {}) do
-    if f == fn then table.remove(subs[event], i); return true end
+  local list = subs[event]
+  for i, f in ipairs(list or {}) do
+    if f == fn then
+      table.remove(list, i)
+      if #list == 0 then subs[event] = nil; nevents = nevents - 1 end
+      return true
+    end
   end
   return false, "not_found"
 end
 function sco.run_on_game_thread(fn)
   if type(fn) ~= "function" then fail("sco.run_on_game_thread: fn must be a function"); return false, "bad_arg" end
-  sco._tasks = sco._tasks or {}
-  table.insert(sco._tasks, fn)
+  if #tasks >= MAX_TASKS then return false, "too_many" end
+  table.insert(tasks, fn)
   return true
 end
 function sco.register_command(c)
@@ -110,28 +128,67 @@ function sco.register_command(c)
   table.insert(order, c.name)
   return true
 end
+-- As the runtime: arguments must match the command's types exactly (int takes a Lua integer), a
+-- failing command gives false, "bad_arg" and its error text, nesting stops at 8.
+local function type_ok(ty, v)
+  if ty == "int" then return math.type(v) == "integer" end
+  if ty == "float" then return type(v) == "number" end
+  if ty == "string" then return type(v) == "string" end
+  return type(v) == "boolean"
+end
 function sco.invoke(name, ...)
+  if type(name) ~= "string" then error("bad argument #1 to 'invoke' (string expected, got " .. type(name) .. ")", 2) end
   local c = commands[name]
   if not c then return false, "not_found" end
+  local n = select("#", ...)
+  if n ~= #c.args then return false, "bad_arg" end
+  for i, a in ipairs(c.args) do
+    if not type_ok(a.type, (select(i, ...))) then return false, "bad_arg" end
+  end
+  if c.def.capability ~= nil and not caps[c.def.capability] then return false, "unavailable", "" end
+  if depth >= MAX_DEPTH then return false, "too_many", "calls nested too deep" end
+  depth = depth + 1
   local ok, reply = pcall(c.def.fn, ...)
-  if not ok then return false, "error: " .. tostring(reply) end
-  return true, reply
+  depth = depth - 1
+  if ok and reply ~= nil and type(reply) ~= "string" then
+    ok, reply = false, "reply must be a string or nil, not " .. type(reply)
+  end
+  if not ok then return false, "bad_arg", tostring(reply) end
+  return true, reply or ""
 end
 function sco.list_commands()
   local out = {}
-  for _, n in ipairs(order) do out[#out + 1] = { name = n, title = commands[n].def.title } end
+  for _, n in ipairs(order) do
+    local d = commands[n].def
+    local args = {}
+    for i, a in ipairs(commands[n].args) do args[i] = { name = a.name, type = a.type, help = a.help } end
+    out[#out + 1] = { name = n, title = d.title, help = d.help, capability = d.capability, args = args }
+  end
   return out
 end
 
 -- ---- sandbox ----------------------------------------------------------------------------
 
 local function copy(t) local r = {} for k, v in pairs(t) do r[k] = v end return r end
+local safe_string = copy(string)
+safe_string.dump = nil                 -- the runtime drops string.dump
+-- The runtime refuses finalizers: Lua runs __gc outside the step budget.
+local function safe_setmetatable(t, mt)
+  if type(mt) == "table" and rawget(mt, "__gc") ~= nil then error("__gc is not allowed in sco-lua", 2) end
+  return setmetatable(t, mt)
+end
+-- The runtime's print: tostring of every argument, tab-separated, logged at info.
+local function safe_print(...)
+  local t = table.pack(...)
+  for i = 1, t.n do t[i] = tostring(t[i]) end
+  sco.log("info", table.concat(t, "\t", 1, t.n))
+end
 local env = {
-  sco = sco, string = copy(string), table = copy(table), math = copy(math), utf8 = copy(utf8),
+  sco = sco, string = safe_string, table = copy(table), math = copy(math), utf8 = copy(utf8),
   assert = assert, error = error, ipairs = ipairs, next = next, pairs = pairs, pcall = pcall,
   select = select, tonumber = tonumber, tostring = tostring, type = type, xpcall = xpcall,
   rawequal = rawequal, rawget = rawget, rawlen = rawlen, rawset = rawset,
-  setmetatable = setmetatable, getmetatable = getmetatable, print = function(...) sco.log("info", table.concat({...}, " ")) end,
+  setmetatable = safe_setmetatable, getmetatable = getmetatable, print = safe_print,
 }
 env._G = env
 
@@ -158,9 +215,9 @@ if call("load " .. ini.entry, chunk) then
   print("  load    ok: " .. #order .. " command(s)")
   dispatch("game.ready")
   for t = 1, 3 do
-    local tasks = sco._tasks or {}
-    sco._tasks = {}
-    for _, fn in ipairs(tasks) do call("task", fn) end
+    local now = tasks
+    tasks = {}
+    for _, fn in ipairs(now) do call("task", fn) end
     dispatch("tick", t * 100)
   end
 

@@ -52,6 +52,8 @@ static void fail(const char* fmt, ...) {
 /* ---- plugin.ini --------------------------------------------------------- */
 
 #define MAX_REQUIRES 16
+#define MAX_MANIFEST_BYTES (16 * 1024)
+#define MAX_PACK_FILES 4096
 
 typedef struct manifest {
     char id[64], name[128], version[64], author[128], api[16], kind[16], entry[128];
@@ -60,112 +62,210 @@ typedef struct manifest {
     int  api_major, api_minor;
 } manifest;
 
-static char* trim(char* s) {
-    char* e;
-    while (*s == ' ' || *s == '\t') ++s;
-    e = s + strlen(s);
-    while (e > s && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r' || e[-1] == '\n')) --e;
-    *e = 0;
+/* The rules below are the host's (src/plugins/manifest.cpp), one for one: a manifest passes here
+ * exactly when the game would read it. Text is a pointer and a length, like the host's
+ * string_view, so long lines and NUL bytes are handled the same way. */
+typedef struct strv { const char* p; size_t n; } strv;
+
+static strv trim(strv s) {
+    while (s.n && (s.p[0] == ' ' || s.p[0] == '\t')) { ++s.p; --s.n; }
+    while (s.n && (s.p[s.n - 1] == ' ' || s.p[s.n - 1] == '\t' || s.p[s.n - 1] == '\r')) --s.n;
     return s;
 }
 
-/* A comment starts with ';' or '#' at the start of the text or after a space or tab. */
-static void strip_comment(char* s) {
+/* A comment starts with ';' or '#' at the start of the line or after a space or tab. */
+static strv strip_comment(strv s) {
     size_t i;
-    for (i = 0; s[i]; ++i)
-        if ((s[i] == ';' || s[i] == '#') && (i == 0 || s[i - 1] == ' ' || s[i - 1] == '\t')) {
-            s[i] = 0;
-            return;
+    for (i = 0; i < s.n; ++i)
+        if ((s.p[i] == ';' || s.p[i] == '#') && (i == 0 || s.p[i - 1] == ' ' || s.p[i - 1] == '\t')) {
+            s.n = i;
+            break;
         }
+    return s;
 }
 
-static int valid_id(const char* s) {
-    size_t n = strlen(s), i;
-    if (n < 1 || n > 31) return 0;
-    for (i = 0; i < n; ++i)
-        if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_')) return 0;
-    return strcmp(s, "sco") && strcmp(s, "host") && strcmp(s, "menu") && strcmp(s, "game");
-}
+static int is(strv s, const char* lit) { return s.n == strlen(lit) && memcmp(s.p, lit, s.n) == 0; }
 
-static int valid_capability(const char* s) {
-    size_t n = strlen(s), i;
-    if (n < 1 || n > 63 || s[0] == '.' || s[n - 1] == '.') return 0;
-    for (i = 0; i < n; ++i)
-        if (!((s[i] >= 'a' && s[i] <= 'z') || (s[i] >= '0' && s[i] <= '9') || s[i] == '_' || s[i] == '.'))
-            return 0;
+static int id_char(char c) { return (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_'; }
+
+static int valid_id(strv s) {
+    size_t i;
+    if (s.n < 1 || s.n > 31) return 0;
+    for (i = 0; i < s.n; ++i) if (!id_char(s.p[i])) return 0;
     return 1;
 }
 
-static int set_field(char* dst, size_t cap, const char* v, const char* key, int line) {
-    if (strlen(v) >= cap) { fail("plugin.ini line %d: %s is too long", line, key); return 0; }
-    strcpy(dst, v);
+static int reserved_id(strv s) { return is(s, "sco") || is(s, "host") || is(s, "menu") || is(s, "game"); }
+
+/* Lowercase dotted: "teleport", "spawn.ship"; no empty part. */
+static int valid_capability(strv s) {
+    size_t i;
+    char prev = 0;
+    if (s.n < 1 || s.n > 63 || s.p[0] == '.' || s.p[s.n - 1] == '.') return 0;
+    for (i = 0; i < s.n; ++i) {
+        if (s.p[i] == '.') { if (prev == '.') return 0; }
+        else if (!id_char(s.p[i])) return 0;
+        prev = s.p[i];
+    }
     return 1;
 }
+
+/* 1..max bytes, printable ASCII and UTF-8 bytes; no control characters. */
+static int valid_text(strv s, size_t max) {
+    size_t i;
+    if (s.n < 1 || s.n > max) return 0;
+    for (i = 0; i < s.n; ++i) {
+        const unsigned char c = (unsigned char)s.p[i];
+        if (c < 0x20 || c == 0x7f) return 0;
+    }
+    return 1;
+}
+
+/* A bare file name: no separators, no drive, no wildcard or reserved character, not "." or "..". */
+static int valid_entry(strv s) {
+    size_t i;
+    if (s.n < 1 || s.n > 63 || is(s, ".") || is(s, "..")) return 0;
+    for (i = 0; i < s.n; ++i) {
+        const unsigned char c = (unsigned char)s.p[i];
+        if (c < 0x20 || strchr("/\\:*?\"<>|", c)) return 0;
+    }
+    return 1;
+}
+
+/* "<major>.<minor>": digits only, at most 5 each, each at most 65535. */
+static int parse_number(strv d, int* out) {
+    size_t i;
+    long v = 0;
+    if (d.n < 1 || d.n > 5) return 0;
+    for (i = 0; i < d.n; ++i) {
+        if (d.p[i] < '0' || d.p[i] > '9') return 0;
+        v = v * 10 + (d.p[i] - '0');
+    }
+    if (v > 0xffff) return 0;
+    *out = (int)v;
+    return 1;
+}
+
+static int parse_api(strv s, int* major, int* minor) {
+    const char* dot = s.n ? (const char*)memchr(s.p, '.', s.n) : NULL;
+    strv a, b;
+    if (!dot) return 0;
+    a.p = s.p; a.n = (size_t)(dot - s.p);
+    b.p = dot + 1; b.n = s.n - a.n - 1;
+    return parse_number(a, major) && parse_number(b, minor);
+}
+
+static void set_field(char* dst, strv v) {   /* v fits: its length was checked */
+    memcpy(dst, v.p, v.n);
+    dst[v.n] = 0;
+}
+
+static int bad_line(int line, const char* what) { fail("plugin.ini line %d: %s", line, what); return 0; }
 
 static int read_manifest(const char* path, manifest* m) {
+    enum { K_ID, K_NAME, K_VERSION, K_AUTHOR, K_API, K_KIND, K_ENTRY, K_REQUIRES, K_COUNT };
+    static const char* const keys[K_COUNT] = { "id", "name", "version", "author", "api", "kind", "entry", "requires" };
+    static char buf[MAX_MANIFEST_BYTES + 1];
+    int seen[K_COUNT] = { 0 };
+    int line = 0, k, i;
+    size_t len;
+    strv all;
     FILE* f = fopen(path, "rb");
-    char  buf[1024], seen[16][16];
-    int   nseen = 0, line = 0, ok = 1, i;
     if (!f) { fail("%s: can't open", path); return 0; }
+    len = fread(buf, 1, sizeof buf, f);
+    fclose(f);
     memset(m, 0, sizeof *m);
-    while (fgets(buf, sizeof buf, f)) {
-        char *s = buf, *eq, *key, *val;
-        ++line;
-        if (line == 1 && (unsigned char)s[0] == 0xEF && (unsigned char)s[1] == 0xBB && (unsigned char)s[2] == 0xBF)
-            s += 3;
-        strip_comment(s);
-        s = trim(s);
-        if (!*s) continue;
-        eq = strchr(s, '=');
-        if (!eq) { fail("plugin.ini line %d: no '='", line); ok = 0; continue; }
-        *eq = 0;
-        key = trim(s);
-        val = trim(eq + 1);
-        for (i = 0; i < nseen; ++i)
-            if (!strcmp(seen[i], key)) { fail("plugin.ini line %d: duplicate key '%s'", line, key); ok = 0; }
-        if (nseen < 16 && strlen(key) < 16) strcpy(seen[nseen++], key);
+    if (len > MAX_MANIFEST_BYTES) { fail("plugin.ini: too big (over %d bytes)", MAX_MANIFEST_BYTES); return 0; }
+    all.p = buf;
+    all.n = len;
+    if (all.n >= 3 && memcmp(all.p, "\xEF\xBB\xBF", 3) == 0) { all.p += 3; all.n -= 3; }
 
-        if      (!strcmp(key, "id"))      ok &= set_field(m->id, sizeof m->id, val, key, line);
-        else if (!strcmp(key, "name"))    ok &= set_field(m->name, 64, val, key, line);
-        else if (!strcmp(key, "version")) ok &= set_field(m->version, 32, val, key, line);
-        else if (!strcmp(key, "author"))  ok &= set_field(m->author, 64, val, key, line);
-        else if (!strcmp(key, "api"))     ok &= set_field(m->api, sizeof m->api, val, key, line);
-        else if (!strcmp(key, "kind"))    ok &= set_field(m->kind, sizeof m->kind, val, key, line);
-        else if (!strcmp(key, "entry"))   ok &= set_field(m->entry, 64, val, key, line);
-        else if (!strcmp(key, "requires")) {
-            char* tok = strtok(val, ",");
-            while (tok) {
-                char* cap = trim(tok);
-                if (!valid_capability(cap)) { fail("plugin.ini line %d: bad capability '%s'", line, cap); ok = 0; }
-                else if (m->nrequires == MAX_REQUIRES) { fail("plugin.ini line %d: more than 16 requires", line); ok = 0; }
-                else strcpy(m->requires_[m->nrequires++], cap);
-                tok = strtok(NULL, ",");
+    while (all.n) {
+        const char* nl = (const char*)memchr(all.p, '\n', all.n);
+        const char* eq;
+        strv ln, key, val;
+        ln.p = all.p;
+        ln.n = nl ? (size_t)(nl - all.p) : all.n;
+        all.p += ln.n + (nl ? 1 : 0);
+        all.n -= ln.n + (nl ? 1 : 0);
+        ++line;
+        ln = trim(strip_comment(ln));
+        if (!ln.n) continue;
+        eq = (const char*)memchr(ln.p, '=', ln.n);
+        if (!eq) return bad_line(line, "expected key = value");
+        key.p = ln.p; key.n = (size_t)(eq - ln.p);
+        val.p = eq + 1; val.n = ln.n - key.n - 1;
+        key = trim(key);
+        val = trim(val);
+        for (k = 0; k < K_COUNT && !is(key, keys[k]); ++k) {}
+        if (k == K_COUNT) continue;   /* unknown key, even twice: a later minor's */
+        if (seen[k]) { fail("plugin.ini line %d: duplicate key '%s'", line, keys[k]); return 0; }
+        seen[k] = 1;
+        switch (k) {
+            case K_ID:
+                if (!valid_id(val)) return bad_line(line, "id must be 1-31 of [a-z0-9_]");
+                if (reserved_id(val)) return bad_line(line, "id is reserved");
+                set_field(m->id, val);
+                break;
+            case K_NAME:
+                if (!valid_text(val, 63)) return bad_line(line, "name must be 1-63 printable characters");
+                set_field(m->name, val);
+                break;
+            case K_VERSION:
+                if (!valid_text(val, 31)) return bad_line(line, "version must be 1-31 printable characters");
+                set_field(m->version, val);
+                break;
+            case K_AUTHOR:
+                if (!valid_text(val, 63)) return bad_line(line, "author must be 1-63 printable characters");
+                set_field(m->author, val);
+                break;
+            case K_API:
+                if (!parse_api(val, &m->api_major, &m->api_minor)) return bad_line(line, "api must be <major>.<minor>");
+                set_field(m->api, val);
+                break;
+            case K_KIND:
+                if (!is(val, "native") && !is(val, "lua") && !is(val, "data")) return bad_line(line, "kind must be native, lua or data");
+                set_field(m->kind, val);
+                break;
+            case K_ENTRY:
+                if (!valid_entry(val)) return bad_line(line, "entry must be a file name in the plugin folder");
+                set_field(m->entry, val);
+                break;
+            default: {   /* K_REQUIRES */
+                strv rest = val;
+                for (;;) {
+                    const char* comma = rest.n ? (const char*)memchr(rest.p, ',', rest.n) : NULL;
+                    strv cap;
+                    cap.p = rest.p;
+                    cap.n = comma ? (size_t)(comma - rest.p) : rest.n;
+                    cap = trim(cap);
+                    if (!valid_capability(cap)) return bad_line(line, "requires must be a comma list of capability names");
+                    for (i = 0; i < m->nrequires; ++i)
+                        if (is(cap, m->requires_[i])) return bad_line(line, "requires lists a capability twice");
+                    if (m->nrequires == MAX_REQUIRES) return bad_line(line, "requires lists more than 16 capabilities");
+                    set_field(m->requires_[m->nrequires++], cap);
+                    if (!comma) break;
+                    rest.n -= (size_t)(comma + 1 - rest.p);
+                    rest.p = comma + 1;
+                }
+                break;
             }
         }
-        /* Unknown keys are ignored: a later minor may add keys. */
     }
-    fclose(f);
 
-    if (!m->id[0])      { fail("plugin.ini: id is missing"); ok = 0; }
-    else if (!valid_id(m->id)) { fail("plugin.ini: id '%s' must be 1-31 of a-z 0-9 _ and not reserved", m->id); ok = 0; }
-    if (!m->name[0])    { fail("plugin.ini: name is missing"); ok = 0; }
-    if (!m->version[0]) { fail("plugin.ini: version is missing"); ok = 0; }
-    if (!m->api[0])     { fail("plugin.ini: api is missing"); ok = 0; }
-    else if (sscanf(m->api, "%d.%d", &m->api_major, &m->api_minor) != 2) { fail("plugin.ini: api must be <major>.<minor>"); ok = 0; }
-    else if (m->api_major != SCO_API_MAJOR || m->api_minor > SCO_API_MINOR) {
-        fail("plugin.ini: api %s, but this SDK is %d.%d", m->api, SCO_API_MAJOR, SCO_API_MINOR); ok = 0;
+    {
+        static const int required[] = { K_ID, K_NAME, K_VERSION, K_API, K_KIND };
+        for (i = 0; i < 5; ++i)
+            if (!seen[required[i]]) { fail("plugin.ini: missing key '%s'", keys[required[i]]); return 0; }
     }
-    if (strcmp(m->kind, "native") && strcmp(m->kind, "lua") && strcmp(m->kind, "data")) {
-        fail("plugin.ini: kind must be native, lua or data"); ok = 0;
-    } else if (!strcmp(m->kind, "data") && m->entry[0]) {
-        fail("plugin.ini: a data pack has no entry"); ok = 0;
-    } else if (strcmp(m->kind, "data") && !m->entry[0]) {
-        fail("plugin.ini: kind %s needs entry", m->kind); ok = 0;
+    if (!strcmp(m->kind, "data") && seen[K_ENTRY]) { fail("plugin.ini: a data pack has no entry"); return 0; }
+    if (strcmp(m->kind, "data") && !seen[K_ENTRY]) { fail("plugin.ini: missing key 'entry'"); return 0; }
+    /* What discovery checks next (src/plugins/discover.cpp). */
+    if (m->api_major != SCO_API_MAJOR || m->api_minor > SCO_API_MINOR) {
+        fail("plugin.ini: api %s, but this SDK is %d.%d", m->api, SCO_API_MAJOR, SCO_API_MINOR);
+        return 0;
     }
-    if (strpbrk(m->entry, "/\\:") || !strcmp(m->entry, "..") || !strcmp(m->entry, ".")) {
-        fail("plugin.ini: entry must be a bare file name"); ok = 0;
-    }
-    return ok;
+    return 1;
 }
 
 /* ---- files -------------------------------------------------------------- */
@@ -242,6 +342,7 @@ static int list_content(const char* dir, const char* sub, const char* ext, int d
 #define MAX_CMDS 64
 #define MAX_TASKS 256
 #define MAX_ARGS 16
+#define MAX_DEPTH 8   /* nested invokes, as in sco-lua */
 
 typedef struct sub  { char event[64]; sco_event_fn fn; void* ctx; int live; } sub;
 typedef struct task { sco_task_fn fn; void* ctx; } task;
@@ -272,6 +373,20 @@ static int copy_str(char* dst, size_t cap, const char* src) {
 }
 
 static void api_fail(const char* what) { fail("plugin called %s", what); }
+
+/* "<x>.<y>": lowercase letters, digits, '_' and '.'; no empty part; at most 63 bytes. */
+static int valid_command_name(const char* n) {
+    int dot = 0;
+    char prev = '.';
+    const char* p;
+    if (!n || !*n || strlen(n) > 63) return 0;
+    for (p = n; *p; ++p) {
+        if (*p == '.') { if (prev == '.') return 0; dot = 1; }
+        else if (!id_char(*p)) return 0;
+        prev = *p;
+    }
+    return dot && prev != '.';
+}
 
 static const char* host_version(void) { return "sco-plugin-check " "1.0"; }
 
@@ -338,16 +453,21 @@ static sco_result register_command(sco_plugin* self, const sco_command* in) {
     size_t plen = strlen(plugin_id);
     uint32_t i;
     int j;
+    /* The host's rules (src/host/sco_host.cpp RegisterCommandC, src/api/sco_commands.cpp
+     * RegisterCommand): title, help and capability are optional, args are read with the plugin's
+     * arg_def_size, which must be a multiple of sco_arg_def's alignment. */
     if (self != &the_plugin || !in) { api_fail("register_command with a bad self or NULL cmd"); return SCO_BAD_ARG; }
-    if (in->size < offsetof(sco_command, ctx) + sizeof(void*)) { api_fail("register_command with size too small"); return SCO_BAD_ARG; }
-    if (!in->name || strncmp(in->name, plugin_id, plen) || in->name[plen] != '.' || !in->name[plen + 1]) {
-        fail("register_command '%s': the name must start with '%s.'", in->name ? in->name : "(null)", plugin_id);
+    if (in->size < sizeof(sco_command)) { api_fail("register_command with size too small"); return SCO_BAD_ARG; }
+    if (!valid_command_name(in->name) || strncmp(in->name, plugin_id, plen) || in->name[plen] != '.') {
+        fail("register_command '%s': the name must be '%s.<action>' (a-z 0-9 _ and dots, at most 63 bytes)",
+             in->name ? in->name : "(null)", plugin_id);
         return SCO_BAD_ARG;
     }
     for (j = 0; j < ncmds; ++j)
         if (!strcmp(cmds[j].name, in->name)) { fail("register_command '%s': duplicate", in->name); return SCO_BAD_ARG; }
-    if (!in->title || !in->fn) { fail("register_command '%s': title and fn are required", in->name); return SCO_BAD_ARG; }
-    if (in->nargs > MAX_ARGS || (in->nargs && (!in->args || in->arg_def_size < sizeof(sco_arg_def)))) {
+    if (!in->fn) { fail("register_command '%s': fn is required", in->name); return SCO_BAD_ARG; }
+    if (in->nargs > MAX_ARGS || (in->nargs && (!in->args || in->arg_def_size < sizeof(sco_arg_def) ||
+                                               in->arg_def_size % _Alignof(sco_arg_def)))) {
         fail("register_command '%s': bad args, nargs or arg_def_size", in->name);
         return SCO_BAD_ARG;
     }
@@ -356,7 +476,7 @@ static sco_result register_command(sco_plugin* self, const sco_command* in) {
     memset(c, 0, sizeof *c);
     if (!copy_str(c->name, sizeof c->name, in->name) || !copy_str(c->title, sizeof c->title, in->title) ||
         !copy_str(c->help, sizeof c->help, in->help) || !copy_str(c->cap, sizeof c->cap, in->capability)) {
-        fail("register_command '%s': a string is too long (name/title/capability 63, help 255)", in->name);
+        fail("register_command '%s': a string is too long (title/capability 63, help 255)", in->name);
         return SCO_BAD_ARG;
     }
     for (i = 0; i < in->nargs; ++i) {
@@ -373,7 +493,7 @@ static sco_result register_command(sco_plugin* self, const sco_command* in) {
     }
     c->c.size = sizeof(sco_command);
     c->c.name = c->name;
-    c->c.title = c->title;
+    c->c.title = in->title ? c->title : NULL;
     c->c.help = in->help ? c->help : NULL;
     c->c.capability = in->capability ? c->cap : NULL;
     c->c.args = c->defs;
@@ -404,12 +524,23 @@ static sco_result run_command(const cmd* c, const sco_arg* args, uint32_t nargs,
 
 static sco_result invoke(sco_plugin* self, const char* name, const sco_arg* args, uint32_t nargs,
                          sco_invoke_done done, void* ctx) {
+    static int depth;   /* a command invoking itself would otherwise overflow the stack */
     char reply[256];
     sco_result r = SCO_NOT_FOUND;
     int i;
     if (self != &the_plugin || !name || (nargs && !args)) { api_fail("invoke with a bad self, name or args"); return SCO_BAD_ARG; }
     for (i = 0; i < ncmds; ++i)
-        if (!strcmp(cmds[i].name, name)) { r = run_command(&cmds[i], args, nargs, reply, sizeof reply); break; }
+        if (!strcmp(cmds[i].name, name)) {
+            if (depth >= MAX_DEPTH) {
+                snprintf(reply, sizeof reply, "calls nested too deep");
+                r = SCO_TOO_MANY;
+            } else {
+                ++depth;
+                r = run_command(&cmds[i], args, nargs, reply, sizeof reply);
+                --depth;
+            }
+            break;
+        }
     if (i == ncmds) reply[0] = 0;
     if (done) done(r, reply, ctx);
     return r;
@@ -619,6 +750,7 @@ int main(int argc, char** argv) {
             int n = list_content(dir, "missions", ".cwmission", 0) + list_content(dir, "rules", ".rules", 0) +
                     list_content(dir, "scripts", ".xml", 1) + list_content(dir, "lists", ".txt", 0);
             if (n == 0) fail("data pack has no content (missions/*.cwmission, rules/*.rules, scripts/**.xml, lists/*.txt)");
+            else if (n > MAX_PACK_FILES) fail("data pack has %d content files; the host refuses more than %d", n, MAX_PACK_FILES);
             else printf("  pack    %d file(s)\n", n);
         } else if (!failures && !strcmp(m.kind, "native")) {
             check_native(dir, &m, invoke_name, invoke_args, ninvoke_args);

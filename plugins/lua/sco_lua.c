@@ -46,6 +46,7 @@ struct Script {
     CmdCtx cmds[SCO_LUA_MAX_COMMANDS];
     int ncmds;
     Task* tasks;   /* queued run_on_game_thread calls */
+    int ntasks;    /* how many: each runs with a fresh budget, so they are capped */
 };
 
 void sco_lua_event_(const char* event, const void* data, void* ctx);   /* every Lua subscription */
@@ -67,6 +68,19 @@ static Script* Find(const sco_plugin* self) {
 static void Copy(char* dst, size_t n, const char* src) {
     if (!n) return;
     snprintf(dst, n, "%s", src ? src : "");
+}
+
+/* The error object on top of the stack as text, without allocating: outside protected mode a
+ * failed allocation (lua_tostring converting a number at the memory cap) would abort. */
+static const char* ErrorText(lua_State* L, char* buf, size_t n) {
+    switch (lua_type(L, -1)) {
+        case LUA_TSTRING: return lua_tostring(L, -1);   /* already a string: no conversion */
+        case LUA_TNUMBER:
+            if (lua_isinteger(L, -1)) snprintf(buf, n, "%lld", (long long)lua_tointeger(L, -1));
+            else snprintf(buf, n, "%.14g", (double)lua_tonumber(L, -1));
+            return buf;
+        default: return "error object is not a string";
+    }
 }
 
 static const char* ResultName(sco_result r) {
@@ -165,9 +179,10 @@ static void Disable(Script* s, const char* why) {
 /* Logs the error on top of the stack and pops it; disables the script on a budget overrun, a
  * memory error or the MAX_ERRORS-th error. */
 static void Failed(Script* s, const char* where, int st) {
-    const char* msg = lua_tostring(s->L, -1);
+    char num[48];
+    const char* msg = ErrorText(s->L, num, sizeof(num));
     char line[320];
-    snprintf(line, sizeof(line), "%s: %s", where, msg ? msg : "error object is not a string");
+    snprintf(line, sizeof(line), "%s: %s", where, msg);
     s->api->log(s->self, SCO_LOG_ERROR, line);
     lua_pop(s->L, 1);
     if (s->over) Disable(s, "ran past its step budget");
@@ -276,8 +291,8 @@ static sco_result CmdThunk(const sco_arg* args, uint32_t nargs, void* ctx, char*
     CmdCall k = { c, args, nargs, reply, replySize };
     const int st = Enter(s, CmdBody, &k);
     if (st == LUA_OK) { lua_settop(s->L, top); return SCO_OK; }
-    const char* msg = lua_tostring(s->L, -1);
-    Copy(reply, replySize, msg ? msg : "error");
+    char num[48];
+    Copy(reply, replySize, ErrorText(s->L, num, sizeof(num)));
     const sco_result r = s->over ? SCO_CRASHED : st == LUA_ERRMEM ? SCO_TOO_MANY : SCO_BAD_ARG;
     Failed(s, c->name, st);
     lua_settop(s->L, top);
@@ -289,6 +304,7 @@ static sco_result CmdThunk(const sco_arg* args, uint32_t nargs, void* ctx, char*
 static void Unlink(Task* t) {
     if (t->prev) t->prev->next = t->next; else t->s->tasks = t->next;
     if (t->next) t->next->prev = t->prev;
+    --t->s->ntasks;
 }
 
 static int TaskBody(lua_State* L) {
@@ -378,12 +394,15 @@ static void PushSubs(lua_State* L, const char* event, int create) {
 
 static int L_subscribe(lua_State* L) {
     Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);   /* disabled, an outer frame still running */
     const char* event = luaL_checkstring(L, 1);
     luaL_checktype(L, 2, LUA_TFUNCTION);
     if (strlen(event) >= NAME_MAX_ || !*event) return PushResult(L, SCO_BAD_ARG);
     PushSubs(L, event, 1);
     const int list = lua_gettop(L);
     if (StillSubscribed(L, list, 2)) return PushResult(L, SCO_BAD_ARG);   /* same key twice */
+    /* Dispatch rescans the list before each callback, uncharged: keep it short. */
+    if (lua_rawlen(L, list) >= SCO_LUA_MAX_SUBSCRIBERS) return PushResult(L, SCO_TOO_MANY);
     EventSub* e = NULL;
     for (int i = 0; i < SCO_LUA_MAX_EVENTS && !e; ++i)
         if (s->events[i].live && strcmp(s->events[i].name, event) == 0) e = &s->events[i];
@@ -436,7 +455,9 @@ static int L_unsubscribe(lua_State* L) {
 
 static int L_run_on_game_thread(lua_State* L) {
     Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);
     luaL_checktype(L, 1, LUA_TFUNCTION);
+    if (s->ntasks >= SCO_LUA_MAX_TASKS) return PushResult(L, SCO_TOO_MANY);
     Task* t = (Task*)malloc(sizeof(Task));
     if (!t) return PushResult(L, SCO_TOO_MANY);
     lua_pushvalue(L, 1);
@@ -452,6 +473,7 @@ static int L_run_on_game_thread(lua_State* L) {
     t->next = s->tasks;
     if (s->tasks) s->tasks->prev = t;
     s->tasks = t;
+    ++s->ntasks;
     return PushResult(L, SCO_OK);
 }
 
@@ -470,6 +492,7 @@ static int TypeOf(const char* name) {
 
 static int L_register_command(lua_State* L) {
     Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);
     luaL_checktype(L, 1, LUA_TTABLE);
     luaL_checkstack(L, 8 + 4 * MAX_ARGS, "register_command");
     int bad = 0;
@@ -562,7 +585,7 @@ static int L_invoke(lua_State* L) {
         a->type = d->type;
         int ok = 0;
         switch (d->type) {
-            case SCO_ARG_INT:    { int isint = 0; a->v.i = lua_tointegerx(L, v, &isint); ok = isint && lua_type(L, v) == LUA_TNUMBER; break; }
+            case SCO_ARG_INT:    { int isint = 0; a->v.i = lua_tointegerx(L, v, &isint); ok = isint && lua_isinteger(L, v); break; }   /* 2.0 is a float */
             case SCO_ARG_FLOAT:  ok = lua_type(L, v) == LUA_TNUMBER; a->v.f = lua_tonumber(L, v); break;
             case SCO_ARG_STRING: ok = lua_type(L, v) == LUA_TSTRING; a->v.s = lua_tostring(L, v); break;
             case SCO_ARG_BOOL:   ok = lua_type(L, v) == LUA_TBOOLEAN; a->v.i = lua_toboolean(L, v); break;
@@ -733,11 +756,15 @@ sco_result sco_lua_load(const sco_api* api, sco_plugin* self, const char* chunkn
     s->alive = 1;
     LoadCall k = { source, size, s->chunk };
     const int st = Enter(s, SetupBody, &k);
-    if (st == LUA_OK) return SCO_OK;
-    const char* msg = lua_tostring(s->L, -1);
-    if (s->over) Copy(err, err_size, msg ? msg : "ran past its step budget");
-    else Copy(err, err_size, msg ? msg : (st == LUA_ERRMEM ? "out of memory" : "error"));
-    const sco_result r = st == LUA_ERRMEM ? SCO_TOO_MANY : SCO_BAD_ARG;
+    if (st == LUA_OK && s->alive) return SCO_OK;
+    sco_result r = SCO_BAD_ARG;
+    if (st == LUA_OK) {
+        Copy(err, err_size, "script disabled while loading");   /* the log says why */
+    } else {
+        char num[48];
+        Copy(err, err_size, ErrorText(s->L, num, sizeof(num)));
+        if (st == LUA_ERRMEM) r = SCO_TOO_MANY;
+    }
     for (int i = 0; i < SCO_LUA_MAX_EVENTS; ++i)
         if (s->events[i].live) api->unsubscribe(self, s->events[i].name, sco_lua_event_);
     Close(s);

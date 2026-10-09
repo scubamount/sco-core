@@ -24,13 +24,15 @@ extern "C" {
 #define SCO_LUA_MAX_SOURCE    (1024u * 1024)     /* entry script size */
 #define SCO_LUA_MAX_SCRIPTS   64
 #define SCO_LUA_MAX_EVENTS    16                 /* distinct event names one script subscribes to */
+#define SCO_LUA_MAX_SUBSCRIBERS 64               /* functions one script subscribes to one event */
 #define SCO_LUA_MAX_COMMANDS  64                 /* commands one script registers */
+#define SCO_LUA_MAX_TASKS     16                 /* run_on_game_thread calls one script has waiting */
 
 /* Creates a sandboxed state for plugin `self`, then runs `source` (text only; bytecode is
  * refused) once, under the step budget. `chunkname` names the script in error messages
  * ("main.lua"). SCO_OK: the script is loaded and its callbacks are live. Anything else: nothing
  * of the script is left and err holds why ("main.lua:3: attempt to call a nil value ...",
- * "ran past its step budget", "out of memory"); the caller should still sco::Release(self) to
+ * "ran past its step budget", "out of memory", "script disabled while loading"); the caller should still sco::Release(self) to
  * drop anything the script registered before it failed.
  * SCO_BAD_ARG: null argument, source over SCO_LUA_MAX_SOURCE, or self already has a script.
  * SCO_TOO_MANY: SCO_LUA_MAX_SCRIPTS loaded, or no memory. */

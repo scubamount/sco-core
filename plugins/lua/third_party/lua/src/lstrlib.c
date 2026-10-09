@@ -187,6 +187,7 @@ static int str_byte (lua_State *L) {
     return luaL_error(L, "string slice too long");
   n = (int)(pose -  posi) + 1;
   luaL_checkstack(L, n, "string slice too long");
+  SCO_LUA_STEP(L, 1 + n / 64);  /* sco-lua */
   for (i=0; i<n; i++)
     lua_pushinteger(L, uchar(s[posi+i-1]));
   return n;
@@ -196,6 +197,7 @@ static int str_byte (lua_State *L) {
 static int str_char (lua_State *L) {
   int n = lua_gettop(L);  /* number of arguments */
   int i;
+  SCO_LUA_STEP(L, 1 + n / 64);  /* sco-lua */
   luaL_Buffer b;
   char *p = luaL_buffinitsize(L, &b, n);
   for (i=1; i<=n; i++) {
@@ -474,6 +476,7 @@ static int singlematch (MatchState *ms, const char *s, const char *p,
     return 0;
   else {
     int c = uchar(*s);
+    if (*p == '[') SCO_LUA_STEP(ms->L, (int)((ep - p) / 16));  /* sco-lua */
     switch (*p) {
       case '.': return 1;  /* matches any char */
       case L_ESC: return match_class(c, uchar(*(p+1)));
@@ -685,6 +688,7 @@ static const char *lmemfind (lua_State *L, const char *s1, size_t l1,
     l1 = l1-l2;  /* 's2' cannot be found after that */
     while (l1 > 0 && (init = (const char *)memchr(s1, *s2, l1)) != NULL) {
       SCO_LUA_STEP(L, 1);  /* sco-lua */
+      SCO_LUA_STEP(L, (int)(l2 / 64));  /* sco-lua */
       init++;   /* 1st char is already checked */
       if (memcmp(init, s2+1, l2) == 0)
         return init-1;
