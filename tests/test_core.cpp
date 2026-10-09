@@ -1,5 +1,7 @@
 // Unit tests for sco-core's scanners and signature registry. Host build, no game needed.
 //   tools/test.sh
+#include "sco/game/signatures.h"
+#include "sco/game/system.h"
 #include "sco/log.h"
 #include "sco/scan.h"
 #include "sco/signatures.h"
@@ -132,6 +134,77 @@ static void TestRegistry() {
     CHECK(sco::Sig("t.dependent") == img.rdata.base + 0x48);
 }
 
+// A fake image with CSystem::Quit's log string and a function laid out like build 4.10.193.11644:
+// the bytes system.quit checks, the string's lea r9 at +0xA3 and +0x176, 0xCC everywhere else.
+// `flip` changes one byte of the function (offset from its start), < 0 for none.
+static uint8_t g_quit[0x600];
+static uint8_t* QuitImage(sco::Image& img, bool withString, int flip) {
+    memset(g_quit, 0xCC, sizeof(g_quit));
+    img = {};
+    img.base = g_quit;
+    img.text = { g_quit + 0x100, 0x300 };
+    img.rdata = { g_quit + 0x400, 0x200 };
+    memset(img.rdata.base, 0, img.rdata.size);
+    const char* fmt = "CSystem::Quit invoked with - cause=$$, reason=$$, exitCode=$$, thread id=$$, main thread id=$$";
+    uint8_t* s = img.rdata.base + 0x20;
+    if (withString) strcpy(reinterpret_cast<char*>(s), fmt);
+    uint8_t* f = img.text.base + 0x20;
+    static const struct { size_t off; std::vector<uint8_t> bytes; } kBytes[] = {
+        { 0x000, { 0x48, 0x89, 0x5C, 0x24, 0x10, 0x48, 0x89, 0x74, 0x24, 0x18, 0x48, 0x89, 0x7C, 0x24, 0x20 } },
+        { 0x00F, { 0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57 } },
+        { 0x018, { 0x48, 0x8D, 0xAC, 0x24, 0x00, 0xFF, 0xFF, 0xFF } },
+        { 0x020, { 0x48, 0x81, 0xEC, 0x00, 0x02, 0x00, 0x00 } },
+        { 0x027, { 0x45, 0x8B, 0xF8, 0x48, 0x8B, 0xF2, 0x4C, 0x8B, 0xF1 } },
+        { 0x035, { 0x41, 0x83, 0xF8, 0x4E } },
+        { 0x0BB, { 0x4C, 0x8D, 0x05, 0, 0, 0, 0 } },
+        { 0x0DD, { 0xE8, 0, 0, 0, 0 } },
+    };
+    for (const auto& b : kBytes) memcpy(f + b.off, b.bytes.data(), b.bytes.size());
+    for (size_t off : { size_t{ 0xA3 }, size_t{ 0x176 } }) {
+        uint8_t* lea = f + off;
+        lea[0] = 0x4C; lea[1] = 0x8D; lea[2] = 0x0D;
+        const int32_t rel = static_cast<int32_t>(s - (lea + 7));
+        memcpy(lea + 3, &rel, 4);
+    }
+    if (flip >= 0) f[flip] = static_cast<uint8_t>(f[flip] ^ 0x01);
+    return f;
+}
+
+static void TestSystemQuit() {
+    using S = sco::SigState;
+    CHECK(sco::game::RegisterGameSignatures());
+    sco::Image img;
+    uint8_t* f = QuitImage(img, true, -1);
+    sco::ResolveAll(img);
+    CHECK(sco::SigLookup("system.quit")->state == S::Ok && sco::Sig("system.quit") == f);
+    sco::game::QuitHook h;
+    CHECK(sco::game::QuitFunction(h) && h.fn == f && h.stolenBytes == 15);
+    CHECK(sco::game::kQuitStolenBytes == 15);
+    CHECK(!sco::Sig("teleport.to_camera"));   // the other game rows don't find this image
+
+    QuitImage(img, true, 0x0B);   // one prologue byte, inside the stolen bytes
+    sco::ResolveAll(img);
+    const sco::SigResult* r = sco::SigLookup("system.quit");
+    CHECK(r->state == S::Failed && strcmp(r->why, "layout changed at +0x000") == 0);
+    sco::game::QuitHook untouched;
+    CHECK(!sco::game::QuitFunction(untouched) && untouched.fn == nullptr && untouched.stolenBytes == 0);
+    g_lines.clear();
+    sco::LogSignatureReport(false);
+    CHECK(Logged("[core] FAILED   system.quit (layout changed at +0x000)"));
+
+    QuitImage(img, true, 0x179);   // the second reference no longer reads the log string
+    sco::ResolveAll(img);
+    r = sco::SigLookup("system.quit");
+    CHECK(r->state == S::Failed && strcmp(r->why, "second Quit log line not at +0x176") == 0);
+
+    QuitImage(img, false, -1);
+    sco::ResolveAll(img);
+    CHECK(sco::SigLookup("system.quit")->state == S::Missing && !sco::Sig("system.quit"));
+    g_lines.clear();
+    sco::LogSignatureReport(false);
+    CHECK(Logged("[core] MISSING  system.quit"));
+}
+
 static void TestStatus() {
     char buf[64] = "junk";
     CHECK(!sco::GetStatus(buf, sizeof(buf)) && buf[0] == 0);
@@ -149,6 +222,7 @@ int main() {
     TestStatus();   // first: checks the "never set" state
     TestScan();
     TestRegistry();
+    TestSystemQuit();
     std::printf("sco-core tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
