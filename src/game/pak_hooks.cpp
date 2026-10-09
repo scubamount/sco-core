@@ -9,12 +9,17 @@
 #include "sco/hook.h"
 #include "sco/log.h"
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <cstdio>
 #include <cstring>
 #include <exception>
 #include <mutex>
 #include <thread>
+#if defined(_MSC_VER)
+#include <excpt.h>    // __try / __except, GetExceptionCode
+#include <malloc.h>   // _resetstkoflw
+#endif
 
 namespace sco::game::pak {
 
@@ -47,6 +52,7 @@ std::atomic<bool>            g_baseMoved{ false };  // another thread moved the 
 vfs::Reader g_reader;
 bool        g_served = false;        // g_reader serves the tracked handle
 std::shared_ptr<const vfs::Table> (*g_loadMounts)() = nullptr;   // Options.mounts of this load
+void (*g_loadOnLoad)(const LoadReport&) = nullptr;                // Options.onLoad of this load
 LoadReport  g_load;                  // the report being built
 
 bool OnLoaderThread() {
@@ -259,6 +265,7 @@ void OpenWindow() {
     g_load = LoadReport();
     g_load.outcome = Outcome::NoDcb;
     g_loadMounts = g_options.mounts;
+    g_loadOnLoad = g_options.onLoad;
     g_tracked.store(0, std::memory_order_release);
     g_loaderThread.store(std::this_thread::get_id(), std::memory_order_release);
     g_inLoad.store(true, std::memory_order_release);
@@ -268,6 +275,47 @@ void OpenWindow() {
         SwapSlots(pak);
         if (!g_swapped) g_load.outcome = Outcome::SwapFailed;
     }
+}
+
+// Options.onLoad, with no lock held. An escaping C++ exception is caught here; on MSVC a
+// structured exception is caught by GuardedOnLoad (no C++ objects in it: C2712).
+struct OnLoadCall {
+    void (*fn)(const LoadReport&);
+    const LoadReport* report;
+};
+
+void OnLoadThunk(void* p) noexcept {
+    const OnLoadCall& c = *static_cast<const OnLoadCall*>(p);
+    try {
+        c.fn(*c.report);
+    } catch (const std::exception& e) {
+        Log("[!] [pak] Options.onLoad threw (%s); the load's result is unchanged", e.what());
+    } catch (...) {
+        Log("[!] [pak] Options.onLoad threw; the load's result is unchanged");
+    }
+}
+
+#if defined(_MSC_VER)
+unsigned long GuardedOnLoad(void* p) {
+    unsigned long code = 0;
+    __try {
+        OnLoadThunk(p);
+    } __except (code = GetExceptionCode(), EXCEPTION_EXECUTE_HANDLER) {
+        if (code == 0xC00000FDul) _resetstkoflw();   // EXCEPTION_STACK_OVERFLOW: restore the guard page
+        return code ? code : 0xFFFFFFFFul;
+    }
+    return 0;
+}
+#endif
+
+void CallOnLoad(void (*fn)(const LoadReport&), const LoadReport& report) {
+    OnLoadCall c{ fn, &report };
+#if defined(_MSC_VER)
+    if (const unsigned long code = GuardedOnLoad(&c))
+        Log("[!] [pak] Options.onLoad crashed (exception 0x%08lX); the load's result is unchanged", code);
+#else
+    OnLoadThunk(&c);
+#endif
 }
 
 // Calls the loader through its detour trampoline, which has no type signature in front of it for
@@ -286,7 +334,11 @@ uintptr_t LoaderHook(uintptr_t loader, uintptr_t path, uintptr_t a3, uintptr_t a
         if (window) OpenWindow();
     }
     if (!window) return orig(loader, path, a3, a4, a5);
+    const auto start = std::chrono::steady_clock::now();
     const uintptr_t ok = orig(loader, path, a3, a4, a5);
+    const auto took = std::chrono::steady_clock::now() - start;
+    LoadReport report;
+    void (*onLoad)(const LoadReport&) = nullptr;
     {
         std::lock_guard<std::mutex> hold(g_mu);
         if (g_swapped) {
@@ -300,9 +352,14 @@ uintptr_t LoaderHook(uintptr_t loader, uintptr_t path, uintptr_t a3, uintptr_t a
         g_reader = vfs::Reader();
         g_served = false;
         g_load.loaderOk = (ok & 0xFF) != 0;
+        g_load.durationMs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(took).count());
         g_last = g_load;
         LogLoad(g_last);
+        onLoad = g_loadOnLoad;
+        g_loadOnLoad = nullptr;
+        if (onLoad) report = g_last;
     }
+    if (onLoad) CallOnLoad(onLoad, report);   // no lock held: it may call LastLoad and the rest
     return ok;
 }
 
