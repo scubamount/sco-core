@@ -15,6 +15,7 @@
 //
 // Flow on the game thread, after game.ready:
 //   auto list = sco::plugins::Discover(root, opts);       // parse + check every folder
+//   sco::plugins::ContainCallouts(&list);                 // guard every plugin callback
 //   for (auto& p : list) if (p.state == State::Ready && p.manifest.kind == Kind::Native)
 //       sco::plugins::LoadNative(p, api, selfFor(p));     // query -> checks -> load, all guarded
 //   index.Build(list);                                    // data packs -> content index
@@ -59,18 +60,19 @@ struct Manifest {
 // <major>.<minor>") for: a line without '=', a duplicate key, a missing required key (id, name,
 // version, api, kind), a value that breaks its rule (see the constants above), entry on a data
 // pack or missing on native/lua, entry not a bare file name, text over kMaxManifestBytes ("too
-// big"), a reserved id (sco, host, menu, game). On failure `out` is left empty.
+// big"), a reserved id (sco, host, menu, game), text starting with a UTF-16 BOM ("plugin.ini must
+// be UTF-8"). On failure `out` is left empty.
 bool ParseManifest(std::string_view text, Manifest& out, std::string& error);
 
 // ---- discovery ------------------------------------------------------------------------------
 
 enum class State : uint32_t {
     Off,        // plugins = off in sc-offline.ini; listed, never parsed past the manifest
-    Disabled,   // data/plugins/<id>/disabled exists (or the menu switched it off)
+    Disabled,   // data/plugins/<id>/disabled exists, of any type (or the menu switched it off)
     Refused,    // a check failed; `reason` says which
     Ready,      // passed discovery; LoadNative (native), LoadScript (lua) or Build (data) takes it
     Loaded,     // native: sco_plugin_load returned OK; lua: the entry script ran; data: indexed
-    Crashed,    // faulted in plugin code; released, never called again, DLL kept mapped
+    Crashed,    // faulted in plugin code, or couldn't be released; never called again, DLL kept mapped
     Unloaded,   // unloaded cleanly; DLL closed
 };
 const char* StateName(State s);                   // "off", "disabled", "refused", ...
@@ -109,7 +111,8 @@ constexpr size_t kMaxPlugins = 128;               // folders beyond this are lis
 // Lists every subfolder of root (sorted by name, byte order) that holds a plugin.ini; folders
 // without one and plain files are skipped. root missing or not a folder: empty list.
 // Symlinked folders are skipped. Each entry ends Off, Disabled, Refused or Ready. Refused
-// reasons, in check order: "too many plugins" (past kMaxPlugins), "plugin.ini: unreadable",
+// reasons, in check order: "too many plugins" (past kMaxPlugins; with opts.enabled false those
+// folders are Off like the rest), "plugin.ini: unreadable",
 // "plugin.ini: <parse error>" (incl. "plugin.ini: too big"), "id 'x' does not match folder 'y'"
 // (so ids are unique), "built for api M.m" (major differs or minor newer than the host),
 // "entry 'x' not found", "missing capability 'x'".
@@ -118,7 +121,7 @@ std::vector<Plugin> Discover(const fs::path& root, const Options& opts);
 
 // ---- native loader --------------------------------------------------------------------------
 
-// How the loader maps a module. PlatformModuleOps(): Windows LoadLibraryExW(path,
+// How the loader maps a module. PlatformModuleOps(): Windows LoadLibraryExW(absolute path,
 // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32) / GetProcAddress /
 // FreeLibrary; elsewhere dlopen(RTLD_NOW | RTLD_LOCAL) / dlsym / dlclose (host tests).
 struct ModuleOps {
@@ -142,25 +145,39 @@ uint32_t  Guarded(void (*thunk)(void* ctx), void* ctx);
 //   3. load(api, self) (guarded)
 // Result: Loaded (true). Refused (module closed, everything self registered released) when the
 // module won't open, an export is missing, info fails a check or load returns non-OK.
-// Crashed (released, module kept mapped, never called again) when query or load faults.
+// Crashed (released, module kept mapped, never called again) when query or load faults, or when
+// load returned non-OK and sco::Release(self) failed ("release failed: TOO_MANY"): the runtime
+// may still hold the plugin's callbacks, so the module is never closed under them.
 // False for anything but Loaded; reason set; one [plugin] log line either way.
 bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& opts,
                 const ModuleOps& ops = PlatformModuleOps());
 
 // Calls into a loaded plugin's code (an event callback, a command, a task, a done callback):
-// the host's sco_api trampolines route every plugin callback through this. Skips the call and
-// returns false unless p is Loaded; runs thunk(ctx) under Guarded(); on a fault calls
-// MarkCrashed(p, where, code) and returns false. Game thread only.
+// the runtime guard ContainCallouts installs routes every callout of a Loaded plugin through
+// this. Skips the call and returns false unless p is Loaded; runs thunk(ctx) under Guarded(); on
+// a fault calls MarkCrashed(p, where, code) and returns false. Game thread only.
 bool CallPlugin(Plugin& p, const char* where, void (*thunk)(void* ctx), void* ctx);
 
-// Marks a loaded native plugin crashed after a fault the host caught in one of its callbacks
-// (tick, a command, a task): sco::Release(self), state Crashed, reason "crashed in <where>
-// (0x<code>)", one log line and a status message. The module stays mapped (its code may still
-// be on a stack). Game thread only. No-op unless state is Loaded.
+// Marks a loaded plugin crashed after a fault caught in one of its callbacks (CallPlugin calls
+// it for tick, a command, a task, a done callback): sco::Release(self), state Crashed, reason
+// "crashed in <where> (0x<code>)", one log line and a status message. The module stays mapped
+// (its code may still be on a stack). Game thread only. No-op unless state is Loaded.
 void MarkCrashed(Plugin& p, const char* where, uint32_t code);
 
-// Unloads one loaded native plugin: unload() (guarded; a fault marks it Crashed instead),
-// sco::Release(self), close the module, state Unloaded. Game thread only. No-op unless Loaded.
+// Installs a runtime callout guard (sco::SetCalloutGuard) that finds the Plugin in *list whose
+// `self` is the callout's owner and runs the call as CallPlugin(p, where, ...), so a fault in any
+// plugin callback marks that plugin Crashed and a faulting command answers SCO_CRASHED. Owners
+// not in the list (host features) and plugins still Ready (calls made synchronously during their
+// load or script run, already inside the load guard) are called straight through; a Crashed,
+// Refused or Unloaded plugin is never called. nullptr uninstalls. Game thread only; *list must
+// outlive the installation and must not be resized while installed.
+void ContainCallouts(std::vector<Plugin>* list);
+
+// Unloads one loaded native plugin: unload() (guarded; a fault marks it Crashed instead, and so
+// does a fault nested inside it, such as a crashing command it invoked), sco::Release(self),
+// close the module, state Unloaded. If Release fails (TooMany, or WrongThread when called off
+// the game thread) the module stays mapped and the plugin is Crashed with reason
+// "release failed: <RESULT>". Game thread only. No-op unless Loaded.
 void UnloadNative(Plugin& p, const ModuleOps& ops = PlatformModuleOps());
 
 // ---- script loader (kind = lua) --------------------------------------------------------------
@@ -185,8 +202,8 @@ constexpr size_t kMaxScriptBytes = 1024 * 1024;   // entry script size
 bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRuntime& runtime);
 
 // Unloads every Loaded plugin, last loaded first: natives as UnloadNative; scripts by
-// sco::Release(self) then runtime.unload(self) (state Unloaded). runtime may be null when no
-// script was loaded.
+// sco::Release(self) then runtime.unload(self) (state Unloaded; if Release fails the script is
+// kept and the plugin Crashed, as for natives). runtime may be null when no script was loaded.
 void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops = PlatformModuleOps(),
                const ScriptRuntime* runtime = nullptr);
 
@@ -212,14 +229,18 @@ struct ContentItem {
 };
 
 constexpr size_t kMaxPackFiles = 4096;            // per pack; more refuses the pack
+constexpr int    kMaxScriptDepth = 16;            // scripts/** folders below scripts/; deeper is ignored
 
 // Content a data pack may carry (anything else in the folder is ignored):
-//   missions/*.cwmission   rules/*.rules   scripts/**.xml (any depth)   lists/*.txt
+//   missions/*.cwmission   rules/*.rules   scripts/**.xml (up to kMaxScriptDepth folders deep)
+//   lists/*.txt
 // Extensions match case-insensitively. Symlinks are skipped (a pack can't point outside itself).
+// A content folder that can't be read to the end refuses the pack ("cannot read scripts: ...").
 class ContentIndex {
 public:
-    // Indexes every Ready data pack in list order and sets it Loaded; a pack over kMaxPackFiles
-    // is set Refused ("too many files") and contributes nothing. Rebuilding replaces the index.
+    // Indexes every Ready or Loaded data pack in list order and sets it Loaded; a pack over
+    // kMaxPackFiles is set Refused ("too many files") and contributes nothing. Rebuilding
+    // replaces the index: it re-reads every pack, including the ones already Loaded.
     // Returns the number of items indexed.
     size_t Build(std::vector<Plugin>& list);
     void   Clear();

@@ -41,30 +41,46 @@ static std::atomic<CapabilityCheck> g_capCheck{ nullptr };
 
 void SetCapabilityCheck(CapabilityCheck check) { g_capCheck.store(check); }
 
-// "<x>.<y>": lowercase letters, digits, '_' and '.'; no empty part.
-static bool ValidName(const char* n) {
+// Segments of lowercase letters, digits and '_' joined by '.'; no empty segment. The capability
+// name rule (caps::Set). `dot` is set when there is more than one segment.
+static bool Segments(const char* n, bool* dot) {
+    *dot = false;
     if (!n || !*n) return false;
-    bool dot = false;
     char prev = '.';
     for (const char* p = n; *p; ++p) {
         const char c = *p;
         if (c == '.') {
             if (prev == '.') return false;
-            dot = true;
+            *dot = true;
         } else if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
             return false;
         }
         prev = c;
     }
-    return dot && prev != '.';
+    return prev != '.';
+}
+
+// "<x>.<y>": lowercase letters, digits, '_' and '.'; no empty part.
+static bool ValidName(const char* n) {
+    bool dot = false;
+    return Segments(n, &dot) && dot;
+}
+
+static bool ValidCapability(const char* n) {
+    bool dot = false;
+    return Segments(n, &dot);
 }
 
 static bool Fits(const char* s, size_t max) { return !s || strnlen(s, max + 1) <= max; }
 
-// nullptr in -> nullptr out; otherwise copies into buf (length already checked).
-static const char* Copy(char* buf, const char* s) {
+// nullptr in -> nullptr out; otherwise copies into buf. Bounded by buf even though the length was
+// checked: a racing writer may lengthen the caller's string after the check.
+template <size_t N>
+static const char* Copy(char (&buf)[N], const char* s) {
     if (!s) return nullptr;
-    memcpy(buf, s, strlen(s) + 1);
+    const size_t len = strnlen(s, N - 1);
+    memcpy(buf, s, len);
+    buf[len] = 0;
     return buf;
 }
 
@@ -93,6 +109,7 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
     if (!cmd.fn || !ValidName(cmd.name) || !Fits(cmd.name, kMaxNameLen)) return Result::BadArg;
     if (!Fits(cmd.title, kMaxTitleLen) || !Fits(cmd.help, kMaxHelpLen) || !Fits(cmd.capability, kMaxCapabilityLen))
         return Result::BadArg;
+    if (cmd.capability && !ValidCapability(cmd.capability)) return Result::BadArg;   // could never be granted
     size_t prefixLen = 0;
     if (prefix) {
         prefixLen = strlen(prefix);
@@ -157,7 +174,13 @@ size_t ListCommands(const Command** out, size_t max) {
     return live;
 }
 
-// Runs on the game thread. reply is NUL-terminated whatever fn writes.
+struct CommandCall { const Command* cmd; const Arg* args; uint32_t nargs; char* reply; uint32_t replySize; Result r; };
+static void CommandThunk(void* p) {
+    CommandCall* k = static_cast<CommandCall*>(p);
+    k->r = k->cmd->fn(k->args, k->nargs, k->cmd->ctx, k->reply, k->replySize);
+}
+
+// Runs on the game thread. reply is NUL-terminated whatever fn writes; empty when fn faulted.
 static Result RunNow(const char* name, const Arg* args, uint32_t nargs, char* reply, uint32_t replySize) {
     reply[0] = 0;
     const Slot* s = FindLive(name);
@@ -173,21 +196,33 @@ static Result RunNow(const char* name, const Arg* args, uint32_t nargs, char* re
         const CapabilityCheck check = g_capCheck.load();
         if (!check || !check(c.capability)) return Result::Unavailable;
     }
-    Result r;
-    {
-        detail::CallScope scope;
-        r = c.fn(args, nargs, c.ctx, reply, replySize);
+    CommandCall call{ &c, args, nargs, reply, replySize, Result::Ok };
+    if (!detail::Callout(s->owner, c.name, CommandThunk, &call)) {
+        reply[0] = 0;
+        return Result::Crashed;
     }
     reply[replySize - 1] = 0;
-    return r;
+    return call.r;
 }
 
-static void RunAndReport(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx, Result* out) {
+struct DoneCall { InvokeDone done; Result r; const char* reply; void* ctx; };
+static void DoneThunk(void* p) {
+    DoneCall* k = static_cast<DoneCall*>(p);
+    k->done(k->r, k->reply, k->ctx);
+}
+
+// owner: the invoking owner, the owner done runs as. If the command released that owner, done is
+// not called (the owner's code may be gone): dropCtx(ctx) runs instead, and also when done
+// faulted before it could free its ctx.
+static void RunAndReport(const char* name, const Arg* args, uint32_t nargs, InvokeDone done, void* ctx,
+                         const void* owner, TaskFn dropCtx, Result* out) {
     char reply[kReplySize];
     const Result r = RunNow(name, args, nargs, reply, sizeof(reply));
     if (done) {
-        detail::CallScope scope;
-        done(r, reply, ctx);
+        DoneCall call{ done, r, reply, ctx };
+        if (detail::Released(owner) || !detail::Callout(owner, "invoke done", DoneThunk, &call)) {
+            if (dropCtx) dropCtx(ctx);
+        }
     }
     if (out) *out = r;
 }
@@ -201,6 +236,7 @@ struct Pending {
     uint32_t nargs;
     InvokeDone done;
     void* ctx;
+    const void* owner;              // the invoking owner
     TaskFn dropCtx;                 // frees ctx when Release drops the call; may be null
 };
 
@@ -218,7 +254,7 @@ static void DropPending(void* p) {
 
 static void RunPending(void* p) {
     Pending* job = static_cast<Pending*>(p);
-    RunAndReport(job->name, job->args, job->nargs, job->done, job->ctx, nullptr);
+    RunAndReport(job->name, job->args, job->nargs, job->done, job->ctx, job->owner, job->dropCtx, nullptr);
     FreePending(job);
 }
 
@@ -231,7 +267,7 @@ Result detail::InvokeOwned(const char* name, const Arg* args, uint32_t nargs, In
     if (!name || nargs > kMaxCommandArgs || (nargs && !args) || detail::Released(owner)) return Result::BadArg;
     if (OnGameThread()) {
         Result r = Result::Ok;
-        RunAndReport(name, args, nargs, done, ctx, &r);
+        RunAndReport(name, args, nargs, done, ctx, owner, dropCtx, &r);
         return r;
     }
     Pending* job = new (std::nothrow) Pending;
@@ -242,6 +278,7 @@ Result detail::InvokeOwned(const char* name, const Arg* args, uint32_t nargs, In
     job->nargs = nargs;
     job->done = done;
     job->ctx = ctx;
+    job->owner = owner;
     job->dropCtx = dropCtx;
     job->strings = nullptr;
     size_t total = 0;

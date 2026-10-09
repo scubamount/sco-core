@@ -43,9 +43,11 @@ static constexpr Rule kRules[] = {
     { ContentKind::List,    "lists",    ".txt",       false },
 };
 
-// Collects one pack's items. False when the pack has more than kMaxPackFiles matching files.
-// Symlinked files and folders are skipped, so nothing outside the pack is indexed.
-static bool Collect(const Plugin& p, std::vector<ContentItem>& out) {
+// Collects one pack's items. Empty on success, else why the pack is refused: more than
+// kMaxPackFiles matching files, or a content folder that couldn't be read to the end (a pack is
+// never loaded with part of its files). Symlinked files and folders are skipped, so nothing
+// outside the pack is indexed.
+static std::string Collect(const Plugin& p, std::vector<ContentItem>& out) {
     for (const Rule& r : kRules) {
         const fs::path base = p.dir / r.folder;
         std::error_code ec;
@@ -63,24 +65,29 @@ static bool Collect(const Plugin& p, std::vector<ContentItem>& out) {
         };
         if (r.recursive) {
             // directory_iterator options default: symlinked folders are not followed.
-            for (fs::recursive_directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec))
-                if (!take(*it)) return false;
+            for (fs::recursive_directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec)) {
+                if (it.depth() >= kMaxScriptDepth) it.disable_recursion_pending();   // seen, not entered
+                if (!take(*it)) return "too many files";
+            }
         } else {
             for (fs::directory_iterator it(base, ec), end; !ec && it != end; it.increment(ec))
-                if (!take(*it)) return false;
+                if (!take(*it)) return "too many files";
         }
+        if (ec) return std::string("cannot read ") + r.folder + ": " + ec.message();
     }
-    return true;
+    return {};
 }
 
 size_t ContentIndex::Build(std::vector<Plugin>& list) {
     items_.clear();
     for (auto& p : list) {
-        if (p.state != State::Ready || p.manifest.kind != Kind::Data) continue;
+        // Loaded too: a rebuild re-reads every pack it indexed before.
+        if ((p.state != State::Ready && p.state != State::Loaded) || p.manifest.kind != Kind::Data) continue;
         std::vector<ContentItem> mine;
-        if (!Collect(p, mine)) {
+        std::string why = Collect(p, mine);
+        if (!why.empty()) {
             p.state = State::Refused;
-            p.reason = "too many files";
+            p.reason = std::move(why);
             sco::Log("[plugin] refused %s: %s", p.manifest.id.c_str(), p.reason.c_str());
             continue;
         }

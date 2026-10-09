@@ -67,7 +67,8 @@ std::vector<Plugin> Discover(const fs::path& root, const Options& opts) {
         Plugin p;
         p.dir = dir;
         p.folder = Utf8(dir.filename());
-        if (list.size() >= kMaxPlugins) { Refuse(p, "too many plugins"); list.push_back(std::move(p)); continue; }
+        // With plugins off every folder is listed Off, past the cap too.
+        if (opts.enabled && list.size() >= kMaxPlugins) { Refuse(p, "too many plugins"); list.push_back(std::move(p)); continue; }
 
         std::string text, error;
         const bool read = ReadCapped(dir / "plugin.ini", text);
@@ -77,7 +78,8 @@ std::vector<Plugin> Discover(const fs::path& root, const Options& opts) {
 
         if (!opts.enabled) {
             p.state = State::Off;
-        } else if (PlainFile(dir / "disabled")) {
+        } else if (std::error_code dec; fs::symlink_status(dir / "disabled", dec).type() != fs::file_type::not_found) {
+            // Any entry named "disabled" (file, folder, link) switches the plugin off.
             p.state = State::Disabled;
             p.reason = "disabled file";
         } else if (!read) {

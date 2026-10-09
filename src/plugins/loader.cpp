@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <system_error>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -24,8 +25,13 @@ namespace sco::plugins {
 #ifdef _WIN32
 static void* OpenModule(const fs::path& file, std::string& error) {
     // Dependencies resolve from the plugin's own folder and System32 only: never the game folder,
-    // the current directory or PATH.
-    HMODULE m = LoadLibraryExW(file.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // the current directory or PATH. LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs a fully qualified
+    // path (a relative one fails with ERROR_INVALID_PARAMETER), and the plugin root may be
+    // relative ("data/plugins").
+    std::error_code ec;
+    fs::path full = fs::absolute(file, ec);
+    if (ec) full = file;
+    HMODULE m = LoadLibraryExW(full.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!m) {
         char buf[48];
         std::snprintf(buf, sizeof(buf), "LoadLibraryExW error %lu", GetLastError());
@@ -75,10 +81,25 @@ static std::string CrashReason(const char* where, uint32_t code) {
     return buf;
 }
 
-static void ReleaseOwner(Plugin& p) {
-    if (!p.self) return;
+// Ok when nothing of p's is left in the runtime: no owner yet, released now, or released already
+// (BadArg: a nested fault's MarkCrashed got there first). Anything else (TooMany, WrongThread)
+// means the runtime may still call p's code.
+static Result ReleaseOwner(Plugin& p) {
+    if (!p.self) return Result::Ok;
     const Result r = sco::Release(p.self);
-    if (r != Result::Ok) sco::Log("[plugin] %s: release returned %s", IdOf(p), sco::ResultName(r));
+    if (r == Result::Ok || r == Result::BadArg) return Result::Ok;
+    sco::Log("[plugin] %s: release returned %s", IdOf(p), sco::ResultName(r));
+    return r;
+}
+
+// Release failed: the runtime may still hold p's callbacks, so its module (or script) must stay
+// alive. Marked Crashed so nothing calls it again (the ContainCallouts guard skips it).
+static bool ReleaseFailed(Plugin& p, Result r) {
+    p.state = State::Crashed;
+    p.reason = std::string("release failed: ") + sco::ResultName(r);
+    sco::Log("[plugin] %s %s; kept loaded and disabled", IdOf(p), p.reason.c_str());
+    sco::Status("plugin %s could not be released and was disabled", IdOf(p));
+    return false;
 }
 
 static void Crash(Plugin& p, const char* where, uint32_t code) {
@@ -164,6 +185,7 @@ bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& 
 
     QueryCall q{ p.exports.query };
     if (const uint32_t code = Guarded(QueryThunk, &q)) { Crash(p, "sco_plugin_query", code); return false; }
+    if (p.state != State::Ready) return false;   // a nested fault already marked it
     if (!q.gotInfo) return refuse("sco_plugin_query returned NULL");
     if (q.size < offsetof(sco_plugin_info, author) + sizeof(void*)) return refuse("sco_plugin_info.size too small");
     if (q.major != opts.hostMajor || q.minor > opts.hostMinor) {
@@ -177,8 +199,9 @@ bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& 
     p.self = self;
     LoadCall l{ p.exports.load, api, self };
     if (const uint32_t code = Guarded(LoadThunk, &l)) { Crash(p, "sco_plugin_load", code); return false; }
+    if (p.state != State::Ready) return false;   // a nested fault already marked it (and released it)
     if (l.result != SCO_OK) {
-        ReleaseOwner(p);
+        if (const Result r = ReleaseOwner(p); r != Result::Ok) return ReleaseFailed(p, r);   // keep it mapped
         return refuse(std::string("sco_plugin_load returned ") + sco::ResultName(static_cast<Result>(l.result)));
     }
 
@@ -201,13 +224,33 @@ bool CallPlugin(Plugin& p, const char* where, void (*thunk)(void*), void* ctx) {
     return true;
 }
 
+static std::vector<Plugin>* g_contained = nullptr;   // game thread only
+
+static bool ContainedCallout(const void* owner, const char* where, TaskFn thunk, void* ctx) {
+    Plugin* p = nullptr;
+    if (g_contained)
+        for (Plugin& q : *g_contained)
+            if (q.self && q.self == owner) { p = &q; break; }
+    if (!p || p->state == State::Ready) {   // a host feature, or a plugin inside its load guard
+        thunk(ctx);
+        return true;
+    }
+    return CallPlugin(*p, where, thunk, ctx);
+}
+
+void ContainCallouts(std::vector<Plugin>* list) {
+    g_contained = list;
+    sco::SetCalloutGuard(list ? ContainedCallout : nullptr);
+}
+
 void UnloadNative(Plugin& p, const ModuleOps& ops) {
     if (p.state != State::Loaded || p.manifest.kind != Kind::Native) return;
     if (const uint32_t code = Guarded(UnloadThunk, reinterpret_cast<void*>(p.exports.unload))) {
         Crash(p, "sco_plugin_unload", code);   // module stays mapped
         return;
     }
-    ReleaseOwner(p);
+    if (p.state != State::Loaded) return;   // a nested fault in unload() marked it Crashed: keep that
+    if (const Result r = ReleaseOwner(p); r != Result::Ok) { ReleaseFailed(p, r); return; }   // never unmap
     if (p.module) ops.close(p.module);
     p.module = nullptr;
     p.exports = {};
@@ -234,7 +277,7 @@ static void ScriptThunk(void* c) {
 bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRuntime& runtime) {
     if (p.state != State::Ready || p.manifest.kind != Kind::Lua) return false;
     auto refuse = [&](std::string why) {
-        ReleaseOwner(p);
+        if (const Result r = ReleaseOwner(p); r != Result::Ok) return ReleaseFailed(p, r);
         p.state = State::Refused;
         p.reason = std::move(why);
         sco::Log("[plugin] refused %s: %s", IdOf(p), p.reason.c_str());
@@ -258,7 +301,11 @@ bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRun
     ScriptCall k;
     k.rt = &runtime; k.api = api; k.self = self; k.chunk = p.manifest.entry.c_str(); k.text = &text;
     if (const uint32_t code = Guarded(ScriptThunk, &k)) { Crash(p, "the script runtime", code); return false; }
+    if (p.state != State::Ready) return false;   // a nested fault already marked it
     if (k.result != SCO_OK) {
+        // Release first, then free the script (as UnloadScript does): until Release the runtime
+        // holds callbacks into the script state.
+        if (const Result r = ReleaseOwner(p); r != Result::Ok) return ReleaseFailed(p, r);   // script kept
         runtime.unload(self);
         return refuse(k.err[0] ? std::string(k.err) : std::string("script load returned ") +
                       sco::ResultName(static_cast<Result>(k.result)));
@@ -272,7 +319,7 @@ bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRun
 }
 
 static void UnloadScript(Plugin& p, const ScriptRuntime* runtime) {
-    ReleaseOwner(p);
+    if (const Result r = ReleaseOwner(p); r != Result::Ok) { ReleaseFailed(p, r); return; }   // script kept
     if (runtime && runtime->unload) runtime->unload(p.self);
     p.state = State::Unloaded;
     sco::Log("[plugin] unloaded %s", IdOf(p));

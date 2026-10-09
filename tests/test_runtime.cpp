@@ -2,6 +2,7 @@
 // Host build, no game needed. The "game thread" is this test's main thread.
 //   tools/test.sh
 #include "sco/runtime.h"
+#include "../src/api/internal.h"   // detail::InvokeOwned
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -305,6 +306,12 @@ static void TestCommands() {
     CHECK(sco::RegisterCommand(&kOwnerH, "hell", cHello) == Result::BadArg);
     CHECK(sco::RegisterCommand(&kOwnerH, "hello.wave", cHello) == Result::BadArg);
     CHECK(sco::RegisterCommand(nullptr, "hello", cHello) == Result::BadArg);   // a prefix needs an owner
+    // A capability must be a capability name (caps::Set's rule), or it could never be granted.
+    for (const char* cap : { "", "Teleport", "a..b", ".a", "a.", "tele port" }) {
+        sco::Command badCap = cHello;
+        badCap.capability = cap;
+        CHECK(sco::RegisterCommand(&kOwnerH, "hello", badCap) == Result::BadArg);
+    }
     CHECK(sco::ListCommands(nullptr, 0) == 0);   // nothing registered by the failures
 
     CHECK(sco::RegisterCommand(nullptr, nullptr, cSpawn) == Result::Ok);
@@ -430,9 +437,10 @@ static void TestCommands() {
     std::thread([&] { r = sco::Post(Record, Tag(1), &kOwnerH); }).join();
     CHECK(r == Result::BadArg && sco::QueuedTasks() == 0);
 
-    // Registering from another thread while the game thread lists. 23 slots are used so far
-    // (TestOverlap's 17 and 6 here; released ones count too: slots never move).
-    constexpr size_t kUsed = 23;
+    // Registering from another thread while the game thread lists. 25 slots are used so far
+    // (TestOverlap's 17, TestCalloutGuard's 1, TestDoneAfterRelease's 1 and 6 here; released ones
+    // count too: slots never move).
+    constexpr size_t kUsed = 25;
     const size_t liveBefore = sco::ListCommands(nullptr, 0);   // spawn.ship, test.long, copy.me
     std::vector<std::string> names;
     for (size_t i = 0; i < sco::kMaxCommands; ++i) names.push_back("bulk.c" + std::to_string(i));
@@ -597,11 +605,127 @@ static void TestOverlap() {
     CHECK(sco::Release(&kConc) == Result::Ok);
 }
 
+// ---- callout guard --------------------------------------------------------------------------
+
+struct GuardSeen { const void* owner; std::string where; };
+static std::vector<GuardSeen> g_guardSeen;
+static bool g_guardFaults = false;   // simulate a fault: report it without running the call
+static bool TestGuard(const void* owner, const char* where, sco::TaskFn thunk, void* ctx) {
+    g_guardSeen.push_back({ owner, where });
+    if (g_guardFaults) return false;
+    thunk(ctx);
+    return true;
+}
+static bool GuardSaw(std::vector<GuardSeen> want) {
+    if (want.size() != g_guardSeen.size()) return false;
+    for (size_t i = 0; i < want.size(); ++i)
+        if (want[i].owner != g_guardSeen[i].owner || want[i].where != g_guardSeen[i].where) return false;
+    return true;
+}
+
+static void TestCalloutGuard() {
+    static char kGuarded, kCaller;
+    Call cmd;
+    const sco::Command c{ "guard.cmd", "Guarded", nullptr, nullptr, nullptr, 0, CmdNop, &cmd };
+    CHECK(sco::RegisterCommand(&kGuarded, "guard", c) == Result::Ok);
+    sco::SetCalloutGuard(TestGuard);
+
+    // Commands run as their owner, done as the invoking owner.
+    g_guardSeen.clear();
+    Done d;
+    CHECK(sco::Invoke("guard.cmd", nullptr, 0, OnDone, &d, &kCaller) == Result::Ok);
+    CHECK(cmd.calls == 1 && d.calls == 1 && d.r == Result::Ok);
+    CHECK(GuardSaw({ { &kGuarded, "guard.cmd" }, { &kCaller, "invoke done" } }));
+
+    // A faulting command answers Crashed; done (no owner here) bypasses the guard and still runs.
+    g_guardSeen.clear();
+    g_guardFaults = true;
+    CHECK(sco::Invoke("guard.cmd", nullptr, 0, OnDone, &d) == Result::Crashed);
+    CHECK(cmd.calls == 1 && d.calls == 2 && d.r == Result::Crashed && d.reply.empty());
+    CHECK(GuardSaw({ { &kGuarded, "guard.cmd" } }));
+
+    // Tasks: owned ones through the guard, nullptr-owner ones straight through.
+    g_guardSeen.clear();
+    g_order.clear();
+    CHECK(sco::Post(Record, Tag(1), &kGuarded) == Result::Ok);
+    CHECK(sco::Post(Record, Tag(2)) == Result::Ok);
+    CHECK(sco::DrainTasks() == 2 && (g_order == std::vector<int>{ 2 }));   // the owned one "faulted"
+    CHECK(GuardSaw({ { &kGuarded, "task" } }));
+    g_guardFaults = false;
+
+    // Events: the event name is `where`.
+    g_guardSeen.clear();
+    Seen owned, host;
+    CHECK(sco::Subscribe(&kGuarded, "guard.ev", OnEvent, &owned) == Result::Ok);
+    CHECK(sco::Subscribe(nullptr, "guard.ev", OnEvent, &host) == Result::Ok);
+    size_t called = 0;
+    CHECK(sco::Dispatch("guard.ev", nullptr, &called) == Result::Ok && called == 2 && owned.calls == 1 && host.calls == 1);
+    CHECK(GuardSaw({ { &kGuarded, "guard.ev" } }));
+
+    // An off-thread invoke: the queued call itself is runtime code (no "task" callout); the
+    // command and done are guarded as before.
+    g_guardSeen.clear();
+    Done q;
+    Result r = Result::Crashed;
+    std::thread([&] { r = sco::Invoke("guard.cmd", nullptr, 0, OnDone, &q, &kCaller); }).join();
+    CHECK(r == Result::Ok && sco::DrainTasks() == 1 && q.calls == 1 && q.r == Result::Ok && cmd.calls == 2);
+    CHECK(GuardSaw({ { &kGuarded, "guard.cmd" }, { &kCaller, "invoke done" } }));
+
+    // Uninstalled: direct calls again.
+    sco::SetCalloutGuard(nullptr);
+    g_guardSeen.clear();
+    CHECK(sco::Invoke("guard.cmd", nullptr, 0, OnDone, &d, &kCaller) == Result::Ok && cmd.calls == 3);
+    CHECK(sco::Dispatch("guard.ev", nullptr, &called) == Result::Ok && owned.calls == 2);
+    CHECK(g_guardSeen.empty());
+
+    CHECK(sco::Unsubscribe(nullptr, "guard.ev", OnEvent) == Result::Ok);
+    CHECK(sco::Release(&kGuarded) == Result::Ok && sco::ListCommands(nullptr, 0) == 0);
+}
+
+// ---- done after the invoking owner is released -----------------------------------------------
+
+static const void* g_releaseMe = nullptr;
+static Result CmdRelease(const sco::Arg*, uint32_t, void*, char* reply, uint32_t size) {
+    CHECK(sco::Release(g_releaseMe) == Result::Ok);
+    snprintf(reply, size, "released");
+    return Result::Ok;
+}
+static int g_drops = 0;
+static void* g_droppedCtx = nullptr;
+static void CountDrop(void* ctx) { ++g_drops; g_droppedCtx = ctx; }
+
+static void TestDoneAfterRelease() {
+    static char kRel, kPlain, kGame, kOff, kKept, kBystander;
+    const sco::Command c{ "rel.caller", "Release", nullptr, nullptr, nullptr, 0, CmdRelease, nullptr };
+    CHECK(sco::RegisterCommand(&kRel, "rel", c) == Result::Ok);
+
+    // The command releases the invoking owner: the result still comes back, done is not called.
+    Done d;
+    g_releaseMe = &kPlain;
+    CHECK(sco::Invoke("rel.caller", nullptr, 0, OnDone, &d, &kPlain) == Result::Ok && d.calls == 0);
+    // With a dropCtx (sco::host's heap DoneRecord), dropCtx runs instead so ctx is freed.
+    g_releaseMe = &kGame;
+    CHECK(sco::detail::InvokeOwned("rel.caller", nullptr, 0, OnDone, &d, &kGame, CountDrop) == Result::Ok);
+    CHECK(d.calls == 0 && g_drops == 1 && g_droppedCtx == &d);
+    // Off the game thread: the queued call runs, releases its owner, done is skipped.
+    g_releaseMe = &kOff;
+    Result r = Result::Crashed;
+    std::thread([&] { r = sco::detail::InvokeOwned("rel.caller", nullptr, 0, OnDone, &d, &kOff, CountDrop); }).join();
+    CHECK(r == Result::Ok && sco::DrainTasks() == 1 && d.calls == 0 && g_drops == 2);
+    // Control: someone else released, the invoking owner is live: done runs, dropCtx doesn't.
+    g_releaseMe = &kBystander;
+    CHECK(sco::detail::InvokeOwned("rel.caller", nullptr, 0, OnDone, &d, &kKept, CountDrop) == Result::Ok);
+    CHECK(d.calls == 1 && d.reply == "released" && g_drops == 2);
+    CHECK(sco::Release(&kRel) == Result::Ok);
+}
+
 int main() {
     TestBeforeGameThread();   // first: checks the "no game thread yet" state
     TestTaskQueue();
     TestEvents();
     TestOverlap();    // before TestCommands, which fills every command slot
+    TestCalloutGuard();
+    TestDoneAfterRelease();
     TestCommands();
     std::printf("sco-core runtime tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

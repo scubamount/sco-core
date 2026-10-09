@@ -16,10 +16,12 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef _WIN32
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 namespace fs = std::filesystem;
@@ -110,6 +112,9 @@ static void TestManifest() {
     CHECK(ParseError(big.c_str()) == "<ok>");
     big += "\n";
     CHECK(ParseError(big.c_str()) == "too big");
+    // UTF-16 (either byte order) is refused with a clear message, not "missing key 'id'".
+    CHECK(!P::ParseManifest(std::string_view("\xFF\xFEi\0d\0=\0a\0", 10), m, err) && err == "plugin.ini must be UTF-8");
+    CHECK(!P::ParseManifest(std::string_view("\xFE\xFF\0i\0d", 6), m, err) && err == "plugin.ini must be UTF-8");
     // A failed parse leaves no half-filled manifest behind.
     CHECK(!Parse("id=keep\nname=", m, err) && m.id.empty());
 }
@@ -203,6 +208,9 @@ static void TestDiscoverLimits() {
     CHECK(list.size() == P::kMaxPlugins + 2);
     CHECK(list[P::kMaxPlugins - 1].state == State::Ready);
     CHECK(list[P::kMaxPlugins].state == State::Refused && list[P::kMaxPlugins].reason == "too many plugins");
+    // With plugins off every folder is listed Off, past the cap too.
+    const auto offList = P::Discover(root, P::Options{});
+    CHECK(offList.size() == P::kMaxPlugins + 2 && offList.back().state == State::Off);
 
     // Oversized plugin.ini and a symlinked folder.
     fs::remove_all(root);
@@ -211,9 +219,14 @@ static void TestDiscoverLimits() {
     std::error_code ec;
     fs::create_directory_symlink(root / "real", root / "link", ec);
     list = P::Discover(root, on);
-    CHECK(list.size() == 2);   // "link" skipped
+    if (ec) std::printf("SKIP: symlinked plugin folder (cannot create symlink: %s)\n", ec.message().c_str());
+    else CHECK(list.size() == 2);   // "link" skipped
     CHECK(Find(list, "big") && Find(list, "big")->reason == "plugin.ini: too big");
     CHECK(Find(list, "real") && Find(list, "real")->state == State::Ready);
+    // Any entry named "disabled" switches a plugin off, a folder too.
+    fs::create_directories(root / "real" / "disabled");
+    list = P::Discover(root, on);
+    CHECK(Find(list, "real") && Find(list, "real")->state == State::Disabled);
     fs::remove_all(root);
 }
 
@@ -254,8 +267,11 @@ static void TestContentIndex() {
     CHECK(fs::exists(item->path) && item->kind == P::ContentKind::List);
     CHECK(std::strcmp(P::ContentKindName(P::ContentKind::Script), "script") == 0);
 
-    // Rebuilding replaces; packs already Loaded aren't indexed twice.
-    CHECK(index.Build(list) == 0);
+    // Rebuilding replaces: the Loaded packs are re-read, not dropped and not indexed twice.
+    const auto missions = Names(index.Items(P::ContentKind::Mission));
+    CHECK(index.Build(list) == 7 && index.Size() == 7);
+    CHECK(Names(index.Items(P::ContentKind::Mission)) == missions);
+    CHECK(Find(list, "pack")->state == State::Loaded && Find(list, "zpack")->state == State::Loaded);
     index.Clear();
     CHECK(index.Size() == 0);
 
@@ -267,13 +283,49 @@ static void TestContentIndex() {
     WriteFile(root / "sly" / "plugin.ini", "id=sly\nname=N\nversion=1\napi=1.0\nkind=data\n");
     WriteFile(root / "outside" / "secret.xml", "<x/>");
     WriteFile(root / "sly" / "scripts" / "own.xml", "<x/>");
-    std::error_code ec;
-    fs::create_directory_symlink(root / "outside", root / "sly" / "scripts" / "linked", ec);
-    fs::create_symlink(root / "outside" / "secret.xml", root / "sly" / "scripts" / "file_link.xml", ec);
+    std::error_code dirLink, fileLink;
+    fs::create_directory_symlink(root / "outside", root / "sly" / "scripts" / "linked", dirLink);
+    fs::create_symlink(root / "outside" / "secret.xml", root / "sly" / "scripts" / "file_link.xml", fileLink);
     list = P::Discover(root, on);
-    CHECK(index.Build(list) == 1);
+    const size_t built = index.Build(list);
     CHECK(Find(list, "big")->state == State::Refused && Find(list, "big")->reason == "too many files");
-    CHECK((Names(index.Items(P::ContentKind::Script)) == std::vector<std::string>{ "sly:scripts/own.xml" }));
+    CHECK(index.Find(P::ContentKind::Script, "scripts/own.xml").size() == 1);
+    if (dirLink) std::printf("SKIP: symlinked pack folder (cannot create symlink: %s)\n", dirLink.message().c_str());
+    if (fileLink) std::printf("SKIP: symlinked pack file (cannot create symlink: %s)\n", fileLink.message().c_str());
+    if (!dirLink && !fileLink) {   // both links skipped: only the pack's own file is indexed
+        CHECK(built == 1);
+        CHECK((Names(index.Items(P::ContentKind::Script)) == std::vector<std::string>{ "sly:scripts/own.xml" }));
+    }
+    fs::remove_all(root);
+
+    // scripts/** goes kMaxScriptDepth folders deep; deeper files are ignored.
+    WriteFile(root / "deep" / "plugin.ini", "id=deep\nname=N\nversion=1\napi=1.0\nkind=data\n");
+    fs::path at = root / "deep" / "scripts";
+    for (int i = 0; i < P::kMaxScriptDepth; ++i) at /= "d";
+    WriteFile(at / "last.xml", "<x/>");
+    WriteFile(at / "d" / "too_deep.xml", "<x/>");
+#ifndef _WIN32
+    // A folder that can't be read refuses the pack instead of loading part of it.
+    const fs::path shut = root / "locked" / "scripts" / "shut";
+    WriteFile(root / "locked" / "plugin.ini", "id=locked\nname=N\nversion=1\napi=1.0\nkind=data\n");
+    WriteFile(root / "locked" / "scripts" / "a.xml", "<x/>");
+    WriteFile(shut / "b.xml", "<x/>");
+    fs::permissions(shut, fs::perms::none);
+#endif
+    list = P::Discover(root, on);
+    index.Build(list);
+    const auto deep = index.FromPlugin("deep");
+    CHECK(deep.size() == 1 && deep[0]->name.ends_with("/d/last.xml"));
+#ifndef _WIN32
+    if (geteuid() == 0) {
+        std::printf("SKIP: unreadable pack folder (running as root reads it anyway)\n");
+    } else {
+        const P::Plugin* locked = Find(list, "locked");
+        CHECK(locked && locked->state == State::Refused && locked->reason.rfind("cannot read scripts: ", 0) == 0);
+        CHECK(index.FromPlugin("locked").empty());
+    }
+    fs::permissions(shut, fs::perms::owner_all);
+#endif
     fs::remove_all(root);
 }
 
@@ -310,36 +362,20 @@ static uint32_t SignalGuard(void (*thunk)(void*), void* ctx) {
 }
 #endif
 
-// A tiny sco_api over the runtime, standing in for the host table (lane A's sco::host). Each
-// plugin callback goes through CallPlugin, the way the real host table must.
-struct Sub { P::Plugin* plugin; sco_event_fn fn; void* ctx; };
+// A tiny sco_api over the runtime, standing in for the host table (sco::host). Callbacks go to
+// the runtime as they are, like the real table; ContainCallouts guards them there.
 static std::vector<P::Plugin>* g_list;
-static std::vector<Sub*> g_subs;
 
 static P::Plugin* PluginOf(sco_plugin* self) {
     for (auto& p : *g_list) if (p.self == self) return &p;
     return nullptr;
 }
 
-struct EventCall { Sub* sub; const char* event; const void* data; };
-static void EventThunk(void* c) {
-    auto* e = static_cast<EventCall*>(c);
-    e->sub->fn(e->event, e->data, e->sub->ctx);
-}
-static void Trampoline(const char* event, const void* data, void* ctx) {
-    auto* sub = static_cast<Sub*>(ctx);
-    EventCall call{ sub, event, data };
-    P::CallPlugin(*sub->plugin, event, EventThunk, &call);
-}
-
 static const char* ApiHostVersion() { return "test-host 0.0"; }
 static int ApiHas(const char*) { return 0; }
 static sco_result ApiSubscribe(sco_plugin* self, const char* event, sco_event_fn fn, void* ctx) {
-    P::Plugin* p = PluginOf(self);
-    if (!p || !fn) return SCO_BAD_ARG;
-    auto* sub = new Sub{ p, fn, ctx };
-    g_subs.push_back(sub);
-    return static_cast<sco_result>(sco::Subscribe(self, event, Trampoline, sub));
+    if (!PluginOf(self)) return SCO_BAD_ARG;
+    return static_cast<sco_result>(sco::Subscribe(self, event, fn, ctx));
 }
 static void ApiLog(sco_plugin* self, sco_log_level, const char* message) {
     const P::Plugin* p = PluginOf(self);
@@ -382,6 +418,15 @@ static char g_owners[64];
 static int g_nextOwner = 0;
 static sco_plugin* NewOwner() { return reinterpret_cast<sco_plugin*>(&g_owners[g_nextOwner++]); }
 
+// A call guard that first marks g_victim crashed, the way a fault in a command the plugin invoked
+// from inside the guarded call would (CallPlugin -> MarkCrashed), then runs the call.
+static P::Plugin* g_victim;
+static uint32_t NestedCrashGuard(void (*thunk)(void*), void* ctx) {
+    P::MarkCrashed(*g_victim, "nested", 0xC0000005u);
+    thunk(ctx);
+    return 0;
+}
+
 static void TestNative() {
     const fs::path root = g_out / "plugins";
     if (!fs::is_directory(root)) { std::printf("FAIL: %s missing (tools/test.sh builds it)\n", root.string().c_str()); ++g_fail; return; }
@@ -392,6 +437,7 @@ static void TestNative() {
     on.enabled = true;
     auto list = P::Discover(root, on);
     g_list = &list;
+    P::ContainCallouts(&list);   // the real crash containment path: runtime -> CallPlugin
     const sco_api api = MakeApi();
     auto get = [&](const char* id) -> P::Plugin& { return *const_cast<P::Plugin*>(Find(list, id)); };
     CHECK(list.size() == 13);   // m0..m11 + text
@@ -498,9 +544,37 @@ static void TestNative() {
     P::UnloadNative(ok, kRecOps);                                      // no-op when not Loaded
     CHECK(ok.state == State::Unloaded);
 
+    // Fresh entries for the same modules (each list entry loads once).
+    auto again = P::Discover(root, on);
+    g_list = &again;
+    P::ContainCallouts(&again);
+    auto get2 = [&](const char* id) -> P::Plugin& { return *const_cast<P::Plugin*>(Find(again, id)); };
+
+    // A failed Release (UnloadNative off the game thread: WRONG_THREAD) keeps the module mapped
+    // and marks the plugin Crashed; its subscription is still there but never called.
+    P::Plugin& stuck = get2("m0");
+    CHECK(P::LoadNative(stuck, &api, NewOwner(), on, kRecOps));
+    const int ticks0 = Ticks(stuck);
+    g_closed.clear();
+    std::thread([&] { P::UnloadNative(stuck, kRecOps); }).join();
+    CHECK(stuck.state == State::Crashed && stuck.reason == "release failed: WRONG_THREAD");
+    CHECK(stuck.module != nullptr && g_closed.empty());
+    CHECK(sco::SubscriptionCount() == subs0 + 1);
+    CHECK(sco::GameThreadTick(5) == sco::Result::Ok && Ticks(stuck) == ticks0);
+    CHECK(sco::Release(stuck.self) == sco::Result::Ok && sco::SubscriptionCount() == subs0);
+
+    // A fault nested inside unload() is kept, not overwritten as a clean unload.
+    P::Plugin& nested = get2("m11");
+    CHECK(P::LoadNative(nested, &api, NewOwner(), on, kRecOps));
+    g_victim = &nested;
+    P::SetCallGuard(NestedCrashGuard);
+    P::UnloadNative(nested, kRecOps);
+    CHECK(nested.state == State::Crashed && nested.reason == "crashed in nested (0xC0000005)");
+    CHECK(nested.module != nullptr && g_closed.empty());
+    CHECK(sco::SubscriptionCount() == subs0);
+
+    P::ContainCallouts(nullptr);
     g_list = nullptr;
-    for (Sub* s : g_subs) delete s;
-    g_subs.clear();
     P::SetCallGuard(nullptr);
 }
 
