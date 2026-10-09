@@ -109,10 +109,15 @@ Result InvokeRaw(const void* caller, const char* name, const void* in, uint32_t 
 // ---- task queue -----------------------------------------------------------------------------
 
 using TaskFn = void (*)(void* ctx);
-constexpr size_t kMaxQueuedTasks = 256;
+// The queue is a fixed ring of kMaxQueuedTasks (posting into it never allocates) backed by an
+// overflow list that takes posts while the ring is full. kMaxQueuedTasksHard caps the total
+// waiting, so a plugin posting in a loop can't eat the process's memory.
+constexpr size_t kMaxQueuedTasks = 256;          // ring size
+constexpr size_t kMaxQueuedTasksHard = 65536;    // ring + overflow
 
-// Queues fn(ctx) for the game thread. Tasks run in the order they were posted.
-// TooMany when kMaxQueuedTasks are already waiting; BadArg when fn is null or owner released.
+// Queues fn(ctx) for the game thread. Tasks run in the order they were posted, across the ring
+// and the overflow. Any thread, at any time. TooMany when kMaxQueuedTasksHard tasks are already
+// waiting or memory runs out (nothing queued); BadArg when fn is null or owner released.
 Result Post(TaskFn fn, void* ctx, const void* owner = nullptr);
 
 // Runs every task that was queued when the call started; tasks posted while draining wait for
