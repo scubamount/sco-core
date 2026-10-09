@@ -346,4 +346,37 @@ inline Builder Fixture(uint32_t recordSize = 36) {
     return b;
 }
 
+// Fixture() with readable values in Ship and Part (the plain one leaves filler bytes there): labels,
+// the Kind enum, speeds, null owners, empty arrays, ShipA's engine Part[1] and ShipB's Part[0]
+// (PartX's root), Part weights 1-4 and names p0-p3. For tests that apply overrides through
+// pointers and arrays (test_datacore_service, test_lua).
+inline Builder ValuedFixture(uint32_t recordSize = 36) {
+    Builder b = Fixture(recordSize);
+    auto le = [](uint64_t v, int n) {
+        std::vector<uint8_t> x(static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i) x[static_cast<size_t>(i)] = static_cast<uint8_t>(v >> (8 * i));
+        return x;
+    };
+    auto f32 = [&](float v) { uint32_t u; std::memcpy(&u, &v, 4); return le(u, 4); };
+    auto pair = [&](uint32_t a, uint32_t c) { std::vector<uint8_t> x = le(a, 4), y = le(c, 4); x.insert(x.end(), y.begin(), y.end()); return x; };
+    auto fill = [&](uint32_t st, uint32_t i, std::string f, std::vector<uint8_t> v) { b.fills.push_back({ st, i, std::move(f), std::move(v) }); };
+    for (uint32_t s = 0; s < 2; ++s) {
+        fill(kShip, s, "label", le(b.Value(s ? "world" : "hello"), 4));
+        fill(kShip, s, "kind", le(b.Value("Large"), 4));
+        fill(kShip, s, "title", le(b.Value("@t"), 4));
+        fill(kShip, s, "speed", f32(100.0f + static_cast<float>(s)));
+        fill(kShip, s, "owner", pair(0xFFFFFFFFu, 0xFFFFFFFFu));
+        fill(kShip, s, "counts", pair(0, 0));
+        fill(kShip, s, "parts", pair(0, 0));
+        fill(kShip, s, "path", pair(0, 0));
+    }
+    fill(kShip, 0, "engine", pair(kPart, 1));
+    fill(kShip, 1, "engine", pair(kPart, 0));
+    for (uint32_t p = 0; p < 4; ++p) {
+        fill(kPart, p, "weight", f32(1.0f + static_cast<float>(p)));
+        fill(kPart, p, "partName", le(b.Value("p" + std::to_string(p)), 4));
+    }
+    return b;
+}
+
 }  // namespace dcb
