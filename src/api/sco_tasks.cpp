@@ -2,7 +2,10 @@
 #include "sco/runtime.h"
 #include "internal.h"
 #include <atomic>
+#include <iterator>
+#include <list>
 #include <mutex>
+#include <new>
 #include <thread>
 #include <vector>
 
@@ -63,22 +66,50 @@ bool detail::Released(const void* owner) {
     return false;
 }
 
-// Fixed ring: posting never allocates, so it is safe from any thread at any time.
+// Two stages, both under g_queueLock, so posting is safe from any thread at any time:
+//   - a fixed ring of kMaxQueuedTasks: the fast path, posting never allocates;
+//   - an overflow list, used only while the ring is full or the list is non-empty (so the ring
+//     always holds older tasks than the list and FIFO holds across both). Posting there allocates
+//     one node; out of memory, or kMaxQueuedTasksHard tasks waiting in all, is TooMany.
+// A list rather than a deque: Release splices an owner's nodes out without allocating, so
+// dropping tasks can't fail. Each drain moves what fits back into the ring, so once the burst is
+// over posting is allocation-free again.
 // guarded: a task from Post(), run through the callout guard; runtime-internal tasks aren't.
 struct Task { TaskFn fn; TaskFn drop; void* ctx; const void* owner; uint64_t seq; bool guarded; };
-static std::mutex g_queueLock;
-static Task       g_ring[kMaxQueuedTasks];
-static size_t     g_head = 0, g_count = 0;
-static uint64_t   g_nextSeq = 0;   // post order; a drain runs only tasks posted before it began
+static std::mutex      g_queueLock;
+static Task            g_ring[kMaxQueuedTasks];
+static size_t          g_head = 0, g_count = 0;
+static std::list<Task> g_overflow;   // posted after everything in the ring
+static uint64_t        g_nextSeq = 0;   // post order; a drain runs only tasks posted before it began
 
 static Result Push(TaskFn fn, TaskFn drop, void* ctx, const void* owner, bool guarded) {
     if (!fn) return Result::BadArg;
     std::lock_guard<std::mutex> hold(g_queueLock);
     if (detail::Released(owner)) return Result::BadArg;
-    if (g_count == kMaxQueuedTasks) return Result::TooMany;
-    g_ring[(g_head + g_count) % kMaxQueuedTasks] = { fn, drop, ctx, owner, g_nextSeq++, guarded };
-    ++g_count;
+    const Task t{ fn, drop, ctx, owner, g_nextSeq, guarded };
+    if (g_count < kMaxQueuedTasks && g_overflow.empty()) {
+        g_ring[(g_head + g_count) % kMaxQueuedTasks] = t;
+        ++g_count;
+    } else {
+        if (g_count + g_overflow.size() >= kMaxQueuedTasksHard) return Result::TooMany;
+        try {
+            g_overflow.push_back(t);
+        } catch (const std::bad_alloc&) {   // nothing queued
+            return Result::TooMany;
+        }
+    }
+    ++g_nextSeq;
     return Result::Ok;
+}
+
+// Refills the ring from the front of the overflow list (keeps order: the ring is older).
+// Caller holds g_queueLock.
+static void Refill() {
+    while (!g_overflow.empty() && g_count < kMaxQueuedTasks) {
+        g_ring[(g_head + g_count) % kMaxQueuedTasks] = g_overflow.front();
+        ++g_count;
+        g_overflow.pop_front();
+    }
 }
 
 Result detail::PostOwned(TaskFn fn, TaskFn drop, void* ctx, const void* owner) {
@@ -89,7 +120,7 @@ Result Post(TaskFn fn, void* ctx, const void* owner) { return Push(fn, nullptr, 
 
 size_t QueuedTasks() {
     std::lock_guard<std::mutex> hold(g_queueLock);
-    return g_count;
+    return g_count + g_overflow.size();
 }
 
 size_t DrainTasks() {
@@ -107,8 +138,13 @@ size_t DrainTasks() {
         Task t;
         {
             std::lock_guard<std::mutex> hold(g_queueLock);
-            // Empty, or only newer tasks left (a task may Release() others mid-drain).
-            if (g_count == 0 || g_ring[g_head].seq >= end) break;
+            // Empty, or only newer tasks left (a task may Release() others mid-drain). The ring
+            // is older than the overflow list; when the ring empties, refill it from the list.
+            if (g_count == 0) Refill();
+            if (g_count == 0 || g_ring[g_head].seq >= end) {
+                Refill();   // what's left waits in the ring when it fits
+                break;
+            }
             t = g_ring[g_head];
             g_head = (g_head + 1) % kMaxQueuedTasks;
             --g_count;
@@ -126,8 +162,10 @@ size_t DrainTasks() {
 }
 
 long detail::ReleaseTasks(const void* owner) {
+    // Never allocates: ring entries are copied to a fixed array, overflow nodes are spliced.
     Task dropped[kMaxQueuedTasks];
     size_t nDropped = 0;
+    std::list<Task> droppedOverflow;
     {
         std::lock_guard<std::mutex> hold(g_queueLock);
         size_t kept = 0;
@@ -137,10 +175,19 @@ long detail::ReleaseTasks(const void* owner) {
             else g_ring[(g_head + kept++) % kMaxQueuedTasks] = t;   // keeps order
         }
         g_count = kept;
+        for (auto it = g_overflow.begin(); it != g_overflow.end();) {
+            const auto next = std::next(it);
+            if (it->owner == owner) droppedOverflow.splice(droppedOverflow.end(), g_overflow, it);
+            it = next;
+        }
+        Refill();
     }
+    // Outside the lock, in posting order: a drop callback may Post().
     for (size_t i = 0; i < nDropped; ++i)
         if (dropped[i].drop) dropped[i].drop(dropped[i].ctx);
-    return static_cast<long>(nDropped);
+    for (const Task& t : droppedOverflow)
+        if (t.drop) t.drop(t.ctx);
+    return static_cast<long>(nDropped + droppedOverflow.size());
 }
 
 Result Release(const void* owner, size_t* removed) {

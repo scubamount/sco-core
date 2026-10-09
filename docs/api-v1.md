@@ -161,7 +161,7 @@ typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
 | `major`, `minor` | | The host's API version |
 | `host_version()` | Any | The host's name and version, `"sc-offline 0.8.0"`. Static string |
 | `has(capability)` | Any | 1 if the capability is available on this game build, else 0 (unknown names too). See [Capabilities](#capabilities) |
-| `run_on_game_thread(self, fn, ctx)` | Any | Queues `fn(ctx)` to run on the game thread at the next tick, in the order queued. The queue holds 256 tasks; beyond that, `SCO_TOO_MANY` |
+| `run_on_game_thread(self, fn, ctx)` | Any | Queues `fn(ctx)` to run on the game thread at the next tick, in the order queued. Posting never fails for lack of room in a normal burst: the first 256 waiting tasks go into a fixed ring (no allocation), the rest into an overflow that keeps the same order. `SCO_TOO_MANY` only when 65,536 tasks are already waiting (a cap so a plugin posting in a loop can't use up the game's memory) or memory runs out; nothing is queued then |
 | `subscribe(self, event, fn, ctx)` | Any | Calls `fn(event, data, ctx)` for each dispatch of `event`. Applies from the next dispatch |
 | `unsubscribe(self, event, fn)` | Any | Removes the subscription for that `event` and `fn`; `SCO_NOT_FOUND` if there is none. Applies at once: a dispatch in progress won't call `fn` again. See [Freeing ctx](#freeing-ctx) |
 | `status(self, message)` | Any | Shows `hello: message` on the status line |
@@ -270,6 +270,7 @@ if (api->size > offsetof(sco_api, query_service) &&
 - **Lifetime:** the host keeps the name, version and pointer, never the table's contents, and never calls into it. When the provider unloads or crashes its services are withdrawn. A table from a built-in plugin stays valid for as long as any other plugin is loaded (built-ins unload last); a table from another plugin may go away when that plugin does, so query it when you need it rather than keeping it across ticks.
 - **Faults:** a call into another plugin's table runs under the caller's crash guard, so a fault in the provider's code marks the caller crashed.
 - Threads: both functions work from any thread; what thread the table's own functions may be called from is part of the provider's contract.
+- **Entity ids, never pointers.** A service that deals with game objects takes and returns entity and zone ids: opaque `uint64_t` values, as the game's own are. It resolves the id on every call, on the game thread, and answers `SCO_NOT_FOUND` (or `SCO_UNAVAILABLE`) when the entity has streamed out. It never hands out a pointer into the game: Star Citizen streams objects in and out (object container streaming), so a pointer a caller stores dangles once its object goes, and the next call through it crashes the caller, not the provider. Treat an id as a value to pass back, not a number to decode: the player's id in the sc-offline spawn test is `0xCAE11A7400000000`, a tagged value, not a small index. See [Framework § Lessons](framework.md#6-services-hand-out-ids-never-pointers).
 
 ## Raw handlers (1.1)
 

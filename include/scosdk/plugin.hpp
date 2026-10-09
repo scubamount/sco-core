@@ -304,7 +304,7 @@ public:
 
     // Any thread. Runs task on the game thread at the next tick. The SDK owns the task and frees
     // it after it runs. A task still queued when the plugin unloads is dropped, never run: don't
-    // rely on one to save state. SCO_TOO_MANY when the host's queue (256) is full.
+    // rely on one to save state. SCO_TOO_MANY when the host's queue is at its cap (65536) or out of memory.
     sco_result RunOnGameThread(std::function<void()> task) noexcept;
 
     // Any thread. Calls fn(data) for each dispatch of event, from the next dispatch on, until the
