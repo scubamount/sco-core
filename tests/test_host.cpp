@@ -226,10 +226,10 @@ static void TestTable() {
     sco_service_def theirs = def;
     theirs.name = "teleport.spatial";
     CHECK(api->provide_service(hello, &theirs) == SCO_BAD_ARG);   // not hello's prefix
-    sco_service_def small = def;
-    small.name = "hello.small";
-    small.size = 8;
-    CHECK(api->provide_service(hello, &small) == SCO_BAD_ARG);
+    sco_service_def shortDef = def;
+    shortDef.name = "hello.short";
+    shortDef.size = 8;
+    CHECK(api->provide_service(hello, &shortDef) == SCO_BAD_ARG);
     CHECK(api->provide_service(hello, nullptr) == SCO_BAD_ARG && api->provide_service(forged, &def) == SCO_BAD_ARG);
     tab = &kTable;
     CHECK(api->query_service(forged, "hello.greeter", 0x00010000, &tab) == SCO_BAD_ARG && tab == nullptr);
