@@ -372,6 +372,7 @@ bool Schema::Parse(std::span<const uint8_t> file) {
 
     // Rule 5: names land on a string start in the name pool (offset 0 or after a NUL), and both pools
     // end in a NUL so every string ends inside its pool. Record file names are value-pool strings.
+    // Record +8 (records over 32 bytes) is a name-pool string too: a team tag (research R1).
     const uint64_t nlen = h.nameStringLength, vlen = h.valueStringLength;
     if (nlen != 0 && p[namePool_ + nlen - 1] != 0)
         return Refuse(Check::NameOffset, "layout: the name pool doesn't end in a NUL");
@@ -396,6 +397,10 @@ bool Schema::Parse(std::span<const uint8_t> file) {
             return Refuse(Check::NameOffset,
                           Fmt("layout: record %u's file name offset %u isn't a string start in the value-string pool",
                               i, records[i].fileName));
+        if (recordSize > 32 && !start(namePool_, nlen, records[i].unknown))
+            return Refuse(Check::NameOffset,
+                          Fmt("layout: record %u's +8 offset %u isn't a string start in the name pool", i,
+                              records[i].unknown));
     }
 
     for (uint32_t i = 0; i < structs.size(); ++i) structByName_.emplace(Name(structs[i].name), i);

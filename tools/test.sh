@@ -107,7 +107,7 @@ STORAGE=("$ROOT/tests/test_storage.cpp" "$ROOT/src/storage/storage.cpp" "${HOST[
 
 # The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
 # corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb
-# over the fixtures test_datacore writes (CMake: CTest dcb_tool).
+# over the fixtures test_datacore writes, info, records and patch (CMake: CTest dcb_tool).
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore.cpp" "$ROOT/src/datacore/datacore.cpp" \
   -o "$OUT/test_datacore"
 "$OUT/test_datacore" "$OUT"
@@ -115,7 +115,8 @@ STORAGE=("$ROOT/tests/test_storage.cpp" "$ROOT/src/storage/storage.cpp" "${HOST[
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore_patch.cpp" "$ROOT/src/datacore/datacore.cpp" \
   "$ROOT/src/datacore/patch.cpp" "${VFS[@]:1}" -o "$OUT/test_datacore_patch"
 "$OUT/test_datacore_patch"
-"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tools/sco-dcb.cpp" "$ROOT/src/datacore/datacore.cpp" -o "$OUT/sco-dcb"
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tools/sco-dcb.cpp" "$ROOT/src/datacore/datacore.cpp" \
+  "$ROOT/src/datacore/patch.cpp" "${VFS[@]:1}" -o "$OUT/sco-dcb"
 "$OUT/sco-dcb" info "$OUT/datacore_36.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: valid fixture not OK"; exit 1; }
 "$OUT/sco-dcb" info "$OUT/datacore_32.dcb" | grep -q '^record size: 32 bytes' || { echo "sco-dcb: 32-byte records not derived"; exit 1; }
 set +e
@@ -123,8 +124,19 @@ set +e
 "$OUT/sco-dcb" info "$OUT/datacore_missing.dcb" 2> /dev/null; missing=$?
 set -e
 [ $bad -eq 1 ] && [ $missing -eq 2 ] || { echo "sco-dcb: exit codes $bad/$missing, expected 1/2"; exit 1; }
-"$OUT/sco-dcb" records "$OUT/datacore_36.dcb" | grep -q "$(printf '\tShipA\tShip\t0x00001111\t')" || { echo "sco-dcb: records"; exit 1; }
-echo "sco-dcb: info and records over the fixtures, exit codes 0/1/2"
+"$OUT/sco-dcb" records "$OUT/datacore_36.dcb" | grep -q "$(printf '\tShipA\tShip\t0x[0-9a-f]*\t0\t139\tlibs/foundry/records/test/ships.xml\tShips$')" || { echo "sco-dcb: records"; exit 1; }
+# patch: a float override, AddRecord and a reference to the new record; the output re-parses and lists it.
+"$OUT/sco-dcb" patch "$OUT/datacore_36.dcb" "$OUT/datacore_36_patched.dcb" --seed 1 set ShipA speed 2.5 \
+  add-record Ship ShipC ShipA - set ShipB maker record:ShipC | grep -q '^Emit: OK' || { echo "sco-dcb: patch"; exit 1; }
+"$OUT/sco-dcb" info "$OUT/datacore_36_patched.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: patched file not OK"; exit 1; }
+"$OUT/sco-dcb" records "$OUT/datacore_36_patched.dcb" | grep -q "$(printf '^5\t.*\tShipC\tShip\t0x[0-9a-f]*\t2\t139\tlibs/foundry/records/sco/sco-dcb/ShipC.xml\tShips$')" \
+  || { echo "sco-dcb: added record not listed"; exit 1; }
+set +e
+"$OUT/sco-dcb" patch "$OUT/datacore_36.dcb" "$OUT/datacore_36_refused.dcb" set ShipA speedX 1 | grep -q 'REFUSED (field not found)'; refused=$?
+"$OUT/sco-dcb" patch "$OUT/datacore_36.dcb" "$OUT/datacore_36_refused.dcb" set ShipA speedX 1 > /dev/null; refusedRc=$?
+set -e
+[ $refused -eq 0 ] && [ $refusedRc -eq 1 ] && [ ! -e "$OUT/datacore_36_refused.dcb" ] || { echo "sco-dcb: patch refusal"; exit 1; }
+echo "sco-dcb: info, records and patch over the fixtures, exit codes 0/1/2"
 
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load
 # real shared libraries built from tests/fixtures/plugins/native/fake_plugin.c, one per behavior
