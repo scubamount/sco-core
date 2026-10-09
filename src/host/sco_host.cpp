@@ -274,4 +274,25 @@ sco_plugin* NewPlugin(const char* id) {
 
 const char* PluginId(const sco_plugin* p) { return Valid(p) ? p->id : nullptr; }
 
+// ---- host-owned services ----------------------------------------------------------------------
+
+namespace {
+char g_hostOwner = 0;   // its address is the owner token (not const: never folded); never released
+}  // namespace
+
+const void* HostOwner() { return &g_hostOwner; }
+
+Result ProvideHostService(const char* name, uint32_t version, const void* table) {
+    // "sco.<name>": the runtime's prefix rule also accepts the bare prefix, a host service may not.
+    if (!name || strncmp(name, "sco.", 4) != 0) return Result::BadArg;
+    return ProvideService(HostOwner(), kHostId, name, version, table);
+}
+
+Result WithdrawHostService(const char* name) { return ReleaseService(HostOwner(), name); }
+
+size_t WithdrawHostServices() {
+    const long n = detail::ReleaseServices(HostOwner());
+    return n > 0 ? static_cast<size_t>(n) : 0;
+}
+
 }  // namespace sco::host
