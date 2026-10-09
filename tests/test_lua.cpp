@@ -285,6 +285,52 @@ static void TestLimits() {
     CHECK(!sco_lua_alive(l.p->self) && Logged("[hog] error: script disabled: out of memory"));
     Unload(l);
 
+    // A non-string error object raised with the heap at the cap: turning it into text must not
+    // allocate outside protected mode ("42" would need a new string, the allocation fails with no
+    // handler, and Lua aborts the process). fill() pins memory to the last few bytes, inside
+    // pcall, then the callback raises 42.
+    static const char* const kFill = R"(
+        local slots, n = {}, 0
+        for i = 1, 1024 do slots[i] = false end
+        local big = "x"
+        for _ = 1, 20 do big = big .. big end
+        local bytes = {}
+        for i = 128, 191 do bytes[#bytes + 1] = string.char(i) end
+        local size, a, b, filled = 0, 1, 0, false
+        local function long() n = n + 1; slots[n] = big:sub(1, size) end
+        local function short()
+          b = b + 1; if b > #bytes then a, b = a + 1, 1 end
+          n = n + 1; slots[n] = bytes[a] .. bytes[b]
+        end
+        local function fill()
+          if filled then return end
+          filled = true
+          for _, s in ipairs{ 1048576, 65536, 4096, 256, 48 } do
+            size = s
+            while pcall(long) do end
+          end
+          while pcall(short) do end
+        end
+    )";
+    Write("full", std::string(kFill) +
+          "sco.register_command{ name = 'full.boom', title = 'Boom', fn = function() fill() error(42) end }\n");
+    l = Load("full");
+    CHECK(l.p && l.p->state == State::Loaded);
+    const Reply full = Invoke(g_caller, "full.boom");
+    CHECK(full.r == SCO_BAD_ARG && full.text == "42");
+    if (full.text != "42") std::printf("  full.boom -> %d %s\n", full.r, full.text.c_str());
+    CHECK(Logged("[full] error: full.boom: 42"));
+    Invoke(g_caller, "full.boom");
+    Invoke(g_caller, "full.boom");
+    CHECK(!sco_lua_alive(l.p->self));                                        // 3 errors (or out of memory)
+    Unload(l);
+    Write("fullevt", std::string(kFill) + "sco.subscribe('game.ready', function() fill() error(42) end)\n");
+    l = Load("fullevt");
+    CHECK(l.p && l.p->state == State::Loaded);
+    sco::Dispatch("game.ready", nullptr);
+    CHECK(Logged("[fullevt] error: event game.ready: 42"));
+    Unload(l);
+
     // Three errors in callbacks disable the script; the first two only log.
     Write("flaky", R"(
         sco.register_command{ name = "flaky.boom", title = "Boom", fn = function() error("boom") end }

@@ -69,6 +69,19 @@ static void Copy(char* dst, size_t n, const char* src) {
     snprintf(dst, n, "%s", src ? src : "");
 }
 
+/* The error object on top of the stack as text, without allocating: outside protected mode a
+ * failed allocation (lua_tostring converting a number at the memory cap) would abort. */
+static const char* ErrorText(lua_State* L, char* buf, size_t n) {
+    switch (lua_type(L, -1)) {
+        case LUA_TSTRING: return lua_tostring(L, -1);   /* already a string: no conversion */
+        case LUA_TNUMBER:
+            if (lua_isinteger(L, -1)) snprintf(buf, n, "%lld", (long long)lua_tointeger(L, -1));
+            else snprintf(buf, n, "%.14g", (double)lua_tonumber(L, -1));
+            return buf;
+        default: return "error object is not a string";
+    }
+}
+
 static const char* ResultName(sco_result r) {
     switch (r) {
         case SCO_OK:           return "ok";
@@ -165,9 +178,10 @@ static void Disable(Script* s, const char* why) {
 /* Logs the error on top of the stack and pops it; disables the script on a budget overrun, a
  * memory error or the MAX_ERRORS-th error. */
 static void Failed(Script* s, const char* where, int st) {
-    const char* msg = lua_tostring(s->L, -1);
+    char num[48];
+    const char* msg = ErrorText(s->L, num, sizeof(num));
     char line[320];
-    snprintf(line, sizeof(line), "%s: %s", where, msg ? msg : "error object is not a string");
+    snprintf(line, sizeof(line), "%s: %s", where, msg);
     s->api->log(s->self, SCO_LOG_ERROR, line);
     lua_pop(s->L, 1);
     if (s->over) Disable(s, "ran past its step budget");
@@ -276,8 +290,8 @@ static sco_result CmdThunk(const sco_arg* args, uint32_t nargs, void* ctx, char*
     CmdCall k = { c, args, nargs, reply, replySize };
     const int st = Enter(s, CmdBody, &k);
     if (st == LUA_OK) { lua_settop(s->L, top); return SCO_OK; }
-    const char* msg = lua_tostring(s->L, -1);
-    Copy(reply, replySize, msg ? msg : "error");
+    char num[48];
+    Copy(reply, replySize, ErrorText(s->L, num, sizeof(num)));
     const sco_result r = s->over ? SCO_CRASHED : st == LUA_ERRMEM ? SCO_TOO_MANY : SCO_BAD_ARG;
     Failed(s, c->name, st);
     lua_settop(s->L, top);
@@ -734,9 +748,8 @@ sco_result sco_lua_load(const sco_api* api, sco_plugin* self, const char* chunkn
     LoadCall k = { source, size, s->chunk };
     const int st = Enter(s, SetupBody, &k);
     if (st == LUA_OK) return SCO_OK;
-    const char* msg = lua_tostring(s->L, -1);
-    if (s->over) Copy(err, err_size, msg ? msg : "ran past its step budget");
-    else Copy(err, err_size, msg ? msg : (st == LUA_ERRMEM ? "out of memory" : "error"));
+    char num[48];
+    Copy(err, err_size, ErrorText(s->L, num, sizeof(num)));
     const sco_result r = st == LUA_ERRMEM ? SCO_TOO_MANY : SCO_BAD_ARG;
     for (int i = 0; i < SCO_LUA_MAX_EVENTS; ++i)
         if (s->events[i].live) api->unsubscribe(self, s->events[i].name, sco_lua_event_);
