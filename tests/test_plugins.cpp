@@ -289,7 +289,19 @@ static void TestContentIndex() {
     fs::remove_all(root);
     WriteFile(root / "big" / "plugin.ini", "id=big\nname=N\nversion=1\napi=1.0\nkind=data\n");
     Mk("content: make 4097 files");
-    for (size_t i = 0; i < P::kMaxPackFiles + 1; ++i) { WriteFile(root / "big" / "lists" / (std::to_string(i) + ".txt"), ""); if (i % 512 == 511) { std::printf("[mk] content: file %zu\n", i); std::fflush(stdout); } }
+    // Hard links to one seed: the cap counts files, and 4097 real writes queue 4097
+    // antivirus scan events that stall the native tests' LoadLibraryExW on Windows.
+    {
+        const fs::path seed = root / "big" / "lists" / "0.txt";
+        WriteFile(seed, "");
+        std::error_code hl;
+        for (size_t i = 1; i < P::kMaxPackFiles + 1; ++i) {
+            const fs::path p = root / "big" / "lists" / (std::to_string(i) + ".txt");
+            fs::create_directories(p.parent_path());
+            if (fs::create_hard_link(seed, p, hl)) continue;
+            std::ofstream(p, std::ios::binary);
+        }
+    }
     Mk("content: files made");
     WriteFile(root / "sly" / "plugin.ini", "id=sly\nname=N\nversion=1\napi=1.0\nkind=data\n");
     WriteFile(root / "outside" / "secret.xml", "<x/>");
@@ -410,7 +422,12 @@ static sco_api MakeApi() {
 // Module ops that record closes and read the plugin's unload counter before closing.
 static std::vector<std::string> g_closed;
 static int g_lastUnloadCalls = -1;
-static void* RecOpen(const fs::path& f, std::string& e) { return P::PlatformModuleOps().open(f, e); }
+static void* RecOpen(const fs::path& f, std::string& e) {
+    std::printf("[mk] open %s\n", f.filename().string().c_str()); std::fflush(stdout);
+    void* m = P::PlatformModuleOps().open(f, e);
+    std::printf("[mk] open done %s\n", f.filename().string().c_str()); std::fflush(stdout);
+    return m;
+}
 static void* RecSymbol(void* m, const char* n) { return P::PlatformModuleOps().symbol(m, n); }
 static void RecClose(void* m) {
     const int* calls = static_cast<const int*>(P::PlatformModuleOps().symbol(m, "fake_unload_calls"));
