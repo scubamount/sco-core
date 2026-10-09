@@ -1,5 +1,6 @@
 // sco/hook.h: near caves, code writes, instruction lengths and the detour registry.
 #include "sco/hook.h"
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -34,6 +35,8 @@ struct Detour { uint8_t* target; size_t stolen; uint8_t saved[kMaxStolen]; };
 std::mutex          g_lock;     // caves, detours and the near allocator
 std::vector<Cave>   g_caves;
 std::vector<Detour> g_detours;
+struct Slot { void** slot; void* saved; };
+std::vector<Slot>   g_slots;    // SwapSlot registry
 NearAllocator       g_nearAllocator = nullptr;   // SetNearAllocatorForTesting; nullptr = CarveNear
 thread_local uint32_t g_osError = 0;
 
@@ -396,6 +399,57 @@ size_t DetourCount() {
     return g_detours.size();
 }
 
+// ---- vtable slots -------------------------------------------------------------------------
+
+namespace {
+
+Slot* FindSlot(void* const* slot) {   // g_lock held
+    for (Slot& s : g_slots)
+        if (s.slot == slot) return &s;
+    return nullptr;
+}
+
+// One atomic pointer store into a slot made writable for the write.
+bool WriteSlot(void** slot, void* fn) {
+    MemoryProtectScope writable(slot, sizeof(void*));
+    if (!writable.Succeeded()) return false;
+    std::atomic_ref<void*>(*slot).store(fn, std::memory_order_release);
+    return true;
+}
+
+}  // namespace
+
+Error SwapSlot(void** slot, void* fn, void** original) {
+    if (!slot || !fn || !original || reinterpret_cast<uintptr_t>(slot) % alignof(void*) != 0) return Error::BadArg;
+    std::lock_guard<std::mutex> hold(g_lock);
+    if (FindSlot(slot)) return Error::AlreadyHooked;
+    g_slots.reserve(g_slots.size() + 1);   // the push below can't throw after the slot changed
+    void* const saved = std::atomic_ref<void*>(*slot).load(std::memory_order_acquire);
+    *original = saved;
+    if (!WriteSlot(slot, fn)) { *original = nullptr; return Error::Protect; }
+    g_slots.push_back({ slot, saved });
+    return Error::None;
+}
+
+Error RestoreSlot(void** slot) {
+    std::lock_guard<std::mutex> hold(g_lock);
+    Slot* s = FindSlot(slot);
+    if (!s) return Error::NotHooked;
+    if (!WriteSlot(s->slot, s->saved)) return Error::Protect;
+    g_slots.erase(g_slots.begin() + (s - g_slots.data()));
+    return Error::None;
+}
+
+bool IsSlotSwapped(void* const* slot) {
+    std::lock_guard<std::mutex> hold(g_lock);
+    return FindSlot(slot) != nullptr;
+}
+
+size_t SlotCount() {
+    std::lock_guard<std::mutex> hold(g_lock);
+    return g_slots.size();
+}
+
 void SetNearAllocatorForTesting(NearAllocator allocator) {
     std::lock_guard<std::mutex> hold(g_lock);
     g_nearAllocator = allocator;
@@ -403,8 +457,18 @@ void SetNearAllocatorForTesting(NearAllocator allocator) {
 
 // ---- Transaction --------------------------------------------------------------------------
 
+namespace {
+Error Undo(bool slot, void* target) {   // one installed item of a Transaction
+    return slot ? RestoreSlot(static_cast<void**>(target)) : RemoveDetour(target);
+}
+}  // namespace
+
 void Transaction::Add(void* target, size_t stolen, void* detour, void** original) {
-    queued_.push_back({ target, stolen, detour, original });
+    queued_.push_back({ target, stolen, detour, original, false });
+}
+
+void Transaction::AddSlot(void** slot, void* fn, void** original) {
+    queued_.push_back({ slot, 0, fn, original, true });
 }
 
 Error Transaction::Commit() {
@@ -413,12 +477,13 @@ Error Transaction::Commit() {
     const size_t before = installed_.size();
     installed_.reserve(before + items.size());
     for (const Item& it : items) {
-        const Error e = InstallDetour(it.target, it.stolen, it.detour, it.original);
-        if (e == Error::None) { installed_.push_back(it.target); continue; }
+        const Error e = it.slot ? SwapSlot(static_cast<void**>(it.target), it.detour, it.original)
+                                : InstallDetour(it.target, it.stolen, it.detour, it.original);
+        if (e == Error::None) { installed_.push_back({ it.target, it.slot }); continue; }
         // Undo this Commit, last first. One the OS refused to restore stays listed for Rollback.
-        std::vector<void*> stuck;
+        std::vector<Installed> stuck;
         for (size_t i = installed_.size(); i-- > before;)
-            if (RemoveDetour(installed_[i]) == Error::Protect) stuck.push_back(installed_[i]);
+            if (Undo(installed_[i].slot, installed_[i].target) == Error::Protect) stuck.push_back(installed_[i]);
         installed_.resize(before);
         installed_.insert(installed_.end(), stuck.begin(), stuck.end());
         return e;
@@ -429,9 +494,9 @@ Error Transaction::Commit() {
 Error Transaction::Rollback() {
     queued_.clear();
     Error first = Error::None;
-    std::vector<void*> stuck;
+    std::vector<Installed> stuck;
     for (size_t i = installed_.size(); i-- > 0;) {
-        const Error e = RemoveDetour(installed_[i]);
+        const Error e = Undo(installed_[i].slot, installed_[i].target);
         if (e != Error::None && first == Error::None) first = e;
         if (e == Error::Protect) stuck.push_back(installed_[i]);   // NotHooked: already gone
     }
