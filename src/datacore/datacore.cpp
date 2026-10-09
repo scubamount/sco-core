@@ -3,8 +3,8 @@
 // Every count comes from the header and every size is checked against the file size before anything
 // is read or allocated, so a truncated or corrupted file is refused with a reason, never read past.
 #include "sco/datacore.h"
+#include "internal.h"
 #include <algorithm>
-#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -14,30 +14,12 @@ namespace sco::datacore {
 namespace {
 
 using ull = unsigned long long;
-constexpr uint64_t kMax = std::numeric_limits<uint64_t>::max();
+using detail::Fmt;
+using detail::R16;
+using detail::R32;
+using detail::SatAdd;
+using detail::SatMul;
 constexpr int kMaxDepth = 256;   // parent chains and inline-class nesting
-
-uint64_t SatAdd(uint64_t a, uint64_t b) { return a > kMax - b ? kMax : a + b; }
-uint64_t SatMul(uint64_t a, uint64_t b) { return b != 0 && a > kMax / b ? kMax : a * b; }
-
-uint16_t R16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
-uint32_t R32(const uint8_t* p) {
-    return static_cast<uint32_t>(p[0]) | static_cast<uint32_t>(p[1]) << 8 | static_cast<uint32_t>(p[2]) << 16 |
-           static_cast<uint32_t>(p[3]) << 24;
-}
-
-#if defined(__GNUC__)
-__attribute__((format(printf, 1, 2)))
-#endif
-std::string Fmt(const char* fmt, ...) {
-    char buf[512];
-    va_list ap;
-    va_start(ap, fmt);
-    const int n = std::vsnprintf(buf, sizeof(buf), fmt, ap);
-    va_end(ap);
-    if (n < 0) return {};
-    return std::string(buf, std::min(static_cast<size_t>(n), sizeof(buf) - 1));
-}
 
 // The value pools in file order (section 2). `count` indexes Header::values; -1 is the enum-option count.
 struct Pool { const char* name; int count; uint32_t entry; };

@@ -70,12 +70,45 @@ public:
     std::vector<Record>  records;
     std::array<std::vector<uint8_t>, kPoolCount> pools;
 
+    // Instance contents, written by Build over the filler bytes: `field` (a property path, inherited
+    // properties included, "a.b" into inline structs) of instance `instance` of struct `structIndex`,
+    // counting over all of that struct's mappings in order. A fill that names nothing is counted in
+    // layout.badFills.
+    struct Fill { uint32_t structIndex = 0; uint32_t instance = 0; std::string field; std::vector<uint8_t> bytes; };
+    std::vector<Fill> fills;
+
     struct Layout {
         uint64_t structs = 0, properties = 0, enums = 0, mappings = 0, records = 0;
         std::array<uint64_t, kPoolCount> pools{};
         uint64_t enumOptions = 0, valueStrings = 0, nameStrings = 0, data = 0;
         std::vector<uint64_t> blocks;   // per mapping
+        int badFills = 0;
     } layout;                           // filled by Build
+
+    static constexpr uint64_t kNoField = ~0ull;
+    // Offset of a field path inside an instance of struct s (section 2 rules: parent first, packed),
+    // and its Prop; kNoField when the path names nothing.
+    uint64_t FieldOffset(uint32_t s, std::string_view path, Prop* found = nullptr) const {
+        const size_t dot = path.find('.');
+        const std::string_view head = path.substr(0, dot);
+        std::vector<uint32_t> chain;
+        for (int64_t c = s; c >= 0; c = structs[static_cast<size_t>(c)].parent) chain.insert(chain.begin(), static_cast<uint32_t>(c));
+        uint64_t off = 0;
+        for (uint32_t c : chain)
+            for (const Prop& p : structs[c].props) {
+                if (p.name == head) {
+                    if (dot == std::string_view::npos) {
+                        if (found) *found = p;
+                        return off;
+                    }
+                    if (p.conversion != kSingle || p.type != t::Class) return kNoField;
+                    const uint64_t in = FieldOffset(p.typeIndex, path.substr(dot + 1), found);
+                    return in == kNoField ? kNoField : off + in;
+                }
+                off += p.conversion != kSingle ? 8 : p.type == t::Class ? Size(p.typeIndex) : FieldBytes(p);
+            }
+        return kNoField;
+    }
 
     // Interned strings: the offset of `s` in its pool, appended on first use.
     uint32_t Name(std::string_view s) { return Intern(names_, nameAt_, s); }
@@ -216,6 +249,17 @@ public:
             const uint64_t bytes = m.count * Size(m.structIndex);
             // Recognizable, non-zero instance bytes: block index and position.
             for (uint64_t b = 0; b < bytes; ++b) f.push_back(static_cast<uint8_t>(layout.blocks.size() * 16 + b));
+        }
+        for (const Fill& fill : fills) {
+            uint64_t inst = kNoField, i = fill.instance;
+            for (size_t m = 0; m < mappings.size() && inst == kNoField; ++m) {
+                if (mappings[m].structIndex != fill.structIndex) continue;
+                if (i < mappings[m].count) inst = layout.blocks[m] + i * Size(fill.structIndex);
+                else i -= mappings[m].count;
+            }
+            const uint64_t off = inst == kNoField ? kNoField : FieldOffset(fill.structIndex, fill.field);
+            if (off == kNoField || inst + off + fill.bytes.size() > f.size()) { ++layout.badFills; continue; }
+            std::memcpy(f.data() + inst + off, fill.bytes.data(), fill.bytes.size());
         }
         return f;
     }

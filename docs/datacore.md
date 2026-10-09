@@ -81,6 +81,20 @@ One tab-separated line per record, after a `#` header line:
 | 1 | The layout is refused; the reason names the first failing check |
 | 2 | Bad arguments, the file can't be read, or it is smaller than the 120-byte header |
 
+## Patching
+
+The patcher is a library API, `sco::datacore::Patch` ([api.md](api.md#patching-datacore)); `sco-dcb` has no patch command. The design's tool commands for packs (`check`, `show`, `diff`, `lint`) come with the `.toml` format in plan PR 5. Checked locally on 4.10.193 with a scratch program over the library (read-only, nothing committed), overriding one float field of one record by name:
+
+```text
+parsed 331932921 bytes, 117022 records, record size 36 (39 ms)
+1 overrides (0 refused); first: record "Character.SHOPKEEP2_Gruff" field "nicknameChance" = 2.5
+Emit: OK, 1 splices, 91 ms including re-validation
+applied: 331932921 bytes; re-parse: layout: OK
+splice 0: at 134562223, removes 4, adds 4; patched value reads 2.5
+```
+
+The same with one float override in each of 1,000 records: 1.9 ms for the operations, `Emit` 89 ms including re-validation (which composes and re-parses the whole patched file in memory), re-parse `layout: OK`.
+
 ## Patch-day routine
 
 1. Extract `Game2.dcb` from the new `Data.p4k` (above).
