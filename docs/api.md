@@ -176,6 +176,45 @@ One place that patches game code (library `sco_hook`, x86-64 Windows and Linux),
 
 Errors: `BadArg`, `AlreadyHooked`, `NoCave`, `Protect` (the OS refused; `LastOsError()`), `NotHooked`, `Unsupported` (not x86-64). Patching isn't atomic against a thread running `target` at that moment: install before the game runs it, or from its own thread. Instruction-length decoding (so callers needn't count stolen bytes) is planned.
 
+## `sco/engine/types.h`: spatial math
+
+Engine-agnostic 64-bit math in namespace `sco::engine`, header-only (no library needed). sco-core holds no game offsets for it and never reads game memory: the host converts what it reads from the game into these types.
+
+| Type | Has |
+|---|---|
+| `Vector3d` | `x, y, z` (24 bytes); `+ -` (also unary `-`), `* /` by a scalar, `Dot`, `Cross`, `LengthSquared`, `Length`, `Normalized` (the zero vector when the length is under 1e-12), `DistanceTo` |
+| `Quatd` | `w, x, y, z` in that order (32 bytes; default identity); `Identity()`, `Conjugate`, `operator*` (Hamilton: `(a * b).Rotate(v) == a.Rotate(b.Rotate(v))`), `Normalized` (identity for a zero quaternion), `Rotate(v)`, `Unrotate(v)` (the inverse rotation), `FromAxisAngle(axis, radians)` (right-handed, axis normalized) |
+| `Transform` | `position`, `rotation`, `scale` (uniform, default 1, must not be 0); `TransformPoint(local) = position + rotation.Rotate(local * scale)`, `InverseTransformPoint(parent)`, `a * b` (b is a child frame of a: `(a * b).TransformPoint(p) == a.TransformPoint(b.TransformPoint(p))`) |
+
+Everything that doesn't need `sqrt`/`sin`/`cos` is `constexpr`. All three are standard-layout; the sizes and `Quatd`'s `w`-first order are static asserts.
+
+**Quaternion order at the game boundary.** The game keeps rotations as `double rot[4]` in (x, y, z, w) order (as sc-offline's spawner reads and writes them), not `Quatd`'s (w, x, y, z). Convert with `Quatd FromXYZW(const double q[4])` and `void ToXYZW(const Quatd& q, double out[4])`; never cast the array to a `Quatd`.
+
+## `sco/engine/zone.h`: the zone tree
+
+Nested reference frames (system > planet > city > ship > room) and the transforms between them, in library `sco_engine`. Pure math over data the host feeds it: the host (sc-offline) reads the game's zone objects each tick and calls `Set` / `Remove`; features ask for positions in whichever zone they need. `ZoneTree` is a class, not a singleton: the host owns one.
+
+```cpp
+struct Zone { uint64_t id; uint64_t parentId; std::string name; Transform local; };
+```
+
+Ids are the host's. 0 is never a zone: as a `parentId` it makes a root zone (its transform is relative to the world), and as a query id it names the world frame.
+
+| Function | Does |
+|---|---|
+| `bool Set(id, parentId, name, localTransform)` | Inserts or updates a zone. False for id 0 or `parentId == id`. The parent may come later; queries through the zone fail until it exists |
+| `bool Remove(id)` | Removes one zone; its children stay and their queries fail until the id is set again |
+| `void Clear()`, `bool Has(id)`, `size_t Size()` | |
+| `bool Find(id, Zone* out)` | Copies the zone |
+| `bool LocalToWorld(id, local, Vector3d* out)`, `bool WorldToLocal(id, world, Vector3d* out)` | A point in zone `id` to the world and back |
+| `bool Transform(fromId, toId, pos, Vector3d* out)` | A point in one zone to another (either may be 0). Goes up only to the lowest common ancestor, never through world coordinates |
+
+The queries return false and leave `out` alone when `out` is null, the zone or an ancestor is missing, or the chain from the zone to its root is longer than `ZoneTree::kMaxDepth` (32 zones) or loops (a cycle hits the same limit). Lookups are hash-map finds, a query is one walk per chain.
+
+**Precision.** A double resolves about 1.5e-5 m at 1e11 m (Stanton's planets are that far from the star), so a world coordinate out there is only that good. `Transform` between two zones on one planet or ship stops at their common ancestor and keeps sub-micrometre precision whatever the planet's distance; use it rather than going through `LocalToWorld` and `WorldToLocal`.
+
+**Threads.** Every method is safe from any thread. Queries take a shared lock and run concurrently; `Set`, `Remove` and `Clear` take it exclusively. Each query sees one consistent tree, but two queries in a row may see a `Set` between them: do related math in one `Transform` call.
+
 ## `sco/pe_file.h`: host tools only
 
 ```cpp
