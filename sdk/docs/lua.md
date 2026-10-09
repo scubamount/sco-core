@@ -61,6 +61,33 @@ sco.register_command{
 
 `type` is `"int"`, `"float"`, `"string"` or `"bool"`. The host checks the arguments against `args` before calling `fn`, which gets them as plain Lua values in order. `fn` returns the reply shown on the status line (a string, or nothing); `error(...)` makes the command fail.
 
+## `sco.datacore`
+
+Present only when the product publishes the host service [`sco.datacore`](../../docs/datacore.md#the-scodatacore-service) (check `if sco.datacore then`); `lua-check.lua` has no stand-in for it. It queues DataCore overrides, the operations of a data pack's `.toml`, from a script. In sc-offline the game loads DataCore before scripts run, so a committed patch is saved and **applies from the next launch**; overrides that never change belong in a [data pack](data-packs.md#game-data-datacore).
+
+```lua
+local eos = "EntityClassDefinition.QDRV_RSI_S01_Eos_SCItem"
+local p = sco.datacore.begin()            -- or begin({ atomic = false }); nil, err on failure
+p:set(eos, "Components[SCItemQuantumDriveParams].params.spoolUpTime", 3.5)
+local fast = p:add_instance("SCItemQuantumDriveParams", eos, "Components[SCItemQuantumDriveParams]")
+p:set_pointer("EntityClassDefinition.QDRV_WETK_S01_Beacon_SCItem", "Components[SCItemQuantumDriveParams]", fast)
+assert(p:commit())
+for _, r in ipairs(p:report()) do print(r.op, r.state, r.reason) end
+```
+
+| Call | Returns |
+|---|---|
+| `sco.datacore.state()` | `"open"` (before the load) or `"loaded"` |
+| `sco.datacore.begin([{ atomic = false }])` | A patch, or `nil, err` |
+| `p:set(record, field, value)`, `p:append(record, field, value)` | `true`, or `false, err` |
+| `p:add_instance(type [, clone_record [, clone_field]])` | An instance (use it as a value or with `set_pointer`), or `nil, err` |
+| `p:set_pointer(record, field, instance)` | `true`, or `false, err` |
+| `p:add_record(...)` | `false, "unavailable"` (not in 1.0) |
+| `p:commit()`, `p:discard()` | `true`, or `false, err` |
+| `p:report()` | A list of `{ state = "queued" \| "applied" \| "skipped" \| "refused", op = n, reason = "..." }`: one per operation (`op` 1, 2, ...), then the patch's (`op` 0) |
+
+Values: integers, numbers, strings (also enum options), booleans, `nil` (a null pointer), an instance from `add_instance`, `{ guid = "..." }`, `{ enum = "Option" }`. A `record` is a record name or `"guid:..."`. Errors are the same strings as elsewhere (`"bad_arg"`, `"not_found"`, `"unavailable"`, ...). Every call counts against the step budget like other host calls, and the sandbox is unchanged: scripts never touch files; the host writes the saved patch.
+
 ## Check a script
 
 Without the game, with a stock Lua 5.4:

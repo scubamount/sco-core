@@ -27,6 +27,7 @@ The C++20 layer of the sco plugin SDK: header-only, over [`sco_api.h`](api-v1.md
 | [`scosdk/service.hpp`](../include/scosdk/service.hpp) | `Provide`, `Release`, `ServiceRef<T>`, `HasMember`, `ServiceVersion` |
 | [`scosdk/raw.hpp`](../include/scosdk/raw.hpp) | `RegisterRaw<In, Out>`, `InvokeRaw`, `RegisterRawBytes`, `InvokeRawBytes` |
 | [`scosdk/storage.hpp`](../include/scosdk/storage.hpp) | `Storage`, `StorageCursor`, `StorageTransaction`, `SqlInt` / `SqlFloat` / `SqlText` / `SqlBlob` / `SqlNull` (the host service `sco.storage`, [`sco_storage.h`](../include/sco_storage.h)); not in `scosdk.hpp`, include it when you use storage |
+| [`scosdk/datacore.hpp`](../include/scosdk/datacore.hpp) | `DataCore`, `DataCorePatch`, `DataCoreInstance`, `DataCoreGuid`, `DataCoreEnum` (the host service `sco.datacore`, [`sco_datacore.h`](../include/sco_datacore.h)); not in `scosdk.hpp` |
 | [`scosdk/scosdk.hpp`](../include/scosdk/scosdk.hpp) | All of the above |
 
 Put the SDK's `include/` folder on the include path; the headers find `sco_api.h` there.
@@ -142,6 +143,29 @@ if (store.Open(*this) == SCO_OK) {
 - Every call is `noexcept` and answers `sco_result` (out of memory is `SCO_TOO_MANY`); `LastError()` has the message of the last failure.
 - `StorageCursor` is move-only and closes its cursor on destruction; `Int`, `Float`, `Text`, `Blob` and `Value` read the current row. `Keys(prefix, out)` lists keys in byte order.
 - The transaction is the plugin's, not the thread's ([Storage § Threads](storage.md#threads)).
+
+## DataCore
+
+`sco::sdk::DataCore` wraps the host service [`sco.datacore`](datacore.md#the-scodatacore-service): DataCore overrides from code. The product must publish it (`Open` answers `SCO_NOT_FOUND` otherwise). After the game's DataCore load (the usual case: plugins load after it), a committed patch is saved and applies from the next launch.
+
+```cpp
+#include "scosdk/datacore.hpp"
+
+sco::sdk::DataCore dc;
+if (dc.Open(*this) == SCO_OK) {
+    sco::sdk::DataCorePatch p = dc.Begin();                     // dc.Begin(SCO_DC_NON_ATOMIC): one by one
+    p.Set("ShipA", "speed", 2.5);                                // double, integers (signed: INT, unsigned: UINT), bool,
+    p.Set("ShipA", "kind", sco::sdk::DataCoreEnum{ "Small" });   // string, DataCoreGuid, DataCoreEnum, nullptr, an instance
+    sco::sdk::DataCoreInstance part = p.AddInstance("Part", "PartX");
+    p.Set(part.Ref(), "weight", 3.25);                           // Ref(): "@<id>", the instance's own fields
+    p.Append("ShipA", "parts", part);
+    if (p.Commit() == SCO_OK) { /* after datacore.applied: p.Reports() */ }
+}
+```
+
+- `DataCorePatch` is move-only and discards its patch on destruction unless committed. Keep it to read `Reports()` (one `sco_dc_report` per operation, then the patch's).
+- Every call is `noexcept` and answers `sco_result`; `AddInstance` returns a `DataCoreInstance` with its own `Result()`. `AddRecord` answers `SCO_UNAVAILABLE` in 1.0.
+- Results arrive with the event `datacore.applied` (`Subscribe`; data: `sco_dc_applied`).
 
 ## Lifetimes
 
