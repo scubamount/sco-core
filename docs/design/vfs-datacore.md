@@ -300,7 +300,7 @@ public:
     Status SetPointer(const RecordRef& rec, std::string_view fieldPath, InstanceId target);
     // Append an element to an array field (copies the array to the pool end, see below).
     Status AppendElement(const RecordRef& rec, std::string_view arrayPath, const Value& v);
-    // New top-level record (v1, decision 3). Refused while research R1 leaves the record layout open.
+    // New top-level record (v1, decision 3). Appended at the end of the record table; record +8 copied per R1.
     Status AddRecord(std::string_view type, std::string_view name, const Guid& id, const InstanceSource& cloneFrom);
 
     // Turns everything accepted so far into base-offset splices for sco::vfs.
@@ -327,7 +327,7 @@ Every operation is either an **in-place overwrite** (`removed == added`) or an *
 | `AddInstance` | Insert `size(struct)` bytes at the end of the struct's block and overwrite the mapping count. The new index is the old count, and existing indices are unchanged |
 | Pointer | Overwrite the 8-byte `(struct, instance)` value. If the field is inline, write it there; if the pointer lives in the strong pool (an array element), write there |
 | `AppendElement` | Arrays are contiguous `(count, first)` ranges in a pool or block. Appending in place would shift every later array, so instead: copy the existing elements plus the new one to the end of that pool (insert), update the pool's header count, and overwrite the field's `(count, first)`. The old range becomes unreferenced (a few bytes of waste per patch) |
-| `AddRecord` | Insert one record entry (36 bytes in 4.10.193) at the end of the record table, or at its sorted position if R1 finds the table sorted and nothing indexes it by position. Update header +32. The record's root instance comes from `AddInstance` (cloned). Append the name to the name pool (header +116) and the file path to the value pool (header +112). The record field at +8 is filled per R1's finding. Rules: [AddRecord](#addrecord) |
+| `AddRecord` | Append one record entry (36 bytes in 4.10.193) at the end of the record table (R1: the table isn't sorted and nothing indexes it by position). Update header +32. The record's root instance comes from `AddInstance` (cloned). Append the name to the name pool (header +116) and the file path to the value pool (header +112). The record field at +8 (a name-pool offset of the owning team's tag, R1) is copied from the clone source, or from the records already in that file. Rules: [AddRecord](#addrecord) |
 
 `Emit` sorts and merges the splices, and also rewrites the 120-byte header as one overwrite. It then **re-validates the result**: it composes the virtual file in memory against the base reader and runs validation steps 1-5 over the *patched* header, mappings and records. Only then does it hand the splices to `sco::vfs`. A patch that would produce a file the parser itself rejects is never mounted.
 
@@ -342,10 +342,88 @@ New top-level records are in v1 ([decision 3](#decisions-maintainer-2026-10-09))
 | Does anything index records by position? | Check whether the first `u32` of each reference value (20 bytes: `u32` plus GUID) equals the target record's index, its `instanceIndex`, or neither, over all 748,905 references. Search the `int32`/`uint32` pools and record +8 for values that track record indices |
 | Does the engine accept an appended record? | In game, not read-only: one cloned record added through `sco-dcb`'s offline output and looked up by name in the maintainer's checklist (the spawner takes a class name). Only after the three measurements above |
 
-R1 decides the implementation:
+#### R1 results (4.10.193, measured 2026-10-09)
 
-- **+8 field:** if it is identified, the patcher computes it. If it is a per-file value, the patcher copies it from the clone source and refuses a new file path that would need a new value. If it is still unidentified, `AddRecord` stays **refused** with `"record field +8 not understood"`, and the capability `datacore.add_record` is off while every other operation works.
-- **Order:** if the table isn't sorted, records are appended. If it is sorted and nothing indexes by position, records are inserted at their sorted position, which shifts later record indices (harmless by that finding). If it is sorted *and* positions are referenced, `AddRecord` is refused until that index is understood.
+All measurements are read-only on `Game2.dcb` (331,932,921 bytes, 117,022 records of 36 bytes). Two tools were used: `sco-dcb records` from main (built with MSVC 14.29), whose tab-separated output is checked with `awk`, and a scratch Python/numpy reader kept outside the repo (`r1.py`, `r1b.py`, an independent parse of the same layout) for the checks that need raw offsets and instance data. Commands are run with `$DCB` set to the file's path.
+
+**1. Record +8 is a name-pool offset: the tag of the team that owns the record's source file.**
+
+```
+$ sco-dcb records $DCB > rec.tsv
+$ awk -F'\t' 'NR>1{u[$5]++; f[$8][$5]=1; s[$4][$5]=1} END{print length(u)" distinct"; nf=0; for(k in f) if(length(f[k])>1) nf++; ns=0; for(k in s) if(length(s[k])>1) ns++; print nf" of "length(f)" files, "ns" of "length(s)" structs have >1 value"}' rec.tsv
+25 distinct
+0 of 62062 files, 77 of 604 structs have >1 value
+
+$ python -I r1.py $DCB
+[Q1] unk min 0x125d max 0x60edce distinct 25 zero 0
+  string start in value pool: 0, name pool: 117022 (of 117022); vlen 17183397 nlen 7195714
+  unk == record index: 1 ; corr 0.0524
+  unk == instance: 3 ; corr 0.1148
+  hash hits: none
+
+$ python -I r1b.py $DCB
+  0x00125d x85638  'Unknown'        is other; structs 564, e.g. DialogueContext, EntityClassDefinition, ...
+  0x0918b3 x22407  'SystemsDesign'  is other; structs 34, e.g. Tag, EntityClassDefinition, ...
+  0x023bb1 x4416   'Character'      is ['struct']; structs 4, e.g. EntityClassDefinition, TintPaletteTree, ...
+  0x00ead5 x2462   'Ship'           is other; structs 11, ...
+  ... (21 more: 'TechDesign', 'UI', 'MissionDesign', 'Design', 'Weapons', 'Content', 'Audio', 'CGP2'..'CGP7', 'CoreAI', 'VFX', ...)
+  value is name of an ancestor struct: 0 / 117022 ; of the root ancestor: 0
+```
+
+Every one of the 117,022 values is a string start in the **name** pool (none in the value pool), and the 25 strings are team or department tags (`Unknown` 85,638 records, `SystemsDesign` 22,407, `Character`, `Ship`, `UI`, `MissionDesign`, `CGP2`...`CGP7`, ...). The value is **constant per file path** (0 of 62,062 files have two values) but not per struct (77 of 604 record structs mix tags). It isn't the record index, instance index, struct index, an ancestor struct's name, or a CRC32 / FNV-1a hash of the name or path. It doesn't follow directories either (52 of 249 four-level path prefixes mix tags). It is metadata from the source file, so nothing about the new record determines it. Its one structural property, checkable on every record, is that it is a name-pool string start. Validation step 5 already checks this for every record name; R1 adds record +8 to the same check.
+
+**2. The record table isn't sorted by any key. It is in writer order, grouped by source file.**
+
+```
+$ awk -F'\t' 'NR>2{ if($3<pn)a++; if($8<pf)b++; if($4<ps)c++; if($2<pg)d++ } NR>1{pn=$3;pf=$8;ps=$4;pg=$2} END{print "name "a+0", file "b+0", struct "c+0", guid "d+0}' rec.tsv
+name 48747, file 31030, struct 13528, guid 58623
+
+$ python -I r1.py $DCB
+[Q2]
+  guid bytes             first out-of-order at 37 (descents 35382)
+  guid string            first out-of-order at 1 (descents 58623)
+  name                   first out-of-order at 2 (descents 48747)
+  file                   first out-of-order at 1 (descents 31030)
+  struct index           first out-of-order at 2 (descents 13478)
+  file offset            first out-of-order at 87629 (descents 1)
+  name offset            sorted (descents 0)
+
+$ python -I r1b.py $DCB
+  name offset strictly increasing: False; first record name at 590567, ...
+  file offset: equal steps 54960, increasing 62060, decreasing 1 at [87628]
+  max struct/property name offset 590530 ; min record name offset 590567
+  record names unique: False
+
+$ awk -F'\t' 'NR>1{c[$3]++} END{d=0;r=0;for(k in c) if(c[k]>1){d++;r+=c[k]} print d" names used by "r" records"}' rec.tsv
+2 names used by 4 records
+```
+
+The descent counts are the number of adjacent pairs out of order (a sorted key has 0). GUID (bytes or string form), name, file path and struct are all far from sorted (tens of thousands of descents each). The only monotone keys are the pool offsets. Record name offsets never decrease: record names follow the struct, property and enum names in the name pool, in record order. File-path offsets are non-decreasing except for one step at index 87,628, where a file path that already appeared earlier is reused. So the writer emits records file by file and interns each new string as it goes. Records from one file are adjacent (54,960 equal steps). Two names are shared by 4 records (`record names unique: False`), so the engine can't rely on unique names either. An appended record whose name and path go to the end of their pools keeps both offsets monotone.
+
+**3. Nothing in the file refers to a record by its position.**
+
+```
+$ python -I r1.py $DCB
+[Q3]
+  pool refs 748905: null guid 17912, unresolved 90, resolved 730903
+  first u32 == record index 0, == instanceIndex 730903, == record +8 2
+
+$ python -I r1b.py $DCB
+[Q3] inline reference fields in instance data
+  inline refs 2844823: null 2047337, unresolved 779, first u32 == instanceIndex 796707, == record index 1
+  pool refs with null guid: first u32 == 0xffffffff 17912 of 17912
+  int32 pool: 774 values, 763 in [0, 117022), distinct 14
+  uint32 pool: 36 values, 36 in [0, 117022), distinct 19
+```
+
+A reference (20 bytes) is `u32` + GUID, and its `u32` is the target record's **`instanceIndex`** in every resolved reference. That holds for all 730,903 resolved pool references and all 796,707 resolved references inline in instance data. It matches the record index only by coincidence (0 and 1 times). Null references are `0xffffffff` + a zero GUID, and 869 references (90 + 779) name GUIDs that aren't in the file. Strong and weak pointers are `(struct, instance)`, and the `int32`/`uint32` pools are tiny (14 and 19 distinct values) with nothing that tracks record indices. The header has no record index table, and the engine's lookups are by GUID or name. Whether the engine builds a positional index in memory is the in-game question (the last row of the table above), which R1 doesn't answer.
+
+#### The AddRecord rule
+
+- **Position:** append at the end of the record table (new index = old record count). Never insert in the middle: the table has no sort key to keep, and appending renumbers nothing. Name and file path are appended to the end of the name and value pools, which keeps both pool-offset orders monotone like the writer's. A file path that already exists may reuse its existing value-pool offset.
+- **Record +8 (36-byte records):** write the clone source's `u32` unchanged (an existing name-pool offset of a team tag; no new string). If the new record's file path is already used by records in the file, write *their* value instead, which keeps the per-file invariant. 32-byte records have no such field.
+- **References to the new record** (from `SetPointer` or override values): `u32` = the new record's root `instanceIndex` (the index `AddInstance` returned), then its GUID. Never the record index.
+- **Refusals**, in addition to the rules below: `record +8 of clone "..." is not a name-pool string` if the clone source's value fails the name-pool check (the file would be malformed), and `records in file "..." disagree on record +8` if the target file path already has records with different +8 values (not seen in 4.10.193; a later build where the invariant breaks gets refused rather than guessed). `datacore.add_record` is on when layout validation passes.
 
 Validation and refusal rules, each one an override failure (section 4, "When something is missing") with this reason:
 
@@ -552,8 +630,8 @@ PRs 1-6 need no game and can land before 7-9. PR 8 changes nothing visible but p
 | Risk | Mitigation |
 |---|---|
 | The format changes again without a version bump (as the 32 -> 36 byte records did) | Sizes derived and cross-checked (validation 1-4), refusal with a clear reason; `sco-dcb info` on patch day; fixtures for both record sizes |
-| The unknown record `u32` matters for added records | R1 measures it first; `AddRecord` is refused (and `datacore.add_record` off) while it is not understood |
-| The engine expects records or blocks in an order (sorted by GUID, by name) | Instances and pool entries only append. R1 checks record order and positional references; `AddRecord` inserts in order or refuses accordingly |
+| The unknown record `u32` matters for added records | R1: it is a name-pool offset of the source file's team tag, constant per file. `AddRecord` copies it and refuses a value that isn't a name-pool string |
+| The engine expects records or blocks in an order (sorted by GUID, by name) | Instances and pool entries only append. R1: the record table isn't sorted and no file data refers to a record position, so `AddRecord` appends. In-memory engine indices remain the in-game check |
 | Plugins load after the DataCore load (they do: decision 9) | `commit` saves the patch and it applies from the next launch, never late; data packs are unaffected. Patches that must apply in the same session ship as data packs |
 | A toml++ update changes parsing | Pinned release, sha256 checked, golden parse tests |
 | An override applies to a renamed or repurposed field and changes gameplay in ways nobody intended | Fields addressed by name and type, so a type change refuses rather than writes; `sco-dcb check` on patch day shows what still resolves; per-pack atomicity |
