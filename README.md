@@ -22,6 +22,7 @@ It has two halves:
                    |                      |                     |
  ABI        ------ sco_api.h : plain C, versioned, size-prefixed -----
                    |                                            |
+ host kit   sco/app.h    Start / Tick / Stop, built-in plugins   |
  host       sco/host.h   the sco_api table, per-plugin handles   |
             sco/caps.h   capabilities ("teleport" ready?)        |
             sco/plugins.h  discover, plugin.ini, load, crash guard, content index
@@ -78,6 +79,12 @@ cmake -S . -B build && cmake --build build && cmake --install build --prefix out
 out/bin/sco-plugin-check out/data/plugins/hello --invoke hello.wave "Pilot One"
 ```
 
+To run plugins through the real host instead (the host kit, loader and sco-lua, no game), point `sco-host-sim` from the core build at a plugins folder:
+
+```sh
+build/sco-host-sim sdk/out/data/plugins --ticks 3 --invoke hello.wave "Pilot One"
+```
+
 CI packages it as `sco-sdk-<version>.zip`. Start with the [SDK README](sdk/README.md) and the [plugin API reference](docs/api-v1.md).
 
 ## Repository layout
@@ -86,11 +93,11 @@ CI packages it as `sco-sdk-<version>.zip`. Start with the [SDK README](sdk/READM
 |---|---|
 | [`include/sco_api.h`](include/sco_api.h) | The plugin ABI: the only header a plugin includes |
 | [`include/sco/`](include/sco/) | Internal C++ API used by sc-offline: signatures, scanners, runtime, caps, host, plugins |
-| `src/` | The core (`sco_*.cpp`), the runtime (`api/`), the host table (`host/`), the plugin loader (`plugins/`), game tables (`game/`) |
+| `src/` | The core (`sco_*.cpp`), the runtime (`api/`), the host table (`host/`), the host kit (`app/`), the plugin loader (`plugins/`), game tables (`game/`) |
 | [`plugins/lua/`](plugins/lua/README.md) | sco-lua: Lua 5.4.8 (vendored, MIT) in a sandbox, built only on `sco_api.h` |
 | [`sdk/`](sdk/README.md) | The plugin SDK: template, examples, CMake helper, checkers, packaging |
 | `tests/` | Unit tests, the ABI pin (`abi_v1.c`) and plugin fixtures |
-| `tools/` | `test.sh`, `test-win.sh` (Windows build under Wine), `sigcheck.sh`, `sco-sigcheck` |
+| `tools/` | `test.sh`, `test-win.sh` (Windows build under Wine), `sigcheck.sh`, `sco-sigcheck`, `sco-host-sim` (plugins through the real host, no game) |
 | `docs/` | Everything else: [docs index](docs/README.md) |
 
 Only `src/sco_image_win.cpp`, the Windows halves of the loader and its crash guard are Windows code. Everything else builds and is tested on Linux and macOS, so neither the tests nor `sco-sigcheck` need Windows or the game.

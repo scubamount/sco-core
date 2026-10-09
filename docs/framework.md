@@ -104,6 +104,8 @@ Done when: CI's CMake build produces `dinput8.dll` and `sc-offline.exe`, a tagge
 
 ## Phase 2: the host kit in sco-core
 
+**Status: done.** What landed: `sco/app.h` (`sco::app::Start`/`Tick`/`Stop`, `Platform` as sketched above plus `image`, `setCapabilities` and `moduleOps`, the `sco_app` library); built-in plugins in `sco/plugins.h` (`Kind::Builtin`, `Builtin`, `FromBuiltin`, `LoadBuiltin`, unloaded after every other plugin); `sco-host-sim`; `tests/test_app.cpp` and the CTest case `host_sim_examples`, which run on Linux (ASan+UBSan, `tools/test.sh` and CMake) and Windows (MSVC). `Platform` takes `pluginRoot` rather than `dataRoot` until Phase 5 gives the data folder a second use. See [API: sco/app.h](api.md#scoapph-the-host-kit) and [Plugins: built-in plugins](plugins.md#built-in-plugins).
+
 sco-core only; sc-offline doesn't change yet. Runs in parallel with Phase 1.
 
 1. `sco/app.h`: `Start`, `Tick`, `Stop` over the existing runtime, caps, host and loader, in the order above. Startup failures are reported, not fatal: a product with no signatures still loads plugins that need none.

@@ -124,9 +124,16 @@ struct QueryCall {
     bool     gotInfo = false;
     uint32_t size = 0;
     uint16_t major = 0, minor = 0;
+    bool     full = false;               // also copy version and author (built-ins)
     bool     hasName = false;
     char     name[kMaxIdLen + 2] = {};   // one spare byte detects a name longer than any id
+    char     version[kMaxVersionLen + 1] = {};   // built-ins: the manifest comes from here
+    char     author[kMaxAuthorLen + 1] = {};
 };
+
+static void CopyCapped(char* to, size_t cap, const char* from) {
+    for (size_t i = 0; from && i + 1 < cap && from[i]; ++i) to[i] = from[i];
+}
 
 static void QueryThunk(void* c) {
     auto* q = static_cast<QueryCall*>(c);
@@ -139,7 +146,10 @@ static void QueryThunk(void* c) {
     q->minor = info->api_minor;
     if (!info->name) return;
     q->hasName = true;
-    for (size_t i = 0; i + 1 < sizeof(q->name) && info->name[i]; ++i) q->name[i] = info->name[i];
+    CopyCapped(q->name, sizeof(q->name), info->name);
+    if (!q->full) return;
+    CopyCapped(q->version, sizeof(q->version), info->version);
+    CopyCapped(q->author, sizeof(q->author), info->author);
 }
 
 struct LoadCall {
@@ -159,49 +169,43 @@ static std::atomic<uint32_t> g_loadCounter{ 0 };
 
 // ---- load / unload --------------------------------------------------------------------------
 
-bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& opts, const ModuleOps& ops) {
-    if (p.state != State::Ready || p.manifest.kind != Kind::Native) return false;
-    if (!api || !self) {
-        p.state = State::Refused;
-        p.reason = "host passed no api or owner";
-        sco::Log("[plugin] refused %s: %s", IdOf(p), p.reason.c_str());
-        return false;
-    }
+// Refuses p: closes its module (natives), forgets its exports, logs. Always false.
+static bool RefuseLoad(Plugin& p, std::string why, const ModuleOps* ops) {
+    if (p.module && ops) ops->close(p.module);
+    p.module = nullptr;
+    p.exports = {};
+    p.state = State::Refused;
+    p.reason = std::move(why);
+    sco::Log("[plugin] refused %s: %s", IdOf(p), p.reason.c_str());
+    return false;
+}
 
-    auto refuse = [&](std::string why) {
-        if (p.module) { ops.close(p.module); p.module = nullptr; }
-        p.exports = {};
-        p.state = State::Refused;
-        p.reason = std::move(why);
-        sco::Log("[plugin] refused %s: %s", IdOf(p), p.reason.c_str());
-        return false;
-    };
-
-    // Not guarded: mapping runs the plugin's DllMain under the OS loader lock, and unwinding out
-    // of it would leave that lock held. Plugins keep DllMain empty (docs/plugins.md).
-    std::string error;
-    p.module = ops.open(p.dir / detail::FromUtf8(p.manifest.entry), error);
-    if (!p.module) return refuse("cannot load " + p.manifest.entry + ": " + error);
-
-    p.exports.query  = reinterpret_cast<sco_plugin_query_fn>(ops.symbol(p.module, "sco_plugin_query"));
-    p.exports.load   = reinterpret_cast<sco_plugin_load_fn>(ops.symbol(p.module, "sco_plugin_load"));
-    p.exports.unload = reinterpret_cast<sco_plugin_unload_fn>(ops.symbol(p.module, "sco_plugin_unload"));
-    if (!p.exports.query)  return refuse("missing export sco_plugin_query");
-    if (!p.exports.load)   return refuse("missing export sco_plugin_load");
-    if (!p.exports.unload) return refuse("missing export sco_plugin_unload");
-
-    QueryCall q{ p.exports.query };
+// The part natives and built-ins share once the three exports are known: query() and its
+// checks, then load(), both guarded. ops is null for a built-in (no module to close).
+static bool QueryAndLoad(Plugin& p, const sco_api* api, sco_plugin* self, const Options& opts,
+                         const ModuleOps* ops, QueryCall& q) {
+    const bool builtin = p.manifest.kind == Kind::Builtin;
+    q.fn = p.exports.query;
+    q.full = builtin;
     if (const uint32_t code = Guarded(QueryThunk, &q)) { Crash(p, "sco_plugin_query", code); return false; }
     if (p.state != State::Ready) return false;   // a nested fault already marked it
-    if (!q.gotInfo) return refuse("sco_plugin_query returned NULL");
-    if (q.size < offsetof(sco_plugin_info, author) + sizeof(void*)) return refuse("sco_plugin_info.size too small");
+    if (!q.gotInfo) return RefuseLoad(p, "sco_plugin_query returned NULL", ops);
+    if (q.size < offsetof(sco_plugin_info, author) + sizeof(void*)) return RefuseLoad(p, "sco_plugin_info.size too small", ops);
     if (q.major != opts.hostMajor || q.minor > opts.hostMinor) {
         char buf[48];
-        std::snprintf(buf, sizeof(buf), "DLL built for api %u.%u", q.major, q.minor);
-        return refuse(buf);
+        std::snprintf(buf, sizeof(buf), "%s built for api %u.%u", builtin ? "built-in" : "DLL", q.major, q.minor);
+        return RefuseLoad(p, buf, ops);
     }
     if (!q.hasName || p.manifest.id != q.name)
-        return refuse("DLL name '" + std::string(q.hasName ? q.name : "") + "' does not match id '" + p.manifest.id + "'");
+        return RefuseLoad(p, std::string(builtin ? "built-in" : "DLL") + " name '" + (q.hasName ? q.name : "") +
+                          "' does not match id '" + p.manifest.id + "'", ops);
+    if (builtin) {   // no plugin.ini: the manifest is what the plugin says about itself
+        p.manifest.name = p.manifest.id;
+        p.manifest.version = q.version[0] ? q.version : "?";
+        p.manifest.author = q.author;
+        p.manifest.apiMajor = q.major;
+        p.manifest.apiMinor = q.minor;
+    }
 
     p.self = self;
     LoadCall l{ p.exports.load, api, self };
@@ -209,15 +213,79 @@ bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& 
     if (p.state != State::Ready) return false;   // a nested fault already marked it (and released it)
     if (l.result != SCO_OK) {
         if (const Result r = ReleaseOwner(p); r != Result::Ok) return ReleaseFailed(p, r);   // keep it mapped
-        return refuse(std::string("sco_plugin_load returned ") + sco::ResultName(static_cast<Result>(l.result)));
+        return RefuseLoad(p, std::string("sco_plugin_load returned ") + sco::ResultName(static_cast<Result>(l.result)), ops);
     }
 
     p.state = State::Loaded;
     p.reason.clear();
     p.loadOrder = g_loadCounter.fetch_add(1) + 1;
-    sco::Log("[plugin] loaded %s %s (api %u.%u) from %s", IdOf(p), p.manifest.version.c_str(), q.major, q.minor,
-             (p.folder + "/" + p.manifest.entry).c_str());
+    if (builtin)
+        sco::Log("[plugin] loaded %s %s (api %u.%u) built in", IdOf(p), p.manifest.version.c_str(), q.major, q.minor);
+    else
+        sco::Log("[plugin] loaded %s %s (api %u.%u) from %s", IdOf(p), p.manifest.version.c_str(), q.major, q.minor,
+                 (p.folder + "/" + p.manifest.entry).c_str());
     return true;
+}
+
+bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& opts, const ModuleOps& ops) {
+    if (p.state != State::Ready || p.manifest.kind != Kind::Native) return false;
+    if (!api || !self) return RefuseLoad(p, "host passed no api or owner", nullptr);
+
+    // Not guarded: mapping runs the plugin's DllMain under the OS loader lock, and unwinding out
+    // of it would leave that lock held. Plugins keep DllMain empty (docs/plugins.md).
+    std::string error;
+    p.module = ops.open(p.dir / detail::FromUtf8(p.manifest.entry), error);
+    if (!p.module) return RefuseLoad(p, "cannot load " + p.manifest.entry + ": " + error, &ops);
+
+    p.exports.query  = reinterpret_cast<sco_plugin_query_fn>(ops.symbol(p.module, "sco_plugin_query"));
+    p.exports.load   = reinterpret_cast<sco_plugin_load_fn>(ops.symbol(p.module, "sco_plugin_load"));
+    p.exports.unload = reinterpret_cast<sco_plugin_unload_fn>(ops.symbol(p.module, "sco_plugin_unload"));
+    if (!p.exports.query)  return RefuseLoad(p, "missing export sco_plugin_query", &ops);
+    if (!p.exports.load)   return RefuseLoad(p, "missing export sco_plugin_load", &ops);
+    if (!p.exports.unload) return RefuseLoad(p, "missing export sco_plugin_unload", &ops);
+
+    QueryCall q{};
+    return QueryAndLoad(p, api, self, opts, &ops, q);
+}
+
+// ---- built-ins ------------------------------------------------------------------------------
+
+static bool ValidBuiltinId(const char* id) {
+    if (!id || !*id) return false;
+    size_t n = 0;
+    for (const char* c = id; *c; ++c, ++n)
+        if (n == kMaxIdLen || !((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '_')) return false;
+    for (const char* r : { "sco", "host", "menu", "game" })
+        if (std::strcmp(id, r) == 0) return false;
+    return true;
+}
+
+Plugin FromBuiltin(const Builtin& b) {
+    Plugin p;
+    p.manifestOk = true;
+    p.manifest.kind = Kind::Builtin;
+    p.exports = { b.query, b.load, b.unload };
+    if (!ValidBuiltinId(b.id)) {
+        p.folder = p.manifest.id = b.id ? std::string(b.id, strnlen(b.id, kMaxIdLen + 1)) : std::string("?");
+        p.state = State::Refused;
+        p.reason = "built-in id '" + p.folder + "' is not valid";
+        return p;
+    }
+    p.folder = p.manifest.id = b.id;
+    p.state = State::Ready;
+    const char* missing = !b.query ? "sco_plugin_query" : !b.load ? "sco_plugin_load" : !b.unload ? "sco_plugin_unload" : nullptr;
+    if (missing) {
+        p.state = State::Refused;
+        p.reason = std::string("built-in ") + b.id + " has no " + missing;
+    }
+    return p;
+}
+
+bool LoadBuiltin(Plugin& p, const sco_api* api, sco_plugin* self, const Options& opts) {
+    if (p.state != State::Ready || p.manifest.kind != Kind::Builtin) return false;
+    if (!api || !self) return RefuseLoad(p, "host passed no api or owner", nullptr);
+    QueryCall q{};
+    return QueryAndLoad(p, api, self, opts, nullptr, q);
 }
 
 void MarkCrashed(Plugin& p, const char* where, uint32_t code) {
@@ -250,19 +318,24 @@ void ContainCallouts(std::vector<Plugin>* list) {
     sco::SetCalloutGuard(list ? ContainedCallout : nullptr);
 }
 
-void UnloadNative(Plugin& p, const ModuleOps& ops) {
-    if (p.state != State::Loaded || p.manifest.kind != Kind::Native) return;
+// Unloads a loaded native (ops set: closes its module) or built-in (ops null: nothing to close).
+static void UnloadCode(Plugin& p, const ModuleOps* ops) {
     if (const uint32_t code = Guarded(UnloadThunk, reinterpret_cast<void*>(p.exports.unload))) {
         Crash(p, "sco_plugin_unload", code);   // module stays mapped
         return;
     }
     if (p.state != State::Loaded) return;   // a nested fault in unload() marked it Crashed: keep that
     if (const Result r = ReleaseOwner(p); r != Result::Ok) { ReleaseFailed(p, r); return; }   // never unmap
-    if (p.module) ops.close(p.module);
+    if (p.module && ops) ops->close(p.module);
     p.module = nullptr;
     p.exports = {};
     p.state = State::Unloaded;
     sco::Log("[plugin] unloaded %s", IdOf(p));
+}
+
+void UnloadNative(Plugin& p, const ModuleOps& ops) {
+    if (p.state != State::Loaded || p.manifest.kind != Kind::Native) return;
+    UnloadCode(p, &ops);
 }
 
 // ---- scripts --------------------------------------------------------------------------------
@@ -335,13 +408,22 @@ static void UnloadScript(Plugin& p, const ScriptRuntime* runtime) {
 void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops, const ScriptRuntime* runtime) {
     std::vector<Plugin*> loaded;
     for (auto& p : list)
-        if (p.state == State::Loaded && (p.manifest.kind == Kind::Native || p.manifest.kind == Kind::Lua))
-            loaded.push_back(&p);
-    for (size_t i = 1; i < loaded.size(); ++i)         // insertion sort, newest first
-        for (size_t j = i; j > 0 && loaded[j - 1]->loadOrder < loaded[j]->loadOrder; --j) std::swap(loaded[j - 1], loaded[j]);
+        if (p.state == State::Loaded && p.manifest.kind != Kind::Data) loaded.push_back(&p);
+    // Built-ins after every other plugin, then newest first.
+    auto before = [](const Plugin* a, const Plugin* b) {
+        const bool ab = a->manifest.kind == Kind::Builtin, bb = b->manifest.kind == Kind::Builtin;
+        return ab != bb ? bb : a->loadOrder > b->loadOrder;
+    };
+    for (size_t i = 1; i < loaded.size(); ++i)         // insertion sort
+        for (size_t j = i; j > 0 && before(loaded[j], loaded[j - 1]); --j) std::swap(loaded[j - 1], loaded[j]);
     for (Plugin* p : loaded) {
-        if (p->manifest.kind == Kind::Native) UnloadNative(*p, ops);
-        else UnloadScript(*p, runtime);
+        if (p->state != State::Loaded) continue;       // crashed while an earlier one unloaded
+        switch (p->manifest.kind) {
+            case Kind::Native:  UnloadCode(*p, &ops); break;
+            case Kind::Builtin: UnloadCode(*p, nullptr); break;
+            case Kind::Lua:     UnloadScript(*p, runtime); break;
+            case Kind::Data:    break;
+        }
     }
 }
 
@@ -350,7 +432,7 @@ void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops, const ScriptRunt
 std::string Describe(const Plugin& p) {
     std::string s = IdOf(p);
     s += ' ';
-    s += p.manifestOk ? p.manifest.version : "?";
+    s += p.manifestOk && !p.manifest.version.empty() ? p.manifest.version : "?";
     s += ' ';
     s += p.manifestOk ? KindName(p.manifest.kind) : "?";
     s += ' ';

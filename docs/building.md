@@ -26,7 +26,9 @@ In order, it:
 2. compiles the SDK template, the `hello` example and `sco-plugin-check` against `sco_api.h`,
 3. builds and runs `test_core` (ASan+UBSan), `test_runtime` and `test_host` (each under ASan+UBSan and again under ThreadSanitizer),
 4. builds the fake plugins from `tests/fixtures/plugins/native/fake_plugin.c` into `tests/out/plugins/` and runs `test_plugins` (ASan+UBSan),
-5. builds Lua and sco-lua and runs `test_lua` (ASan+UBSan), which also loads `sdk/examples/greeter` through the real loader.
+5. builds Lua and sco-lua and runs `test_lua` (ASan+UBSan), which also loads `sdk/examples/greeter` through the real loader,
+6. runs `test_app` (ASan+UBSan): the host kit with built-in plugins, two fake plugins, `greeter` and `travel_pack`,
+7. builds `hello` as a shared library into `tests/out/sim/plugins/` next to copies of `greeter` and `travel_pack`, builds `sco-host-sim` (ASan+UBSan) and runs `sco-host-sim tests/out/sim/plugins --ticks 3 --invoke hello.wave "Pilot One"`, which must exit 0 and answer `Hello, Pilot One`.
 
 Each test binary ends with `N passed, M failed` and exits non-zero on any failure; the script stops at the first failure. Output goes to `tests/out/` (ignored by git).
 
@@ -66,13 +68,15 @@ The build is 64-bit only; configuring for 32 bits stops with an error.
 | `sco_plugins` | `src/plugins/*.cpp` (`guard_win.cpp` on Windows only) | `sco_runtime`, `sco_core`, `dl` |
 | `sco_lua_vendor` | `plugins/lua/third_party/lua/src/*.c` without `lua.c`/`luac.c` | `m` on Unix |
 | `sco_lua` | `plugins/lua/sco_lua.c` | `sco_lua_vendor` |
+| `sco_app` | `src/app/sco_app.cpp`: the host kit, `sco/app.h` | `sco_host`, `sco_plugins`, `sco_core` |
 | `sco-sigcheck` | `tools/sco-sigcheck.cpp` | `sco_core` |
+| `sco-host-sim` | `tools/sco-host-sim.cpp` | `sco_app`, `sco_lua` |
 
 Every library exposes `include/` as a public include directory. To use sco-core from another CMake project:
 
 ```cmake
 add_subdirectory(external/sco-core)            # tests stay off when not top level
-target_link_libraries(my_host PRIVATE sco_host sco_plugins sco_lua)
+target_link_libraries(my_host PRIVATE sco_app sco_lua)   # sco_app brings sco_host, sco_plugins, sco_core
 ```
 
 ### Tests
@@ -85,8 +89,20 @@ target_link_libraries(my_host PRIVATE sco_host sco_plugins sco_lua)
 | `test_host` | Capabilities and the `sco_api` table |
 | `test_plugins` | `plugin.ini`, discovery, the content index and the native loader against the fake plugins in `<build>/tests/out/plugins/` |
 | `test_lua` | sco-lua through the real loader and host table, including `sdk/examples/greeter` |
+| `test_app` | The host kit (`sco::app`) and built-in plugins: load order, `game.ready`, tick, a faulting built-in contained, `game.exit` before unload, unload order, restart |
+| `host_sim_examples` | `sco-host-sim <build>/tests/out/sim/plugins --ticks 3 --invoke hello.wave "Pilot One"` over `hello` (built by CMake), `greeter` and `travel_pack`: exit 0 and the reply (`tests/host_sim.cmake`) |
 
 On Windows `test_plugins` loads real DLLs with `LoadLibraryExW` and runs the real `__try/__except` crash guard. The TSan runs and the `x86_64-pc-windows-msvc` cross-compile of the ABI pin stay in `tools/test.sh`.
+
+## `sco-host-sim`
+
+The real host kit, runtime, loader and sco-lua outside the game, for CI and for trying plugins:
+
+```sh
+sco-host-sim <plugin root> [--exe StarCitizen.exe] [--cap NAME]... [--ticks N] [--no-lua] [--invoke NAME [ARG]...]
+```
+
+It starts `sco::app` with plugins on and a built-in demo plugin `sim` (command `sim.ping`), runs N ticks (default 1), invokes one command with its arguments parsed against the command's arg defs (int, float, string, bool as `1`/`0`/`true`/`false`), then stops. `--exe` resolves the signature tables against a game executable on disk; `--cap` sets a capability ready; `--no-lua` leaves Lua plugins without a runtime (refused). Log lines go to stdout, as in `mod.log`. Exit 0 when every plugin ended loaded, off or disabled and the invoke answered OK; 1 otherwise; 2 for bad arguments.
 
 ## `tools/test-win.sh`
 
@@ -114,4 +130,4 @@ Every workflow has `contents: read` permissions and pins its actions to commit S
 
 ## Adding a source file
 
-The two builds list sources separately. A new `.cpp` goes into both `tools/test.sh` (and `tools/test-win.sh` if `test_plugins` links it) and the matching library in `CMakeLists.txt`; a new fake-plugin mode goes into the `for m in ...` loops of both scripts and `SCO_FAKE_PLUGIN_MODES`.
+The two builds list sources separately. A new `.cpp` goes into both `tools/test.sh` (`APP` for anything `sco_app` links) (and `tools/test-win.sh` if `test_plugins` links it) and the matching library in `CMakeLists.txt`; a new fake-plugin mode goes into the `for m in ...` loops of both scripts and `SCO_FAKE_PLUGIN_MODES`.

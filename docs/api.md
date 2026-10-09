@@ -127,6 +127,33 @@ Named yes/no answers to "does this feature work on this game build?". `sco_api.h
 
 The table checks `self` on every call (`SCO_BAD_ARG` for a pointer the host didn't hand out or one already released; `status` and `log` are dropped). `register_command` uses the plugin id as the prefix, needs `size >= sizeof(sco_command)` and reads arg defs with `arg_def_size`. `list_commands` returns host-built views of every live command, host features' too; in a view `fn` and `ctx` are `NULL` (run commands with `invoke`). `log` writes `[<id>] message`, with `warning: ` or `error: ` for the higher levels.
 
+## `sco/app.h`: the host kit
+
+The startup order every product needs, over the host table, caps, signatures and the plugin loader. Game thread only.
+
+```cpp
+struct Platform {
+    const char* hostVersion;                       // "sc-offline 0.8.0"; static
+    std::filesystem::path pluginRoot;              // data/plugins
+    bool pluginsEnabled = false;                   // plugins = on|off; built-ins load either way
+    const plugins::Builtin* builtins = nullptr; size_t nBuiltins = 0;
+    const plugins::ScriptRuntime* scripts = nullptr;   // sco-lua, or nullptr
+    const Image* image = nullptr;                  // resolve signatures against this; nullptr skips
+    void (*setCapabilities)() = nullptr;           // the product sets caps after ResolveAll
+    plugins::ModuleOps moduleOps = plugins::PlatformModuleOps();
+};
+```
+
+| Function | Does |
+|---|---|
+| `bool app::Start(const Platform& pf)` | `SetGameThread`; with `image`, `RegisterGameSignatures` and `ResolveAll(*image)`; `setCapabilities()`; `host::BuildApi`; the list (every built-in, then `Discover(pluginRoot)` when `pluginsEnabled`); `ContainCallouts`; `LoadBuiltin` for the built-ins, then `LoadNative` / `LoadScript` in list order (a `lua` plugin is refused `no script runtime` without `scripts`); the content index; with `image`, `LogSignatureReport(false)`; `LogReport`; dispatches `game.ready`. Problems are logged, never fatal. False (nothing changes) when already started |
+| `void app::Tick(uint32_t nowMs)` | `GameThreadTick(nowMs)`. No-op unless started |
+| `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
+| `const std::vector<plugins::Plugin>& app::Plugins()` | The list of the last `Start` (built-ins first), final states after `Stop`. Never resized between two `Start`s |
+| `const plugins::ContentIndex& app::Content()` | The data-pack index of the last `Start` |
+
+`Platform` is copied; `builtins`, `scripts` and `hostVersion` must outlive `Stop`. Storage and services ([framework plan, Phase 5](framework.md#phase-5-services-and-storage)) will be further `Platform` fields with defaults.
+
 ## `sco/pe_file.h`: host tools only
 
 ```cpp

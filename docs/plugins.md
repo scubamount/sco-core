@@ -67,7 +67,7 @@ This limits damage. It is not a sandbox: stack corruption, `__fastfail` and `/GS
 
 ### Unloading
 
-`UnloadAll(list, ops, &runtime)` at `game.exit`: plugins last loaded first. For a native plugin: `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`. If `Release` fails (out of memory, or `UnloadAll` called off the game thread) the runtime may still hold the plugin's callbacks, so the DLL is never unmapped: the plugin becomes `crashed: release failed: <RESULT>` instead.
+`UnloadAll(list, ops, &runtime)` at `game.exit`: plugins last loaded first, [built-ins](#built-in-plugins) after every other plugin. For a native plugin: `sco_plugin_unload()` (guarded; a fault marks the plugin crashed and keeps the DLL), `Release(self)`, `FreeLibrary`. If `Release` fails (out of memory, or `UnloadAll` called off the game thread) the runtime may still hold the plugin's callbacks, so the DLL is never unmapped: the plugin becomes `crashed: release failed: <RESULT>` instead.
 
 `LoadNative` passes the plugin path to `LoadLibraryExW` as an absolute path, so the host may discover from a relative root such as `data/plugins`.
 
@@ -93,6 +93,25 @@ A script talks to the host only through the `sco_api` table, like a native plugi
 
 Extensions match in any case. Anything else in the folder is ignored, and symlinks are skipped so a pack can't reach outside itself. `scripts/` is read at most 16 folders deep. A pack with more than 4096 matching files is refused (`too many files`), and so is one whose content folders can't be read to the end (`cannot read scripts: ...`), so a pack never loads with only part of its files. `Build` can run again at any time: it re-reads every ready or loaded pack. Features query the index with `Items(kind)`, `Find(kind, "missions/a.cwmission")` (one entry per pack that ships that name, in plugin order) or `FromPlugin(id)`, and read the files themselves.
 
+## Built-in plugins
+
+A feature compiled into the host can be a plugin too: the same three functions a plugin DLL exports, listed in a table instead of loaded from a folder.
+
+```cpp
+static const sco::plugins::Builtin kBuiltins[] = {
+    { "teleport", TeleportQuery, TeleportLoad, TeleportUnload },   // id, query, load, unload
+};
+auto p = sco::plugins::FromBuiltin(kBuiltins[0]);                  // kind builtin, state ready
+sco::plugins::LoadBuiltin(p, api, sco::host::NewPlugin("teleport"), opts);
+```
+
+- No `plugin.ini`: the manifest (name, version, author, api) comes from `sco_plugin_query`. `FromBuiltin` refuses an id that isn't `[a-z0-9_]`, 1-31 characters and unreserved, or a null function.
+- `LoadBuiltin` runs `LoadNative`'s checks without a module: `size` covers `author`, the api major matches and the minor isn't newer, `name` equals the id; then `sco_plugin_load(api, self)`. Refusals read `built-in built for api 2.0` and `built-in name 'x' does not match id 'y'`.
+- Crash containment is the same: `query`, `load` and `unload` are guarded, and `ContainCallouts` guards every callout it owns, so a built-in that faults is `crashed` and the rest keep running.
+- `UnloadAll` unloads built-ins after every other plugin: they are the product's own features, which other plugins may still call while they unload.
+- A built-in talks to other plugins only through `sco_api`. Unlike an external plugin it may also read sco-core's C++ headers (signature rows, scanners), since it ships and is tested with the core.
+- The report lists it as `builtin`: `teleport 1.0.0 builtin loaded`. Hosts normally don't call these directly: `sco::app::Start` ([API](api.md#scoapph-the-host-kit)) loads built-ins before any discovered plugin.
+
 ## Status
 
 `Describe(plugin)` gives one line, `hello 1.0.0 native loaded` or `pack 1.0.0 data refused: built for api 2.0`; `LogReport(list, enabled)` writes `[plugin] N found, L loaded (plugins = on)` and one line per plugin.
@@ -100,4 +119,5 @@ Extensions match in any case. Anything else in the folder is ignored, and symlin
 ## Tests
 
 - `tools/test.sh` runs `tests/test_plugins.cpp` on the host under ASan+UBSan: manifest rules, discovery over `tests/fixtures/plugins/tree/`, the content index, and the loader against real shared libraries built from `tests/fixtures/plugins/native/fake_plugin.c`, one per behavior. Off Windows the crash guard is a signal handler the test installs.
+- `tools/test.sh` also runs `tests/test_app.cpp`: built-in plugins through the loader (the same checks, crash containment, built-ins unloaded last) and through `sco::app` with the fake plugins, `greeter` and `travel_pack`; then `sco-host-sim` over the SDK examples.
 - `tools/test-win.sh` builds the same tests and plugins for Windows with mingw (the guard with clang, since GCC has no `__try`) and runs them under Wine: the real `LoadLibraryExW` and SEH path.
