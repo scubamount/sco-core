@@ -101,10 +101,13 @@ target_include_directories(sco_vfs PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_vfs PUBLIC Threads::Threads)
 sco_project_target(sco_vfs)
 
-# The DataCore parser, validation and patcher (sco/datacore.h): bytes in, tables and sco::vfs splices
-# out. No engine, no Windows.
-add_library(sco_datacore STATIC src/datacore/datacore.cpp src/datacore/patch.cpp)
+# The DataCore parser, validation and patcher (sco/datacore.h) and data packs (sco/datacore_pack.h):
+# bytes in, tables and sco::vfs splices out. No engine, no Windows. Vendored toml++
+# (third_party/tomlplusplus, see its README) is a private SYSTEM include of this library only; its
+# warnings are also off around the include (src/datacore/toml.h).
+add_library(sco_datacore STATIC src/datacore/datacore.cpp src/datacore/patch.cpp src/datacore/pack.cpp)
 target_include_directories(sco_datacore PUBLIC "${SCO_INCLUDE_DIR}")
+target_include_directories(sco_datacore SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tomlplusplus")
 target_link_libraries(sco_datacore PUBLIC sco_vfs)
 sco_project_target(sco_datacore)
 
@@ -192,7 +195,7 @@ sco_project_target(sco-sigcheck)
 
 # The real host kit, loader and sco-lua outside the game.
 add_executable(sco-host-sim tools/sco-host-sim.cpp)
-target_link_libraries(sco-host-sim PRIVATE sco_app sco_lua)
+target_link_libraries(sco-host-sim PRIVATE sco_app sco_lua sco_datacore)
 sco_project_target(sco-host-sim)
 
 # DataCore files on disk (docs/datacore.md): info and records.
@@ -313,6 +316,21 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_datacore_patch PRIVATE sco_datacore)
   sco_project_target(test_datacore_patch)
   add_test(NAME test_datacore_patch COMMAND test_datacore_patch)
+  # Data packs: golden parses of tests/fixtures/datacore/golden/*.toml, ordering, conflicts,
+  # atomicity, every refusal; it writes the fixture the sample pack is checked against.
+  add_executable(test_datacore_pack tests/test_datacore_pack.cpp)
+  target_link_libraries(test_datacore_pack PRIVATE sco_datacore)
+  sco_project_target(test_datacore_pack)
+  add_test(NAME test_datacore_pack COMMAND test_datacore_pack "${CMAKE_CURRENT_SOURCE_DIR}" "${SCO_TEST_OUT}")
+  set_tests_properties(test_datacore_pack PROPERTIES FIXTURES_SETUP dcb_pack_fixtures)
+  # sco-dcb lint / check / show / diff over the golden files, the sample pack and that fixture.
+  add_test(NAME dcb_pack
+           COMMAND "${CMAKE_COMMAND}" "-DDCB=$<TARGET_FILE:sco-dcb>" "-DROOT=${CMAKE_CURRENT_SOURCE_DIR}" "-DDIR=${SCO_TEST_OUT}"
+                   -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dcb_pack.cmake")
+  set_tests_properties(dcb_pack PROPERTIES
+    FIXTURES_REQUIRED dcb_pack_fixtures
+    PASS_REGULAR_EXPRESSION "dcb_pack: OK"
+    FAIL_REGULAR_EXPRESSION "dcb_pack: FAIL")
   add_test(NAME dcb_tool
            COMMAND "${CMAKE_COMMAND}" "-DDCB=$<TARGET_FILE:sco-dcb>" "-DDIR=${SCO_TEST_OUT}"
                    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dcb_tool.cmake")
@@ -400,6 +418,7 @@ if(SCO_BUILD_TESTS)
   endif()
   file(WRITE "${_sim}/hello/plugin.ini" "${_hello_ini}")
   file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/sdk/examples/greeter" "${CMAKE_CURRENT_SOURCE_DIR}/sdk/examples/travel_pack"
+            "${CMAKE_CURRENT_SOURCE_DIR}/sdk/examples/quantum_pack"
        DESTINATION "${_sim}")
   add_dependencies(sco-host-sim sco_sim_hello)
   # tests/host_sim.cmake runs the sim and prints "host_sim_examples: FAIL" unless it exits 0 and

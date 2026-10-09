@@ -220,10 +220,37 @@ struct PatchOptions {
     bool atomic = true;   // Emit refuses the whole batch if any operation was refused (design: per pack)
 };
 
+// The value an OverrideField or SetPointer wrote, as an opaque identity: two operations with the same
+// slot wrote the same field, whatever paths they took to it (pack conflict checks).
+struct FieldSlot {
+    uint64_t region = 0, offset = 0;
+    bool operator==(const FieldSlot&) const = default;
+};
+
 struct OpReport {
     std::string op;       // "OverrideField record \"ShipA\" speed"
     Status      status;
+    std::optional<FieldSlot> slot;   // OverrideField, SetPointer when accepted
 };
+
+// One value under an instance, as Patch::ReadFields lists it (sco-dcb show and diff).
+struct FieldView {
+    std::string path;          // from the start: "pos.x", "parts[1]", "engine.weight"
+    uint16_t    dataType = 0;
+    bool        array = false; // the array itself: `count` elements follow as path[i]
+    uint32_t    count = 0;
+    // The value in pack syntax: 2.5, 7, true, "text", { enum = "Large" }, { guid = "..." },
+    // { uint = "..." } (past int64); pointers "-> Part[3]" or "null"; weak "weak -> Base[0]";
+    // references "ref {guid}"; an array "[2]"; an element of an array of structs "Part[4]".
+    std::string text;
+    InstanceId  target;        // strong and weak pointers, struct array elements; invalid for null
+    uint32_t    depth = 0;     // pointer hops and array levels from the start (a subtree is deeper)
+};
+
+// Checks the syntax of a field path (section 4) without a file: BadArgument with the reason.
+Status CheckFieldPath(std::string_view path);
+// Parses the string form FormatGuid prints (any hex case). False when malformed.
+bool ParseGuid(std::string_view text, Guid& out);
 
 // One batch of semantic overrides against one parsed file. Field paths walk from a record's root
 // instance (or an added instance): `name` (a property, inherited ones included), `name[3]` (array
@@ -267,7 +294,19 @@ public:
 
     const std::vector<OpReport>& Reports() const;   // one per operation, in call order
 
+    // A copy of this patch, operations and reports included, to try more operations on and keep or
+    // drop as a whole (per-pack atomicity). Same base Schema.
+    Patch Fork() const;
+
+    // Lists the values under a record's root (or under `field` of it), as patched so far, in layout
+    // order: scalars, strings and enums; inline structs flattened ("pos.x"); arrays as one entry
+    // then their elements; strong pointers followed up to `maxDepth` hops (never around a cycle).
+    // Weak pointers and references are listed, not followed.
+    Status ReadFields(const RecordRef& rec, std::string_view field, std::vector<FieldView>& out, uint32_t maxDepth = 16) const;
+    Status ReadFields(InstanceId inst, std::string_view field, std::vector<FieldView>& out, uint32_t maxDepth = 16) const;
+
 private:
+    friend Status CheckFieldPath(std::string_view path);
     struct Impl;
     std::unique_ptr<Impl> impl_;
 };
