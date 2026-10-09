@@ -495,16 +495,19 @@ static void TestNative() {
         CHECK(!p.module);
         CHECK(g_closed.size() == closes + (std::strcmp(r.id, "text") == 0 ? 0 : 1));
     }
+    Mk("native: refusals done");
     CHECK(sco::SubscriptionCount() == subs0 + 1);   // m1 subscribed, then was released
     CHECK(Logged("[plugin] refused m3: DLL built for api 2.0"));
 
     // Null api / owner are refused before any plugin code runs.
     P::Plugin& m10 = get("m10");
+    Mk("native: null api");
     P::Plugin copy = m10;
     CHECK(!P::LoadNative(copy, nullptr, NewOwner(), on, kRecOps) && copy.reason == "host passed no api or owner");
 
     {
         // m5: faults in load after subscribing: crashed, released, module kept mapped.
+        Mk("native: m5 load");
         P::Plugin& c = get("m5");
         const size_t closes = g_closed.size();
         CHECK(!P::LoadNative(c, &api, NewOwner(), on, kRecOps));
@@ -515,16 +518,19 @@ static void TestNative() {
         char status[128];
         CHECK(sco::GetStatus(status, sizeof(status)) && std::strcmp(status, "plugin m5 crashed and was disabled") == 0);
 
+        Mk("native: m5 done");
         // m6: faults in query.
         P::Plugin& q = get("m6");
         CHECK(!P::LoadNative(q, &api, NewOwner(), on, kRecOps));
         CHECK(q.state == State::Crashed && q.reason == "crashed in sco_plugin_query (0xC0000005)");
 
+        Mk("native: m6 done");
         // m10: info.name is a bad pointer; the fault happens inside the guard.
         CHECK(!P::LoadNative(m10, &api, NewOwner(), on, kRecOps));
         CHECK(m10.state == State::Crashed && m10.reason == "crashed in sco_plugin_query (0xC0000005)");
 
         Mk("native: m8");
+        Mk("native: m10 done");
         // m8: loads, then faults in its tick: crashed mid-dispatch, never called again, the
         // other plugin keeps ticking.
         P::Plugin& t = get("m8");
