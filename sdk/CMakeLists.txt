@@ -6,7 +6,7 @@ project(sco_sdk C CXX)
 #
 #   cmake -S . -B build && cmake --build build && cmake --install build --prefix out
 #
-# out/data/plugins/ then holds hello/, cpp_hello/, travel_pack/, greeter/ and my_plugin/, laid out the way
+# out/data/plugins/ then holds hello/, cpp_hello/, travel_pack/, quantum_pack/, greeter/ and my_plugin/, laid out the way
 # sc-offline reads them, and out/bin/ holds sco-plugin-check.
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/sco-plugin.cmake")
@@ -28,4 +28,5 @@ sco_add_plugin(hello SOURCES examples/hello/hello.c INI examples/hello/plugin.in
 sco_add_plugin(cpp_hello SOURCES examples/cpp_hello/cpp_hello.cpp INI examples/cpp_hello/plugin.ini)
 sco_add_plugin(my_plugin SOURCES template/plugin.c INI template/plugin.ini)
 sco_add_pack(travel_pack DIR examples/travel_pack)
+sco_add_pack(quantum_pack DIR examples/quantum_pack)
 sco_add_pack(greeter DIR examples/greeter)

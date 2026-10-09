@@ -272,12 +272,12 @@ static void TestContentIndex() {
     P::ContentIndex index;
     g_log.clear();
     const size_t n = index.Build(list);
-    CHECK(n == 7 && index.Size() == 7);
+    CHECK(n == 8 && index.Size() == 8);
     CHECK(Find(list, "pack")->state == State::Loaded && Find(list, "zpack")->state == State::Loaded);
     CHECK(Find(list, "needcap")->state == State::Loaded);                  // an empty pack still loads
     CHECK(Find(list, "hello")->state == State::Ready);                     // natives untouched
     CHECK(Find(list, "badapi")->state == State::Refused);                  // refused packs not indexed
-    CHECK(Logged("[plugin] loaded pack 2.1 (data, 6 files)"));
+    CHECK(Logged("[plugin] loaded pack 2.1 (data, 7 files)"));
 
     CHECK((Names(index.Items(P::ContentKind::Mission)) ==
            std::vector<std::string>{ "pack:missions/A.CWMISSION", "pack:missions/b.cwmission", "zpack:missions/b.cwmission" }));
@@ -285,6 +285,8 @@ static void TestContentIndex() {
     CHECK((Names(index.Items(P::ContentKind::Script)) ==
            std::vector<std::string>{ "pack:scripts/deep/er/nested.xml", "pack:scripts/top.xml" }));
     CHECK((Names(index.Items(P::ContentKind::List)) == std::vector<std::string>{ "pack:lists/ships.txt" }));
+    CHECK((Names(index.Items(P::ContentKind::DataCore)) == std::vector<std::string>{ "pack:datacore/drive.toml" }));
+    CHECK(std::strcmp(P::ContentKindName(P::ContentKind::DataCore), "datacore") == 0);
     CHECK((Names(index.Find(P::ContentKind::Mission, "missions/b.cwmission")) ==
            std::vector<std::string>{ "pack:missions/b.cwmission", "zpack:missions/b.cwmission" }));
     CHECK(index.Find(P::ContentKind::Rules, "missions/b.cwmission").empty());
@@ -295,7 +297,7 @@ static void TestContentIndex() {
 
     // Rebuilding replaces: the Loaded packs are re-read, not dropped and not indexed twice.
     const auto missions = Names(index.Items(P::ContentKind::Mission));
-    CHECK(index.Build(list) == 7 && index.Size() == 7);
+    CHECK(index.Build(list) == 8 && index.Size() == 8);
     CHECK(Names(index.Items(P::ContentKind::Mission)) == missions);
     CHECK(Find(list, "pack")->state == State::Loaded && Find(list, "zpack")->state == State::Loaded);
     index.Clear();

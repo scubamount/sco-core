@@ -1,0 +1,3 @@
+# expect: 3: atomic must be true or false
+format = 1
+atomic = "yes"

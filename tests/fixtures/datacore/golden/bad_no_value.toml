@@ -1,0 +1,6 @@
+# expect: 4: [[set]]: needs exactly one of value or pointer
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "speed"

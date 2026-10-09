@@ -14,6 +14,7 @@ const char* ContentKindName(ContentKind k) {
         case ContentKind::Rules:   return "rules";
         case ContentKind::Script:  return "script";
         case ContentKind::List:    return "list";
+        case ContentKind::DataCore: return "datacore";
     }
     return "?";
 }
@@ -41,6 +42,7 @@ static constexpr Rule kRules[] = {
     { ContentKind::Rules,   "rules",    ".rules",     false },
     { ContentKind::Script,  "scripts",  ".xml",       true  },
     { ContentKind::List,    "lists",    ".txt",       false },
+    { ContentKind::DataCore, "datacore", ".toml",     false },
 };
 
 // Collects one pack's items. Empty on success, else why the pack is refused: more than

@@ -1,0 +1,7 @@
+# expect: 5: [[set]]: bad guid "nope"
+format = 1
+
+[[set]]
+guid = "nope"
+field = "speed"
+value = 1.0

@@ -1,0 +1,8 @@
+# expect: 4: [[append]]: needs exactly one of value, pointer or element
+format = 1
+
+[[append]]
+record = "ShipA"
+field = "parts"
+value = 1
+pointer = "null"

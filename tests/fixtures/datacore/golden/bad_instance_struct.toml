@@ -1,0 +1,5 @@
+# expect: 4: [[instance]]: missing struct
+format = 1
+
+[[instance]]
+id = "p"

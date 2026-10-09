@@ -1,0 +1,71 @@
+# expect: ok 13
+# Every form the format has, against tests/test_datacore_pack.cpp's scene.
+format = 1
+atomic = false
+
+[[set]]
+record = "ShipA"
+field = "speed"
+value = 2.5
+
+[[set]]
+guid = "27262524-2322-2120-2f2e-2d2c2b2a2928"
+record = "ShipB"
+field = "label"
+value = "patched \"label\""
+
+[[set]]
+record = "ShipA"
+field = "kind"
+value = { enum = "Small" }
+
+[[set]]
+record = "ShipA"
+field = "id"
+value = { guid = "93929190-9594-9796-9f9e-9d9c9b9a9998" }
+
+[[set]]
+record = "ShipB"
+field = "maker"
+value = { ref = "ShipA" }
+
+[[set]]
+record = "ShipA"
+field = "u64"
+value = { uint = "18446744073709551615" }
+
+[[instance]]
+id = "fresh"
+struct = "Part"
+clone = { record = "PartX" }
+set = { "weight" = 11 }
+
+[[set]]
+record = "ShipB"
+field = "engine"
+pointer = "@fresh"
+
+[[set]]
+record = "ShipA"
+field = "owner"
+pointer = { record = "BaseOne" }
+
+[[set]]
+instance = "@fresh"
+field = "partName"
+value = "fresh"
+
+[[append]]
+record = "ShipA"
+field = "counts"
+value = 30
+
+[[append]]
+record = "ShipA"
+field = "parts"
+pointer = "null"
+
+[[append]]
+record = "ShipA"
+field = "path"
+value = { struct = "Vec2", set = { "x" = 7.0 } }

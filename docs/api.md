@@ -418,6 +418,24 @@ if (Status st = p.Emit(splices); !st) Log("datacore: %s: %s", RefusalName(st.cat
 
 **Atomicity.** An operation is checked in full before it writes, so a refused one changes nothing. With `PatchOptions::atomic` (the default, the design's per-pack rule) `Emit` refuses the whole batch with the first refused operation's category; with `atomic = false` it emits the accepted ones. Nothing existing is renumbered: overwrites are in place, and instances, array copies and strings are appended. Strings reuse the field's current pool offset when it already holds the same text, or one this batch added; the value-string pool is never searched. A null pointer is written as struct and instance `0xFFFFFFFF`, as 4.10.193 stores it. A reference is written as the target record's root `instanceIndex` (`u32`) and its GUID, never the record's position (R1); a null reference is `0xFFFFFFFF` and a zero GUID. The reference's target struct isn't checked against the field's.
 
+Also on `Patch`: `Fork()` (a copy to try more operations on and keep or drop whole, which is how packs get per-pack atomicity), `ReadFields(rec | instance, path, out, maxDepth)` (the values under a record or field as patched so far, in pack syntax: what `sco-dcb show` prints), and each `OpReport` carries the `FieldSlot` an `OverrideField` or `SetPointer` wrote, so two operations that reach one field by different paths are recognized. Free functions: `CheckFieldPath(path)` (syntax only) and `ParseGuid(text, out)` (the inverse of `FormatGuid`).
+
+### DataCore data packs: `sco/datacore_pack.h`
+
+The `.toml` files of a data pack's `datacore\` folder ([format](datacore.md#pack-format)) as patcher operations. `ParsePack(text, pack, error)` reads one file with vendored toml++ (no exceptions; the first error with its line) and checks everything that needs no game file. `WritePack(pack)` writes the canonical form back. `ApplyPacks(schema, packs)` applies packs in the order given, which is plugin order: each pack is tried on a `Fork` of what is accepted so far and kept or dropped whole (or per operation with `atomic = false`); a later pack wins a field an earlier one set, and the conflict is listed with both sources; then one `Emit`. The result is a `PackResult` with `{ status, splices, packs (one PackReport each: state Applied, Partial or Refused, applied and skipped counts, the first reason, one PackOpReport per patcher call), conflicts }`. `Summary(result)` gives the log line `[datacore] 3 packs: gladius_qt 12/12 applied; ui_tweaks 40/41 applied (1 skipped: line 9: ...); old_mod refused (line 3: ...)`.
+
+```cpp
+sco::datacore::Pack pack;
+pack.plugin = "gladius_qt";                         // its position in plugin order is the priority
+pack.name = "datacore/drive.toml";
+std::string error;
+if (!sco::datacore::ParsePack(text, pack, error)) Log("[datacore] %s: %s", pack.name.c_str(), error.c_str());
+const auto result = sco::datacore::ApplyPacks(schema, std::vector{ pack });
+Log("%s", sco::datacore::Summary(result).c_str());   // result.splices go to sco::vfs
+```
+
+The content index lists the files (`ContentKind::DataCore`, [plugins](plugins.md#data-packs)); applying them when the game opens `Game2.dcb` is the CryPak adapter's job (design plan PR 7), and the capability `datacore.pack.<id>` follows each pack's state there.
+
 ## `sco/pe_file.h`: host tools only
 
 ```cpp

@@ -12,7 +12,10 @@
 #include <cfloat>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <map>
+#include <optional>
 #include <random>
 #include <type_traits>
 #include <unordered_map>
@@ -164,6 +167,7 @@ struct Patch::Impl {
     std::map<uint64_t, Region> regions;              // by rank (file order)
     std::unordered_map<std::string, uint32_t> strings;   // value-pool offsets of strings this patch added
     std::vector<OpReport> reports;
+    std::optional<Loc> wrote;                        // the slot the running OverrideField wrote
 
     Impl(const Schema& schema, PatchOptions o) : s(schema), f(schema.File()), opt(std::move(o)) {
         if (opt.guidSeed) rng.seed(*opt.guidSeed);
@@ -714,6 +718,7 @@ struct Patch::Impl {
         if (Status st = Encode(n.dataType, n.typeIndex, v, &n.loc, e); !st) return st;
         Finish(e);
         Write(n.loc, e.bytes, e.size);
+        wrote = n.loc;
         return {};
     }
 
@@ -1059,8 +1064,184 @@ struct Patch::Impl {
     }
     Status Report(std::string op, const std::string& where, Status st) {
         if (!st) st.message = where + ": " + st.message;
-        reports.push_back({ std::move(op), st });
+        std::optional<FieldSlot> slot;
+        if (st && wrote) slot = FieldSlot{ wrote->region, wrote->off };
+        wrote.reset();
+        reports.push_back({ std::move(op), st, slot });
         return st;
+    }
+
+    // ---- listing (ReadFields) ------------------------------------------------------------------
+
+    static std::string FloatText(double d, bool single) {
+        if (std::isnan(d)) return "nan";
+        if (std::isinf(d)) return d < 0 ? "-inf" : "inf";
+        char buf[40] = "";
+        for (int prec = single ? 6 : 15; prec <= 17; ++prec) {
+            std::snprintf(buf, sizeof(buf), "%.*g", prec, d);
+            const double back = std::strtod(buf, nullptr);
+            if (single ? static_cast<float>(back) == static_cast<float>(d) : back == d) break;
+        }
+        std::string s = buf;
+        if (s.find_first_of(".en") == std::string::npos) s += ".0";
+        return s;
+    }
+    std::string InstName(uint32_t st, uint64_t index) const {
+        return (st < s.structs.size() ? SName(st) : Fmt("struct%u", st)) + Fmt("[%llu]", static_cast<ull>(index));
+    }
+    // A leaf slot's value in pack syntax; `target` set for pointers.
+    std::string Text(const Node& n, InstanceId& target) const {
+        uint8_t b[20] = {};
+        const uint32_t size = n.dataType == type::kReference ? 20 : FieldSize(n.dataType);
+        if (size == 0 || !Read(n.loc, b, size)) return "(unreadable)";
+        uint64_t u = 0;
+        for (uint32_t i = 0; i < size && i < 8; ++i) u |= static_cast<uint64_t>(b[i]) << (8 * i);
+        switch (n.dataType) {
+        case type::kBool: return b[0] ? "true" : "false";
+        case type::kInt8: return std::to_string(static_cast<int8_t>(u));
+        case type::kInt16: return std::to_string(static_cast<int16_t>(u));
+        case type::kInt32: return std::to_string(static_cast<int32_t>(u));
+        case type::kInt64: return std::to_string(static_cast<int64_t>(u));
+        case type::kUInt8: case type::kUInt16: case type::kUInt32: return std::to_string(u);
+        case type::kUInt64: return u > static_cast<uint64_t>(INT64_MAX) ? "{ uint = \"" + std::to_string(u) + "\" }" : std::to_string(u);
+        case type::kFloat: { float x; const uint32_t bits = static_cast<uint32_t>(u); std::memcpy(&x, &bits, 4); return FloatText(x, true); }
+        case type::kDouble: { double x; std::memcpy(&x, &u, 8); return FloatText(x, false); }
+        case type::kGuid: { Guid g; std::memcpy(g.bytes.data(), b, 16); return "{ guid = \"" + FormatGuid(g) + "\" }"; }
+        case type::kString: case type::kLocale: case type::kEnum: {
+            const uint32_t off = static_cast<uint32_t>(u);
+            std::string_view v;
+            if (off < s.header.valueStringLength) v = s.ValueString(off);
+            else {
+                bool found = false;
+                for (const auto& [text, at] : strings)
+                    if (at == off) { v = text; found = true; break; }
+                if (!found) return "(unreadable)";
+            }
+            const std::string q = Quote(v);
+            return n.dataType == type::kEnum ? "{ enum = " + q + " }" : q;
+        }
+        case type::kStrongPointer: case type::kWeakPointer: {
+            const uint32_t st = static_cast<uint32_t>(u), idx = static_cast<uint32_t>(u >> 32);
+            if (st == kNull) return "null";
+            target = { st, idx };
+            return (n.dataType == type::kWeakPointer ? "weak -> " : "-> ") + InstName(st, idx);
+        }
+        case type::kReference: {
+            if (static_cast<uint32_t>(u) == kNull) return "null";
+            Guid g;
+            std::memcpy(g.bytes.data(), b + 4, 16);
+            return "{ ref = \"guid:" + FormatGuid(g) + "\" }";
+        }
+        default: return "(unknown type)";
+        }
+    }
+    static std::string Quote(std::string_view v) {
+        std::string q = "\"";
+        for (const char c : v) {
+            const auto u = static_cast<unsigned char>(c);
+            if (c == '"' || c == '\\') { q += '\\'; q += c; }
+            else if (c == '\n') q += "\\n";
+            else if (c == '\t') q += "\\t";
+            else if (c == '\r') q += "\\r";
+            else if (u < 0x20 || u == 0x7F) q += Fmt("\\u%04x", static_cast<unsigned>(u));
+            else q += c;
+        }
+        return q + "\"";
+    }
+
+    struct Lister {
+        const Impl& p;
+        std::vector<FieldView>& out;
+        uint32_t maxDepth;
+        std::vector<std::pair<uint32_t, uint64_t>> onPath;   // instances being listed (cycle guard)
+
+        void Add(std::string path, const Node& n, std::string text, InstanceId target, uint32_t depth, bool array = false,
+                 uint32_t count = 0) {
+            FieldView v;
+            v.path = std::move(path);
+            v.dataType = n.kind == Node::Inst ? type::kClass : n.dataType;
+            v.array = array;
+            v.count = count;
+            v.text = std::move(text);
+            v.target = target;
+            v.depth = depth;
+            out.push_back(std::move(v));
+        }
+        // Follows a strong pointer (or enters a struct array element) and lists the target.
+        void Enter(const std::string& path, uint32_t st, uint64_t index, uint32_t depth) {
+            if (depth > maxDepth || st >= p.s.structs.size()) return;
+            for (const auto& o : onPath)
+                if (o.first == st && o.second == index) return;
+            Loc l;
+            if (!p.InstanceLoc(st, index, l)) return;
+            onPath.emplace_back(st, index);
+            Members({ Node::Inst, st, index, l, 0, 0 }, path, depth);
+            onPath.pop_back();
+        }
+        void Leaf(const std::string& path, const Node& n, uint32_t depth) {
+            InstanceId target;
+            std::string text = p.Text(n, target);
+            Add(path, n, std::move(text), target, depth);
+            if (n.dataType == type::kStrongPointer && target.valid()) Enter(path, target.structIndex, target.index, depth + 1);
+        }
+        void Array(const std::string& path, const Node& arr, uint32_t depth) {
+            uint32_t count = 0, first = 0;
+            if (!p.ArrayRange(arr, count, first, path)) {
+                Add(path, arr, "(unreadable)", {}, depth, true, 0);
+                return;
+            }
+            Add(path, arr, Fmt("[%u]", count), {}, depth, true, count);
+            for (uint32_t i = 0; i < count; ++i) {
+                Node e;
+                const std::string here = path + Fmt("[%u]", i);
+                if (!p.Element(arr, static_cast<uint64_t>(first) + i, e, here)) continue;
+                if (e.kind == Node::Inst) {
+                    Add(here, e, InstName(e.st, e.index), { e.st, static_cast<uint32_t>(e.index) }, depth + 1);
+                    Enter(here, e.st, e.index, depth + 2);
+                } else {
+                    Leaf(here, e, depth + 1);
+                }
+            }
+        }
+        std::string InstName(uint32_t st, uint64_t index) const { return p.InstName(st, index); }
+        void Members(const Node& inst, const std::string& prefix, uint32_t depth) {
+            if (inst.st >= p.s.structs.size()) return;
+            if (p.s.structInfo[inst.st].opaque) {
+                Add(prefix, inst, "(opaque: a field of unknown type)", {}, depth);
+                return;
+            }
+            uint64_t off = 0;
+            for (uint32_t k : p.s.Properties(inst.st)) {
+                const PropertyDef& d = p.s.properties[k];
+                const std::string path = prefix.empty() ? std::string(p.s.Name(d.name)) : prefix + "." + std::string(p.s.Name(d.name));
+                const Loc at = At(inst.loc, off);
+                if (d.conversion != 0) {
+                    Array(path, { Node::Array, 0, kNoIndex, at, d.dataType, d.typeIndex }, depth);
+                    off = SatAdd(off, 8);
+                } else if (d.dataType == type::kClass) {
+                    Members({ Node::Inst, d.typeIndex, kNoIndex, at, 0, 0 }, path, depth);
+                    off = SatAdd(off, d.typeIndex < p.s.structInfo.size() ? p.s.structInfo[d.typeIndex].size : 0);
+                } else {
+                    Leaf(path, { Node::Slot, 0, kNoIndex, at, d.dataType, d.typeIndex }, depth);
+                    off = SatAdd(off, FieldSize(d.dataType));
+                }
+            }
+        }
+    };
+
+    Status List(const Node& root, std::string_view field, std::vector<FieldView>& out, uint32_t maxDepth) const {
+        out.clear();
+        Node n;
+        if (Status st = Walk(root, field, n); !st) return st;
+        Lister l{ *this, out, maxDepth, {} };
+        const std::string path(field);
+        if (n.kind == Node::Array) l.Array(path, n, 0);
+        else if (n.kind == Node::Slot) l.Leaf(path, n, 0);
+        else {
+            if (n.index != kNoIndex) l.onPath.emplace_back(n.st, n.index);
+            l.Members(n, path, 0);
+        }
+        return {};
     }
     template <class Target, class Fn>
     Status Run(const char* name, const Target& target, std::string_view path, Fn&& fn) {
@@ -1129,6 +1310,64 @@ Status Patch::FindInstance(const InstanceSource& source, InstanceId& out) const 
 
 Status Patch::Emit(std::vector<vfs::Splice>& out) const { return impl_->Emit(out); }
 const std::vector<OpReport>& Patch::Reports() const { return impl_->reports; }
+
+Patch Patch::Fork() const {
+    Patch p(impl_->s, impl_->opt);
+    p.impl_ = std::make_unique<Impl>(*impl_);
+    return p;
+}
+
+Status Patch::ReadFields(const RecordRef& rec, std::string_view field, std::vector<FieldView>& out, uint32_t maxDepth) const {
+    out.clear();
+    if (!impl_->valid) return Refuse(Refusal::Layout, "the base file failed validation: " + impl_->s.error);
+    Impl::Node root;
+    if (Status st = impl_->Root(rec, root); !st) return st;
+    return impl_->List(root, field, out, maxDepth);
+}
+Status Patch::ReadFields(InstanceId inst, std::string_view field, std::vector<FieldView>& out, uint32_t maxDepth) const {
+    out.clear();
+    if (!impl_->valid) return Refuse(Refusal::Layout, "the base file failed validation: " + impl_->s.error);
+    Impl::Node root;
+    if (Status st = impl_->Start(inst, root); !st) return st;
+    return impl_->List(root, field, out, maxDepth);
+}
+
+Status CheckFieldPath(std::string_view path) {
+    if (path.empty()) return Refuse(Refusal::BadArgument, "empty field path");
+    std::vector<Patch::Impl::Step> steps;
+    return Patch::Impl::ParsePath(path, steps);
+}
+
+bool ParseGuid(std::string_view t, Guid& out) {
+    // xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx, the inverse of FormatGuid.
+    if (t.size() != 36 || t[8] != '-' || t[13] != '-' || t[18] != '-' || t[23] != '-') return false;
+    uint8_t hex[16];
+    size_t n = 0;
+    for (size_t i = 0; i < t.size(); i += 2) {
+        if (t[i] == '-') { --i; continue; }
+        if (i + 1 >= t.size()) return false;
+        int v = 0;
+        for (size_t k = i; k < i + 2; ++k) {
+            const char c = t[k];
+            const int d = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (d < 0) return false;
+            v = v * 16 + d;
+        }
+        if (n == 16) return false;
+        hex[n++] = static_cast<uint8_t>(v);
+    }
+    if (n != 16) return false;
+    // Printed: a (4 bytes, big-endian text) b (2) c (2), then file bytes 15..8.
+    Guid g;
+    for (int i = 0; i < 4; ++i) g.bytes[static_cast<size_t>(4 + i)] = hex[3 - i];
+    g.bytes[2] = hex[5];
+    g.bytes[3] = hex[4];
+    g.bytes[0] = hex[7];
+    g.bytes[1] = hex[6];
+    for (int i = 0; i < 8; ++i) g.bytes[static_cast<size_t>(15 - i)] = hex[8 + i];
+    out = g;
+    return true;
+}
 
 namespace {
 class MemoryIo final : public vfs::BaseIo {

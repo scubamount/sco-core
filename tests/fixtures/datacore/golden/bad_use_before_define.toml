@@ -1,0 +1,11 @@
+# expect: 7: [[set]]: "@late" is not defined by an earlier [[instance]]
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "engine"
+pointer = "@late"
+
+[[instance]]
+id = "late"
+struct = "Part"

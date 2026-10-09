@@ -1,0 +1,7 @@
+# expect: 6: [[set]]: field "speed..x": bad path step
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "speed..x"
+value = 1.0

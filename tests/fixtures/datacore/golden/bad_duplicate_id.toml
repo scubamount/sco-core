@@ -1,0 +1,10 @@
+# expect: 9: [[instance]]: id "p" is defined twice
+format = 1
+
+[[instance]]
+id = "p"
+struct = "Part"
+
+[[instance]]
+id = "p"
+struct = "Part"

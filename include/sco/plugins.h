@@ -258,8 +258,8 @@ void LogReport(const std::vector<Plugin>& list, bool enabled);
 
 // ---- data-pack content index ----------------------------------------------------------------
 
-enum class ContentKind : uint32_t { Mission = 0, Rules = 1, Script = 2, List = 3 };
-const char* ContentKindName(ContentKind k);       // "mission", "rules", "script", "list"
+enum class ContentKind : uint32_t { Mission = 0, Rules = 1, Script = 2, List = 3, DataCore = 4 };
+const char* ContentKindName(ContentKind k);       // "mission", "rules", "script", "list", "datacore"
 
 struct ContentItem {
     ContentKind kind;
@@ -273,7 +273,7 @@ constexpr int    kMaxScriptDepth = 16;            // scripts/** folders below sc
 
 // Content a data pack may carry (anything else in the folder is ignored):
 //   missions/*.cwmission   rules/*.rules   scripts/**.xml (up to kMaxScriptDepth folders deep)
-//   lists/*.txt
+//   lists/*.txt   datacore/*.toml (DataCore overrides, sco/datacore_pack.h)
 // Extensions match case-insensitively. Symlinks are skipped (a pack can't point outside itself).
 // A content folder that can't be read to the end refuses the pack ("cannot read scripts: ...").
 class ContentIndex {

@@ -1,0 +1,7 @@
+# expect: 7: [[set]]: value: bad uint "-1"
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "u64"
+value = { uint = "-1" }

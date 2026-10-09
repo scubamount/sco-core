@@ -46,7 +46,15 @@ for f in "$ROOT/sdk/examples/cpp_hello/cpp_hello.cpp" "$ROOT"/include/scosdk/*.h
 done
 echo "sdk: template, hello, cpp_hello, include/scosdk and sco-plugin-check compile against sco_api.h"
 
-FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include" -isystem "$ROOT/third_party/sqlite")
+# Vendored toml++ (third_party/tomlplusplus/README.md) is used as released: check both files first.
+( cd "$ROOT/third_party/tomlplusplus" && printf '%s\n' \
+  "6b5172ad4dd6519aec67b919181fa7a38a2234131e5b2afa232dfe444819783e  toml.hpp" \
+  "529bc3900a9571e49db285b0df432397e70b881cc3bf48de6667ae74ff4b06d8  LICENSE" | \
+  if command -v sha256sum >/dev/null; then sha256sum -c --quiet; else shasum -a 256 -c --quiet; fi )
+echo "toml++: 3.4.0, sha256 of toml.hpp and LICENSE match third_party/tomlplusplus/README.md"
+
+FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include" -isystem "$ROOT/third_party/sqlite"
+       -isystem "$ROOT/third_party/tomlplusplus")
 # The game signature tables; the CryPak hooks (pak_hooks.cpp) are built only into test_pak.
 GAME=()
 for f in "$ROOT"/src/game/*.cpp; do [ "$(basename "$f")" = pak_hooks.cpp ] || GAME+=("$f"); done
@@ -126,8 +134,12 @@ STORAGE=("$ROOT/tests/test_storage.cpp" "$ROOT/src/storage/storage.cpp" "${HOST[
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore_patch.cpp" "$ROOT/src/datacore/datacore.cpp" \
   "$ROOT/src/datacore/patch.cpp" "${VFS[@]:1}" -o "$OUT/test_datacore_patch"
 "$OUT/test_datacore_patch"
-"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tools/sco-dcb.cpp" "$ROOT/src/datacore/datacore.cpp" \
-  "$ROOT/src/datacore/patch.cpp" "${VFS[@]:1}" -o "$OUT/sco-dcb"
+# Data packs (sco/datacore_pack.h): golden parses, ordering, conflicts, atomicity, every refusal; it
+# writes the fixture the sample pack is checked against (ASan+UBSan).
+DATACORE=("$ROOT/src/datacore/datacore.cpp" "$ROOT/src/datacore/patch.cpp" "$ROOT/src/datacore/pack.cpp" "${VFS[@]:1}")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore_pack.cpp" "${DATACORE[@]}" -o "$OUT/test_datacore_pack"
+"$OUT/test_datacore_pack" "$ROOT" "$OUT"
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tools/sco-dcb.cpp" "${DATACORE[@]}" -o "$OUT/sco-dcb"
 "$OUT/sco-dcb" info "$OUT/datacore_36.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: valid fixture not OK"; exit 1; }
 "$OUT/sco-dcb" info "$OUT/datacore_32.dcb" | grep -q '^record size: 32 bytes' || { echo "sco-dcb: 32-byte records not derived"; exit 1; }
 set +e
@@ -148,6 +160,10 @@ set +e
 set -e
 [ $refused -eq 0 ] && [ $refusedRc -eq 1 ] && [ ! -e "$OUT/datacore_36_refused.dcb" ] || { echo "sco-dcb: patch refusal"; exit 1; }
 echo "sco-dcb: info, records and patch over the fixtures, exit codes 0/1/2"
+# lint, check, show and diff over the golden files and the sample pack (CMake: CTest dcb_pack).
+cmake -DDCB="$OUT/sco-dcb" -DROOT="$ROOT" -DDIR="$OUT" -P "$ROOT/tests/dcb_pack.cmake" > "$OUT/dcb_pack.log" 2>&1 \
+  || { cat "$OUT/dcb_pack.log"; echo "sco-dcb: pack commands failed"; exit 1; }
+grep -F 'dcb_pack: OK' "$OUT/dcb_pack.log"
 
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load
 # real shared libraries built from tests/fixtures/plugins/native/fake_plugin.c, one per behavior
@@ -211,12 +227,13 @@ rm -rf "$OUT/sim"
 mkdir -p "$SIM/hello"
 "$CC" -std=c11 -O1 -Wall -Wextra -Werror -I "$ROOT/include" "${SHARED[@]}" "$ROOT/sdk/examples/hello/hello.c" -o "$SIM/hello/hello.so"
 sed 's/^entry = hello\.dll/entry = hello.so/' "$ROOT/sdk/examples/hello/plugin.ini" > "$SIM/hello/plugin.ini"
-cp -R "$ROOT/sdk/examples/greeter" "$ROOT/sdk/examples/travel_pack" "$SIM/"
+cp -R "$ROOT/sdk/examples/greeter" "$ROOT/sdk/examples/travel_pack" "$ROOT/sdk/examples/quantum_pack" "$SIM/"
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tools/sco-host-sim.cpp" "${APP[@]}" \
-  "$ROOT/src/sco_pe_file.cpp" "${LUA_OBJS[@]}" -ldl -o "$OUT/sco-host-sim"
+  "$ROOT/src/sco_pe_file.cpp" "${DATACORE[@]}" "${LUA_OBJS[@]}" -ldl -o "$OUT/sco-host-sim"
 if ! "$OUT/sco-host-sim" "$SIM" --ticks 3 --invoke hello.wave "Pilot One" > "$OUT/sim.log"; then
   cat "$OUT/sim.log"; echo "sco-host-sim: failed"; exit 1
 fi
 cat "$OUT/sim.log"
 grep -qF '[sim] invoke hello.wave -> OK "Hello, Pilot One"' "$OUT/sim.log" || { echo "sco-host-sim: no reply from hello.wave"; exit 1; }
+grep -qF '[sim] datacore quantum_pack datacore/eos.toml: OK' "$OUT/sim.log" || { echo "sco-host-sim: the sample datacore pack wasn't linted"; exit 1; }
 echo "sco-host-sim: SDK examples load, tick, answer and unload"

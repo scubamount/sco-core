@@ -1,0 +1,7 @@
+# expect: 7: [[set]]: unknown key "element"
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "path"
+element = "@x"

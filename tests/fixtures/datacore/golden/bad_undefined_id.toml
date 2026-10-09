@@ -1,0 +1,7 @@
+# expect: 7: [[set]]: "@ghost" is not defined by an earlier [[instance]]
+format = 1
+
+[[set]]
+record = "ShipA"
+field = "engine"
+pointer = "@ghost"

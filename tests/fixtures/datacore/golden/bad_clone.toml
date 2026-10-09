@@ -1,0 +1,7 @@
+# expect: 7: [[instance]]: clone must be { record = "...", field = "..." }
+format = 1
+
+[[instance]]
+id = "p"
+struct = "Part"
+clone = "PartX"
