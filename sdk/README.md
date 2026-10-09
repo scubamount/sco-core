@@ -5,7 +5,7 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 | Kind | What it is | Example |
 |---|---|---|
 | `native` | A 64-bit Windows DLL written in C against `sco_api.h`, or in C++20 with the `include/scosdk/` headers | [`examples/hello`](examples/hello), [`examples/cpp_hello`](examples/cpp_hello) |
-| `data` | Files only: missions, rules, scripts and lists. Runs no code | [`examples/travel_pack`](examples/travel_pack) |
+| `data` | Files only: missions, rules, scripts, lists and game-data overrides (`datacore\*.toml`). Runs no code | [`examples/travel_pack`](examples/travel_pack), [`examples/quantum_pack`](examples/quantum_pack) |
 | `lua` | A Lua 5.4 script, run in a sandbox by sc-offline's bundled Lua runtime | [`examples/greeter`](examples/greeter) |
 
 > **Status: 1.0-pre.** The API can still change until the `sdk-v1.0.0` tag. Plugin loading is in sc-offline's `main` branch, switched off by default (`plugins = on` in `sc-offline.ini` turns it on), but not yet in a tagged sc-offline release.
@@ -20,7 +20,7 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 | `include/scosdk/` | The C++20 layer over `sco_api.h`, header-only: [C++ plugins](#c-plugins) |
 | `cmake/sco-plugin.cmake` | `sco_add_plugin()` and `sco_add_pack()`: build a plugin and lay it out |
 | `template/` | A native plugin to copy and rename |
-| `examples/` | `hello` (native C), `cpp_hello` (native C++20), `travel_pack` (data), `greeter` (Lua) |
+| `examples/` | `hello` (native C), `cpp_hello` (native C++20), `travel_pack` (data), `quantum_pack` (data: DataCore overrides), `greeter` (Lua) |
 | `tools/sco-plugin-check.c` | Checks a built plugin folder on your machine, without the game |
 | `tools/lua-check.lua` | Runs a Lua plugin against a stand-in `sco` table, without the game |
 | `docs/` | [plugin.ini](docs/plugin-ini.md), [data packs](docs/data-packs.md), [Lua](docs/lua.md), [plugin rules](docs/plugin-rules.md), [API reference](../docs/api-v1.md), [C++ SDK](../docs/sdk-cpp.md) |
@@ -46,7 +46,7 @@ cmake --build build
 cmake --install build --prefix out
 ```
 
-`out/data/plugins/` now holds `hello/`, `cpp_hello/`, `travel_pack/`, `greeter/` and `my_plugin/` (the template), laid out the way sc-offline reads them, and `out/bin/` holds `sco-plugin-check`.
+`out/data/plugins/` now holds `hello/`, `cpp_hello/`, `travel_pack/`, `quantum_pack/`, `greeter/` and `my_plugin/` (the template), laid out the way sc-offline reads them, and `out/bin/` holds `sco-plugin-check`.
 
 ## Check a plugin
 

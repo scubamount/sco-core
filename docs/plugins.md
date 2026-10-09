@@ -94,6 +94,7 @@ A script talks to the host only through the `sco_api` table, like a native plugi
 | `rules` | `rules/*.rules` |
 | `script` | `scripts/**.xml` (any depth) |
 | `list` | `lists/*.txt` |
+| `datacore` | `datacore/*.toml`: DataCore overrides ([format](datacore.md#pack-format)), applied when the game loads `Game2.dcb` |
 
 Extensions match in any case. Anything else in the folder is ignored, and symlinks are skipped so a pack can't reach outside itself. `scripts/` is read at most 16 folders deep. A pack with more than 4096 matching files is refused (`too many files`), and so is one whose content folders can't be read to the end (`cannot read scripts: ...`), so a pack never loads with only part of its files. `Build` can run again at any time: it re-reads every ready or loaded pack. Features query the index with `Items(kind)`, `Find(kind, "missions/a.cwmission")` (one entry per pack that ships that name, in plugin order) or `FromPlugin(id)`, and read the files themselves.
 
