@@ -16,6 +16,7 @@
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifndef _WIN32
@@ -366,6 +367,15 @@ static char g_owners[64];
 static int g_nextOwner = 0;
 static sco_plugin* NewOwner() { return reinterpret_cast<sco_plugin*>(&g_owners[g_nextOwner++]); }
 
+// A call guard that first marks g_victim crashed, the way a fault in a command the plugin invoked
+// from inside the guarded call would (CallPlugin -> MarkCrashed), then runs the call.
+static P::Plugin* g_victim;
+static uint32_t NestedCrashGuard(void (*thunk)(void*), void* ctx) {
+    P::MarkCrashed(*g_victim, "nested", 0xC0000005u);
+    thunk(ctx);
+    return 0;
+}
+
 static void TestNative() {
     const fs::path root = g_out / "plugins";
     if (!fs::is_directory(root)) { std::printf("FAIL: %s missing (tools/test.sh builds it)\n", root.string().c_str()); ++g_fail; return; }
@@ -482,6 +492,35 @@ static void TestNative() {
     CHECK(sco::GameThreadTick(4) == sco::Result::Ok);                 // nothing left to call
     P::UnloadNative(ok, kRecOps);                                      // no-op when not Loaded
     CHECK(ok.state == State::Unloaded);
+
+    // Fresh entries for the same modules (each list entry loads once).
+    auto again = P::Discover(root, on);
+    g_list = &again;
+    P::ContainCallouts(&again);
+    auto get2 = [&](const char* id) -> P::Plugin& { return *const_cast<P::Plugin*>(Find(again, id)); };
+
+    // A failed Release (UnloadNative off the game thread: WRONG_THREAD) keeps the module mapped
+    // and marks the plugin Crashed; its subscription is still there but never called.
+    P::Plugin& stuck = get2("m0");
+    CHECK(P::LoadNative(stuck, &api, NewOwner(), on, kRecOps));
+    const int ticks0 = Ticks(stuck);
+    g_closed.clear();
+    std::thread([&] { P::UnloadNative(stuck, kRecOps); }).join();
+    CHECK(stuck.state == State::Crashed && stuck.reason == "release failed: WRONG_THREAD");
+    CHECK(stuck.module != nullptr && g_closed.empty());
+    CHECK(sco::SubscriptionCount() == subs0 + 1);
+    CHECK(sco::GameThreadTick(5) == sco::Result::Ok && Ticks(stuck) == ticks0);
+    CHECK(sco::Release(stuck.self) == sco::Result::Ok && sco::SubscriptionCount() == subs0);
+
+    // A fault nested inside unload() is kept, not overwritten as a clean unload.
+    P::Plugin& nested = get2("m11");
+    CHECK(P::LoadNative(nested, &api, NewOwner(), on, kRecOps));
+    g_victim = &nested;
+    P::SetCallGuard(NestedCrashGuard);
+    P::UnloadNative(nested, kRecOps);
+    CHECK(nested.state == State::Crashed && nested.reason == "crashed in nested (0xC0000005)");
+    CHECK(nested.module != nullptr && g_closed.empty());
+    CHECK(sco::SubscriptionCount() == subs0);
 
     P::ContainCallouts(nullptr);
     g_list = nullptr;

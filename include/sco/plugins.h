@@ -71,7 +71,7 @@ enum class State : uint32_t {
     Refused,    // a check failed; `reason` says which
     Ready,      // passed discovery; LoadNative (native), LoadScript (lua) or Build (data) takes it
     Loaded,     // native: sco_plugin_load returned OK; lua: the entry script ran; data: indexed
-    Crashed,    // faulted in plugin code; released, never called again, DLL kept mapped
+    Crashed,    // faulted in plugin code, or couldn't be released; never called again, DLL kept mapped
     Unloaded,   // unloaded cleanly; DLL closed
 };
 const char* StateName(State s);                   // "off", "disabled", "refused", ...
@@ -143,7 +143,9 @@ uint32_t  Guarded(void (*thunk)(void* ctx), void* ctx);
 //   3. load(api, self) (guarded)
 // Result: Loaded (true). Refused (module closed, everything self registered released) when the
 // module won't open, an export is missing, info fails a check or load returns non-OK.
-// Crashed (released, module kept mapped, never called again) when query or load faults.
+// Crashed (released, module kept mapped, never called again) when query or load faults, or when
+// load returned non-OK and sco::Release(self) failed ("release failed: TOO_MANY"): the runtime
+// may still hold the plugin's callbacks, so the module is never closed under them.
 // False for anything but Loaded; reason set; one [plugin] log line either way.
 bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& opts,
                 const ModuleOps& ops = PlatformModuleOps());
@@ -169,8 +171,11 @@ void MarkCrashed(Plugin& p, const char* where, uint32_t code);
 // outlive the installation and must not be resized while installed.
 void ContainCallouts(std::vector<Plugin>* list);
 
-// Unloads one loaded native plugin: unload() (guarded; a fault marks it Crashed instead),
-// sco::Release(self), close the module, state Unloaded. Game thread only. No-op unless Loaded.
+// Unloads one loaded native plugin: unload() (guarded; a fault marks it Crashed instead, and so
+// does a fault nested inside it, such as a crashing command it invoked), sco::Release(self),
+// close the module, state Unloaded. If Release fails (TooMany, or WrongThread when called off
+// the game thread) the module stays mapped and the plugin is Crashed with reason
+// "release failed: <RESULT>". Game thread only. No-op unless Loaded.
 void UnloadNative(Plugin& p, const ModuleOps& ops = PlatformModuleOps());
 
 // ---- script loader (kind = lua) --------------------------------------------------------------
@@ -195,8 +200,8 @@ constexpr size_t kMaxScriptBytes = 1024 * 1024;   // entry script size
 bool LoadScript(Plugin& p, const sco_api* api, sco_plugin* self, const ScriptRuntime& runtime);
 
 // Unloads every Loaded plugin, last loaded first: natives as UnloadNative; scripts by
-// sco::Release(self) then runtime.unload(self) (state Unloaded). runtime may be null when no
-// script was loaded.
+// sco::Release(self) then runtime.unload(self) (state Unloaded; if Release fails the script is
+// kept and the plugin Crashed, as for natives). runtime may be null when no script was loaded.
 void UnloadAll(std::vector<Plugin>& list, const ModuleOps& ops = PlatformModuleOps(),
                const ScriptRuntime* runtime = nullptr);
 
