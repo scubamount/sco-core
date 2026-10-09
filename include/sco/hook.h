@@ -65,7 +65,7 @@ public:
 private:
     void*    base_ = nullptr;   // the range the OS call covered (page-aligned on POSIX)
     size_t   size_ = 0;
-    uint32_t old_ = 0;          // Windows: the protection to restore
+    [[maybe_unused]] uint32_t old_ = 0;   // Windows: the protection to restore (unused on POSIX)
     bool     ok_ = false;
 };
 
