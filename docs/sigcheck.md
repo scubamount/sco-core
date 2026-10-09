@@ -60,6 +60,7 @@ Scripts can gate on the exit code. CI checks that the tool builds and exits 2 on
 2. `tools/sigcheck.sh StarCitizen.exe`.
 3. Exit 0: sco-core's rows survived. Features that haven't moved to sco-core yet still need checking in game.
 4. Exit 1: fix the rows it names, re-run, then play-test those features.
+5. The game's data: extract `Game2.dcb` from the new `Data.p4k` and run `sco-dcb info` on it ([Checking a DataCore file](datacore.md#patch-day-routine)).
 
 ## What it can't tell you
 

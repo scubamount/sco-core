@@ -268,6 +268,28 @@ All mounts of a path splice the same base. Higher `priority` wins an overlap, an
 
 **Threads.** `MountTable` holds the published `shared_ptr<const Table>`: `Current()` and `Publish()` are atomic, and handles keep the table and file they opened with. `Table` is safe from any thread. A `Reader` belongs to one handle and takes no lock; no sco-core lock is held while it calls `BaseIo`. Composition calls `BaseIo` and transforms under the path's guard.
 
+## `sco/datacore.h`: the DataCore file
+
+The game's DataCore database (`Data\Game2.dcb`), read-only, in library `sco_datacore` ([design](design/vfs-datacore.md), sections 2 and 4). Standard library only; no engine, no Windows. Patch operations come in later PRs.
+
+```cpp
+sco::datacore::Schema s;
+if (!s.Parse(bytes)) Log("datacore: %s", s.error.c_str());   // bytes: std::span<const uint8_t>, kept alive
+```
+
+| Member | Does |
+|---|---|
+| `bool Parse(std::span<const uint8_t>)` | Reads the header and tables and runs validation rules 1-6. False with `failed` (a `Check`) and `error` (`"layout: ..."`) for the first failing check; the members then hold what was read before it. The bytes must outlive the `Schema` and stay unchanged (names are views into them) |
+| `header`, `recordSize`, `tables`, `dataOffset`, `dataSize` | The section 2 header, the derived record entry size (32, 36 or 40), every table in file order with offset, count, entry size and bytes (they tile the file) |
+| `structs`, `properties`, `enums`, `mappings`, `records`, `enumOptions` | The definition tables and records as stored |
+| `structInfo[i]` | Computed instance `size`, `opaque` (rule 6: a field of unknown type; sized from its records if it has instances), `instances`, `blockOffset` |
+| `blockOffsets[m]` | File offset of mapping `m`'s data block |
+| `Name(off)`, `ValueString(off)`, `StructName(i)` | Strings from the name and value pools; empty when out of range |
+| `Properties(i)` | A struct's property indices, inherited first |
+| `FindStruct(name)`, `FindRecord(guid)`, `FindRecordByName(name)` | Lookups; the first entry wins when one repeats |
+
+`Check` is `None`, `File` (smaller than the header), `Totals` (rules 1-3: nothing adds up to the file size), `Structure` (an index or range outside its table), `RecordSize` (rule 4) or `NameOffset` (rule 5). `FormatGuid` prints a `Guid` the way unp4k does. Every count is checked against the file size before anything is read or allocated, so a truncated or corrupted file is refused, never read past. A `Schema` is plain data: concurrent `const` use is safe. The tool on top is [`sco-dcb`](datacore.md).
+
 ## `sco/pe_file.h`: host tools only
 
 ```cpp

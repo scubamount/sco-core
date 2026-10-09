@@ -73,6 +73,8 @@ The build is 64-bit only; configuring for 32 bits stops with an error.
 | `sco_app` | `src/app/sco_app.cpp`: the host kit, `sco/app.h` | `sco_host`, `sco_plugins`, `sco_core` |
 | `sco-sigcheck` | `tools/sco-sigcheck.cpp` | `sco_core` |
 | `sco-host-sim` | `tools/sco-host-sim.cpp` | `sco_app`, `sco_lua` |
+| `sco_datacore` | `src/datacore/datacore.cpp`: the DataCore parser, `sco/datacore.h` | |
+| `sco-dcb` | `tools/sco-dcb.cpp` ([docs](datacore.md)) | `sco_datacore` |
 
 Every library exposes `include/` as a public include directory.
 
@@ -95,7 +97,7 @@ add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
 - **Set `CMAKE_MSVC_RUNTIME_LIBRARY` before `add_subdirectory`.** sco-core's targets take the value in effect when they are created, so a static CRT set afterwards doesn't reach them, and a DLL that links them imports the dynamic CRT after all. sc-offline's CI checks that `dinput8.dll` imports no dynamic CRT.
 - **`SCO_BUILD_TESTS OFF`.** It is already off when sco-core isn't the top-level project; forcing it keeps a cached `ON` from an earlier configure out. sco-core's own CI runs the tests.
 - **`SCO_WERROR OFF`.** sco-core's CI builds with `/W4 /WX`; in a product build, a warning that only a newer toolset emits must not break the build. Warnings still show.
-- **`EXCLUDE_FROM_ALL`** builds only the libraries the product links, not `sco-sigcheck` or `sco-host-sim`.
+- **`EXCLUDE_FROM_ALL`** builds only the libraries the product links, not `sco-sigcheck`, `sco-host-sim` or `sco-dcb`.
 - The source tree must be checked out: with a submodule, clone with `--recurse-submodules` (CI: `submodules: true`). sc-offline stops at configure with a message when `external/sco-core` is empty.
 
 ### Tests

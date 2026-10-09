@@ -72,6 +72,22 @@ SDKT=("$ROOT/tests/test_sdk.cpp" "${HOST[@]:1}")
 "$OUT/test_sdk"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${SDKT[@]}" -o "$OUT/test_sdk_tsan"
 "$OUT/test_sdk_tsan"
+# The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
+# corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb
+# over the fixtures test_datacore writes (CMake: CTest dcb_tool).
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore.cpp" "$ROOT/src/datacore/datacore.cpp" \
+  -o "$OUT/test_datacore"
+"$OUT/test_datacore" "$OUT"
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tools/sco-dcb.cpp" "$ROOT/src/datacore/datacore.cpp" -o "$OUT/sco-dcb"
+"$OUT/sco-dcb" info "$OUT/datacore_36.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: valid fixture not OK"; exit 1; }
+"$OUT/sco-dcb" info "$OUT/datacore_32.dcb" | grep -q '^record size: 32 bytes' || { echo "sco-dcb: 32-byte records not derived"; exit 1; }
+set +e
+"$OUT/sco-dcb" info "$OUT/datacore_bad.dcb" > /dev/null; bad=$?
+"$OUT/sco-dcb" info "$OUT/datacore_missing.dcb" 2> /dev/null; missing=$?
+set -e
+[ $bad -eq 1 ] && [ $missing -eq 2 ] || { echo "sco-dcb: exit codes $bad/$missing, expected 1/2"; exit 1; }
+"$OUT/sco-dcb" records "$OUT/datacore_36.dcb" | grep -q "$(printf '\tShipA\tShip\t0x00001111\t')" || { echo "sco-dcb: records"; exit 1; }
+echo "sco-dcb: info and records over the fixtures, exit codes 0/1/2"
 
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load
 # real shared libraries built from tests/fixtures/plugins/native/fake_plugin.c, one per behavior
