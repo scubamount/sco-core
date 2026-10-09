@@ -40,12 +40,12 @@ Proposed wording. It replaces the scope paragraphs of sco-core's `README.md` (§
 > - Telemetry, analytics, master servers, public server lists, matchmaking or relays run by the project. Sessions are found by sharing an address; nothing reports them anywhere.
 > - Collecting or sending personal data. A session shares the player names players choose, nothing else.
 
-Plugin rules gain three lines: a plugin may use `sco.net` and `sco.ipc`, and only them, to talk to other processes or machines. Raw sockets, HTTP clients and their own shared memory are not allowed: a native plugin can technically open them (it runs with the game's rights), so this is a review rule, not a sandbox. Lua plugins get neither service in 1.0.
+Plugin rules gain three lines: a plugin may use `sco.net` and `sco.ipc`, and only them, to talk to other processes or machines. Raw sockets, HTTP clients and their own shared memory are not allowed: a native plugin can technically open them (it runs with the game's rights), so this is a review rule, not a sandbox. Lua plugins get `sco.net` messages inside their sandbox, and no `sco.ipc`.
 
 ### Risks this decision brings (for the maintainer to weigh)
 
-- **Game-patch fragility.** The fork needs about 30 game addresses for networking, many of them mid-function patches with hand-assembled code stubs (section 2, "Hook points"). They sit deeper in the engine than anything sco-core resolves today, and session code changes with server meshing work. Expect more `FAILED` rows per patch than teleport or the DataCore loader. Mitigation: rows with layout checks, `sco-sigcheck` on every build, and a capability per piece so a broken piece switches only itself off (section 3.2).
-- **Terms of service.** Running the game client as a server, and letting players connect their offline games to each other, may raise questions under CIG's terms that offline single-player didn't. This doc gives no legal assessment. The maintainer judges it, and may want advice before shipping.
+- **Game-patch fragility.** The fork needs about 30 game addresses for networking, many of them mid-function patches with hand-assembled code stubs (section 2, "Hook points"). They sit deeper in the engine than anything sco-core resolves today, and session code changes with server meshing work. Holding across a build or two proves nothing: `teleport.to_camera` held for several builds and still moved in 4.10.196. Expect `FAILED` rows on patch days, as with every other table. Mitigation: rows with layout checks, `sco-sigcheck` on every build, and a capability per piece so a broken piece switches only itself off (section 3.2).
+- **Terms of service.** Running the game client as a server, and letting players connect their offline games to each other, may raise questions under CIG's terms that offline single-player didn't. This doc gives no legal assessment. The maintainer judges it, and may want advice before shipping (open question 13). Where code lives (sco-core, a built-in, an optional plugin, another repository) is an architecture boundary only: it changes nothing about the terms-of-service question or about what the scope rules allow.
 - **Security exposure.** sc-offline today never listens on a port. With multiplayer, a player's PC accepts packets, and the fork's protocol has no authentication (section 2, "Security findings"). That is the main reason for a host-owned service with secure defaults instead of per-mod sockets.
 - **Anti-cheat adjacency.** One fork patch skips an anti-cheat step on the dedicated server (section 2). It isn't ported. If joining doesn't work without it, the server-based join is blocked (open question 1). Nothing in this design works around that.
 - **Support load.** Multiplayer bugs need two or more machines and logs from each.
@@ -231,8 +231,7 @@ typedef struct sco_net_peer_info {
     uint64_t peer;        /* opaque, unique for the session; 0 is never a peer */
     uint64_t entity;      /* the game's id of this peer's player entity, 0 until known */
     uint32_t rtt_ms;
-    uint32_t _pad;
-    char     name[32];    /* the name the player chose, NUL-terminated */
+    uint32_t name_size;   /* bytes of the peer's name including the NUL; read it with peer_name */
 } sco_net_peer_info;
 
 typedef struct sco_net_message {
@@ -264,6 +263,9 @@ typedef struct sco_net_v1 {
     sco_result (*peers)(uint64_t* out, uint32_t* inout_count);
     /* Any thread. SCO_NOT_FOUND: no such peer (left, or never was). */
     sco_result (*peer_info)(uint64_t peer, sco_net_peer_info* out);
+    /* Any thread. The name the player chose (UTF-8, at most 63 bytes), NUL-terminated, with the
+     * size handshake. SCO_NOT_FOUND: no such peer. */
+    sco_result (*peer_name)(uint64_t peer, char* out, uint32_t* inout_size);
     /* Any thread, idle or in a session. Registers "<plugin id>.<name>" with flags and a
      * per-message size limit (at most SCO_NET_MAX_RELIABLE or _UNRELIABLE); fn runs on the game
      * thread for every accepted message of this type. SCO_BAD_ARG: bad or taken name, bad flags. */
@@ -322,7 +324,9 @@ typedef struct sco_net_v1 {
 
 - **`scosdk/net.hpp`:** a `Net` handle over `ServiceRef<sco_net_v1>`; `MessageType<T>` registered with a lambda, with `Send(peer, const T&)` for trivially copyable `T` and `Send(peer, std::span<const std::byte>)`; `Peers()` returning a small vector of `PeerInfo`. Every call is `noexcept` and returns `sco_result`, as in the rest of the SDK.
 - **`Sco.Sdk` (C#):** a `Net` class with `RegisterType(name, flags, maxSize, Action<NetMessage>)`, where the message exposes `ReadOnlySpan<byte>` during the callback. It's AOT-safe like the `Storage` layer and pinned in `Pins.cs`.
-- **sco-lua: none in 1.0.** Network handlers inside the step budget are possible, but a Lua plugin talking to other machines is a bigger sandbox change. It gets its own review, as with Lua tabs (G018). Open question 6.
+- **sco-lua:** `sco.net` in the sandbox, over the same table. It has `state()`, `self_peer()`, `host_peer()` and `peers()` (a list of `{peer, entity, name, host, self, dedicated}`), `register(name, {reliable, from_host, to_host, max_size}, fn)` with `fn(from, bytes)` as a string, and `send(type, to, bytes)`. Calls and every delivered message count against the step budget. The sandbox stays closed: a script can only reach other machines through typed messages in a session the product opened, never a socket or an address. Open question 6 asks whether that's the right line.
+
+All four layers wrap the one C table. Nothing above `sco_net.h` adds wire behavior of its own, so a C# plugin and a Lua plugin can exchange messages if they agree on the payload.
 
 **Tests.**
 
@@ -380,6 +384,8 @@ void NoteStreamable(uint64_t entityId);
 - They're separate capabilities, off unless the session host allows them. The host's setting is sent in the welcome.
 - They're enabled only while a `sco.net` session is joined. They're never enabled without the anti-cheat-absent check passing.
 - `net.dedicated`'s account row (`FixJoinerAccount`) writes only the local server's own account record, never anything of CIG's. The doc names it so the reviewer can confirm that.
+
+Putting any of these behind a capability, in the adapter or in sc-offline's built-in, is an architecture boundary that keeps them switchable and reviewable. It isn't a legal or terms-of-service safeguard, and the doc doesn't treat it as one. The terms-of-service question for the whole feature, including the joiner-account row, stays with the maintainer (open question 13).
 
 ### 3.3 `sco.ipc` 1.0: local shared-memory channels for bridges
 
@@ -518,7 +524,7 @@ sco-core first, then sc-offline. "In game" means checks the maintainer runs, nam
 | 1 | both (docs) | Scope rules: the section 1 wording in sco-core `README.md`, `CONTRIBUTING.md`, `sdk/docs/plugin-rules.md`, `docs/framework.md` (Goal, Decisions), and sc-offline `README.md`, `CONTRIBUTING.md` | CI green in both; the maintainer approves the wording |
 | R1 | sco-core (docs) | Research, read-only. On 4.10.196, with the fork's dedicated server and client (built locally by the maintainer, not by CI) and **the anti-cheat step left out**, does a client join? Record the result here | The result is written into this doc. If the join fails, the plan stops after PR 5 for the session pieces, pending open question 1 |
 | 2 | sco-core | `sco::net` core: `src/net/` (Winsock and POSIX socket layers, `Core`, reliable layer, HMAC-SHA-256, handshake, limits), `include/sco/net.h`; the in-process tests with two or more cores and the lossy transport; CONTRIBUTING's portable-files list | CI green on all jobs, including TSan |
-| 3 | sco-core | The `sco.net` 1.0 service: `include/sco_net.h`, `tests/abi_net.c`, the events, the game-thread dispatch in `sco::app::Tick`, `scosdk/net.hpp`, `Sco.Sdk` `Net` with its pin, `sdk/examples/net_echo`, the `sco-host-sim` options and the two-process CTest; `docs/net.md` and `api-v1.md` § host-owned services | CI green on Linux and Windows; the two-process test passes in CI; the SDK zip builds and checks `net_echo` |
+| 3 | sco-core | The `sco.net` 1.0 service: `include/sco_net.h`, `tests/abi_net.c`, the events, the game-thread dispatch in `sco::app::Tick`, `scosdk/net.hpp`, `Sco.Sdk` `Net` with its pin, sco-lua's `sco.net` with `tests/test_lua.cpp` cases, `sdk/examples/net_echo`, the `sco-host-sim` options and the two-process CTest; `docs/net.md` and `api-v1.md` § host-owned services | CI green on Linux and Windows; the two-process test passes in CI; the SDK zip builds and checks `net_echo` |
 | 4 | sco-core | `sco.ipc` 1.0: `include/sco_ipc.h`, `include/sco_ipc_wire.h`, `tests/abi_ipc.c`, `src/ipc/`, the two-process and TSan tests, scosdk and C# wrappers, `docs/ipc.md` | CI green, including the second-process test on Windows |
 | 5 | sco-core | `sco::hook::MidHook` with tests; the `game.post_update` row and the `frame` event | CI green; `sco-sigcheck` on 4.10.196 shows `game.post_update` OK |
 | 6 | sco-core | `sco::game::net`: the rows of section 3.2 byte for byte (first commit), fixes for 4.10.196 (second commit), `net_hooks.cpp`, `include/sco/game/net.h`, the capabilities; the anti-cheat step not included. The flymode and validation pieces only as open question 2 decides | CI green; `sco-sigcheck` on 4.10.196 shows every `net.*` row OK, pasted in the PR |
@@ -538,10 +544,11 @@ PRs 2-5 need no game and can land in any order after PR 1. PR 6 needs the game e
 3. **Network reach by default:** LAN only, with VPN ranges on request (proposed), or also any address behind an explicit setting? And which VPN ranges? The fork's launcher mentions Radmin VPN.
 4. **Encryption:** is authenticated but unencrypted traffic acceptable for 1.0 (LAN or VPN), or should sessions be encrypted? Encryption would mean a crypto dependency (Windows CNG on Windows, something portable for the tests), which CONTRIBUTING asks to discuss first.
 5. **License of `sco_ipc_wire.h`** for the other side of a bridge (a Northstar plugin, a game mod): GPL-3.0 like the rest, or a permissive license for that one header?
-6. **Lua and `sco.net`:** none in 1.0 (proposed), or a sandboxed subset (messages only, inside the step budget) later?
+6. **Lua and `sco.net`:** the proposed binding exposes typed messages and the peer list, inside the step budget, with no session control. Is that the right line for the sandbox, or should Lua stay receive-only at first?
 7. **Remote console:** drop it (proposed), or an allowlist of CVars the host approves?
 8. **Bridge builds:** in the regular release with the bridges off at run time, or only in a separate build?
 9. **Where the other sides live:** TitanLink's Northstar plugin and mod (the fork's `TitanLink/`), and the Minecraft-side program, which isn't in the download at all. In sc-offline, in their own repos, or outside the project?
 10. **TitanLink's local-match settings** in Titanfall 2 (`ns_auth_allow_insecure 1`, `sv_cheats 1`, master-server reporting off): acceptable under the new scope rule for a local, unlisted match?
 11. **Listen servers:** the fork supports only a dedicated server process. Should a player's own game host directly (no second process)? That would need its own research.
 12. **The `entity` field in `sco_net_peer_info`:** keep it game-specific in a game-agnostic table (proposed: it's an opaque id the product sets, 0 in products without one), or move it to a product service?
+13. **Terms of service.** Is shipping multiplayer, including the dedicated-server pieces and the joiner-account row, acceptable under CIG's terms as the maintainer reads them, and does the maintainer want outside advice first? This design takes no position, and where the code lives doesn't change the answer.
