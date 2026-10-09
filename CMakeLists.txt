@@ -70,7 +70,7 @@ sco_project_target(sco_core)
 
 # Tasks, events and commands: the cross-thread runtime under the plugin ABI.
 add_library(sco_runtime STATIC src/api/sco_tasks.cpp src/api/sco_events.cpp src/api/sco_commands.cpp
-  src/api/sco_services.cpp)
+  src/api/sco_services.cpp src/api/sco_raw.cpp)
 target_include_directories(sco_runtime PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_runtime PUBLIC Threads::Threads)
 sco_project_target(sco_runtime)

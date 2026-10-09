@@ -43,5 +43,10 @@ long ReleaseTasks(const void* owner);
 long ReleaseSubscriptions(const void* owner);
 long ReleaseCommands(const void* owner);
 long ReleaseServices(const void* owner);
+long ReleaseRaw(const void* owner);
+
+// The capability check SetCapabilityCheck installed: true when cap is available (false when no
+// check is installed). For modules other than the command registry.
+bool CapabilityAvailable(const char* cap);
 
 }  // namespace sco::detail

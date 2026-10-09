@@ -171,7 +171,7 @@ When the last tab is done, `dllmain.cpp` is the bootstrap only, and plugins' com
 
 ## Phase 5: services and storage
 
-The first additions to the ABI: `sco_api` 1.1. **Landed early (sco_api 1.1):** `SCO_FAILED` (issue #12), `provide_service` / `query_service` with direct tables (see [API v1 § Services](api-v1.md#services-11)), and outside the ABI `sco/hook.h`, the detour engine sc-offline's hooks move onto. Storage and settings are still to come. Additions follow [Plugin API v1 § Compatibility](api-v1.md#compatibility): new functions at the end of `sco_api`, `SCO_API_MINOR` up by one, `tests/abi_v1.c` extended, each with its own design review before code.
+The first additions to the ABI: `sco_api` 1.1. **Landed early (sco_api 1.1):** `SCO_FAILED` (issue #12); services, `provide_service(self, name, version, vtable)` / `query_service(name, min_version, out)` / `release_service`, with direct tables ([API v1 § Services](api-v1.md#services-11)); raw handlers, `register_raw` / `invoke_raw`, for byte-in byte-out calls ([API v1 § Raw handlers](api-v1.md#raw-handlers-11)); and outside the ABI `sco/hook.h`, the detour engine sc-offline's hooks move onto. Storage and settings are still to come. Additions follow [Plugin API v1 § Compatibility](api-v1.md#compatibility): new functions at the end of `sco_api`, `SCO_API_MINOR` up by one, `tests/abi_v1.c` extended, each with its own design review before code.
 
 ### Storage
 
