@@ -40,11 +40,14 @@ done
 echo "sdk: template, hello, cpp_hello, include/scosdk and sco-plugin-check compile against sco_api.h"
 
 FLAGS=(-std=c++20 -O1 -g -Wall -Wextra -Werror -pthread -I "$ROOT/include" -isystem "$ROOT/third_party/sqlite")
+# The game signature tables; the CryPak hooks (pak_hooks.cpp) are built only into test_pak.
+GAME=()
+for f in "$ROOT"/src/game/*.cpp; do [ "$(basename "$f")" = pak_hooks.cpp ] || GAME+=("$f"); done
 RUNTIME=("$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp"
          "$ROOT/src/api/sco_services.cpp" "$ROOT/src/api/sco_raw.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined \
   "$ROOT/tests/test_core.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_signatures.cpp" \
-  "$ROOT/src/sco_log_status.cpp" "$ROOT/src/sco_pe_file.cpp" "$ROOT/src/game/"*.cpp -o "$OUT/test_core"
+  "$ROOT/src/sco_log_status.cpp" "$ROOT/src/sco_pe_file.cpp" "${GAME[@]}" -o "$OUT/test_core"
 "$OUT/test_core"
 # The runtime is cross-thread: run its tests under ASan+UBSan and again under ThreadSanitizer.
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_runtime.cpp" "${RUNTIME[@]}" -o "$OUT/test_runtime"
@@ -72,6 +75,14 @@ VFS=("$ROOT/tests/test_vfs.cpp" "$ROOT/src/vfs/compose.cpp" "$ROOT/src/vfs/table
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${VFS[@]}" -o "$OUT/test_vfs"
 "$OUT/test_vfs"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${VFS[@]}" -o "$OUT/test_vfs_tsan"
+# sco::game::pak: the CryPak adapter over a fake ICryPak and a fake loader, with a second thread on
+# the engine's functions during the load window, so both sanitizer sets.
+PAK=("$ROOT/tests/test_pak.cpp" "$ROOT/src/game/pak_hooks.cpp" "${GAME[@]}" "$ROOT/src/hook/sco_hook.cpp" "${VFS[@]:1}"
+     "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_log_status.cpp" "${RUNTIME[@]}")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${PAK[@]}" -o "$OUT/test_pak"
+"$OUT/test_pak"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${PAK[@]}" -o "$OUT/test_pak_tsan"
+"$OUT/test_pak_tsan"
 "$OUT/test_vfs_tsan"
 # The C++20 SDK layer: two SDK plugins over the same host table, under both sanitizer sets.
 SDKT=("$ROOT/tests/test_sdk.cpp" "${HOST[@]:1}")
@@ -175,7 +186,7 @@ done
 # sco::app (ASan+UBSan). Then sco-host-sim over the SDK examples, laid out like data/plugins with
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
-     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/game/"*.cpp "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN")
+     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"
 "$OUT/test_app" "$ROOT/sdk" "$OUT"
