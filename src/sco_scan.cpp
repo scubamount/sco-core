@@ -62,6 +62,41 @@ int FindPattern(const Section& text, const char* pattern, uint8_t** out, int max
     return matches;
 }
 
+uint8_t* FunctionStart(const Image& img, const uint8_t* at) {
+    if (!img.base || !img.pdata.base || !at || at < img.base || at >= img.base + img.size) return nullptr;
+    const uint32_t rva = static_cast<uint32_t>(at - img.base);
+    struct Entry { uint32_t begin, end, unwind; };
+    const auto entry = [&](size_t off, Entry& e) {   // false when the 12 bytes at off aren't inside the image
+        if (off > img.size || img.size - off < sizeof(Entry)) return false;
+        memcpy(&e, img.base + off, sizeof(Entry));
+        return true;
+    };
+    if (img.pdata.base < img.base || img.pdata.base > img.base + img.size) return nullptr;
+    const size_t pdata = static_cast<size_t>(img.pdata.base - img.base);
+    // The entries are sorted by begin and don't overlap: binary search, as RtlLookupFunctionEntry does.
+    size_t lo = 0, hi = img.pdata.size / sizeof(Entry);
+    bool found = false;
+    Entry e{};
+    while (lo < hi) {
+        const size_t mid = lo + (hi - lo) / 2;
+        if (!entry(pdata + mid * sizeof(Entry), e)) return nullptr;
+        if (rva < e.begin) hi = mid;
+        else if (rva >= e.end) lo = mid + 1;
+        else { found = true; break; }
+    }
+    if (!found) return nullptr;
+    // A chained entry's unwind info ends with the parent RUNTIME_FUNCTION (after the 2-byte unwind
+    // codes, padded to an even count): follow it to the primary function.
+    constexpr uint8_t kChainInfo = 4;   // UNW_FLAG_CHAININFO
+    for (int i = 0; i < 8; ++i) {
+        if (e.unwind >= img.size || img.size - e.unwind < 4) return nullptr;
+        const uint8_t* info = img.base + e.unwind;
+        if (!((info[0] >> 3) & kChainInfo)) break;
+        if (!entry(size_t{ e.unwind } + 4 + ((info[2] + 1u) & ~1u) * 2, e)) return nullptr;
+    }
+    return e.begin < img.size ? img.base + e.begin : nullptr;
+}
+
 uint8_t* FindUniquePattern(const Section& text, const char* pattern, int& matches) {
     uint8_t* hit = nullptr;
     matches = FindPattern(text, pattern, &hit, 1);

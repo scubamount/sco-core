@@ -1,5 +1,6 @@
 // Unit tests for sco-core's scanners and signature registry. Host build, no game needed.
 //   tools/test.sh
+#include "sco/game/pak.h"
 #include "sco/game/signatures.h"
 #include "sco/game/system.h"
 #include "sco/log.h"
@@ -205,6 +206,119 @@ static void TestSystemQuit() {
     CHECK(Logged("[core] MISSING  system.quit"));
 }
 
+// A fake image for the pak.* rows: the DataCore loader laid out like build 4.10.193 (prologue,
+// the CryPak FOpen load at +0x40, read/seek/close calls), with the "DCB file is smaller than
+// expected" lea r9 in a chained funclet (.pdata entry 1, chained to entry 0, the loader).
+static uint8_t g_pakImg[0x4000];
+struct PakLayout { uint8_t* loader; uint8_t* global; uint8_t* readCall; };
+static PakLayout PakImage(sco::Image& img, bool withString) {
+    memset(g_pakImg, 0xCC, sizeof(g_pakImg));
+    img = {};
+    img.base = g_pakImg;
+    img.size = sizeof(g_pakImg);
+    img.text = { g_pakImg + 0x1000, 0x2800 };
+    img.rdata = { g_pakImg + 0x3800, 0x400 };
+    img.pdata = { g_pakImg + 0x3C00, 3 * 12 };
+    memset(img.rdata.base, 0, img.rdata.size);
+    uint8_t* msg = img.rdata.base + 0x20;
+    if (withString) strcpy(reinterpret_cast<char*>(msg), "DCB file is smaller than expected");
+    PakLayout l{ img.text.base + 0x100, img.rdata.base + 0x200, nullptr };
+    static const uint8_t kPrologue[] = { 0x48, 0x89, 0x5C, 0x24, 0x08, 0x48, 0x89, 0x74, 0x24, 0x10, 0x48, 0x89, 0x7C, 0x24, 0x18,
+                                         0x55, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57 };
+    memcpy(l.loader, kPrologue, sizeof kPrologue);
+    static const uint8_t kOpen[] = { 0x48, 0x8B, 0x0D, 0, 0, 0, 0, 0x4C, 0x8D, 0x05, 0, 0, 0, 0, 0x48, 0x8B, 0x55, 0x10,
+                                     0x45, 0x33, 0xC9, 0x48, 0x8B, 0x01, 0xFF, 0x90, 0x48, 0x01, 0x00, 0x00 };
+    uint8_t* open = l.loader + 0x40;
+    memcpy(open, kOpen, sizeof kOpen);
+    const int32_t g = static_cast<int32_t>(l.global - (open + 7));
+    memcpy(open + 3, &g, 4);
+    const auto call = [](uint8_t* at, uint32_t slot) { at[0] = 0xFF; at[1] = 0x90; memcpy(at + 2, &slot, 4); };
+    l.readCall = l.loader + 0x200;
+    call(l.readCall, 0x160);
+    call(l.loader + 0x300, 0x1D0);
+    call(l.loader + 0x2300, 0x1E0);
+    uint8_t* lea = l.loader + 0x1000;   // in the funclet
+    lea[0] = 0x4C; lea[1] = 0x8D; lea[2] = 0x0D;
+    const int32_t m = static_cast<int32_t>(msg - (lea + 7));
+    memcpy(lea + 3, &m, 4);
+    // .pdata: [0x1100, 0x1800) the loader, [0x1800, 0x3600) its funclet (chained), [0x3600, 0x3700) another.
+    // Unwind info at rdata+0x300 (primary) and rdata+0x310 (UNW_FLAG_CHAININFO, then the parent entry).
+    const uint32_t u0 = 0x3B00, u1 = 0x3B10;
+    const uint32_t pdata[9] = { 0x1100, 0x1800, u0, 0x1800, 0x3600, u1, 0x3600, 0x3700, u0 };
+    memcpy(img.pdata.base, pdata, sizeof pdata);
+    g_pakImg[u0] = 0x01;
+    g_pakImg[u1] = 0x01 | (4 << 3);
+    memcpy(g_pakImg + u1 + 4, pdata, 12);
+    return l;
+}
+
+static void TestPakRows() {
+    using S = sco::SigState;
+    CHECK(sco::game::RegisterGameSignatures());
+    sco::Image img;
+    PakLayout l = PakImage(img, true);
+    // FunctionStart: the primary entry, through the chain; nothing outside .pdata's ranges.
+    CHECK(sco::FunctionStart(img, l.loader + 0x10) == l.loader);
+    CHECK(sco::FunctionStart(img, l.loader + 0x1000) == l.loader);         // chained funclet
+    CHECK(sco::FunctionStart(img, g_pakImg + 0x3650) == g_pakImg + 0x3600);
+    CHECK(sco::FunctionStart(img, g_pakImg + 0x1000) == nullptr);           // before the first entry
+    CHECK(sco::FunctionStart(img, g_pakImg + sizeof(g_pakImg)) == nullptr); // outside the image
+    sco::Image noPdata = img;
+    noPdata.pdata = {};
+    CHECK(sco::FunctionStart(noPdata, l.loader) == nullptr);
+
+    sco::ResolveAll(img);
+    CHECK(sco::SigLookup("pak.datacore_loader")->state == S::Ok && sco::Sig("pak.datacore_loader") == l.loader);
+    CHECK(sco::SigLookup("pak.crypak")->state == S::Ok && sco::Sig("pak.crypak") == l.global);
+    CHECK(sco::SigLookup("pak.slots")->state == S::Ok && sco::Sig("pak.slots") == l.readCall);
+    sco::game::pak::Targets t;
+    CHECK(sco::game::pak::Resolve(t) && t.loader == l.loader && reinterpret_cast<uint8_t*>(t.cryPak) == l.global);
+    static_assert(sco::game::pak::kOpenSlot == 0x148 && sco::game::pak::kReadSlot == 0x160);
+    static_assert(sco::game::pak::kSeekSlot == 0x1D0 && sco::game::pak::kCloseSlot == 0x1E0);
+
+    l.loader[3] ^= 1;   // the prologue
+    sco::ResolveAll(img);
+    const sco::SigResult* r = sco::SigLookup("pak.datacore_loader");
+    CHECK(r->state == S::Failed && strcmp(r->why, "loader prologue changed") == 0);
+    CHECK(sco::SigLookup("pak.crypak")->state == S::Blocked && sco::SigLookup("pak.slots")->state == S::Blocked);
+    sco::game::pak::Targets untouched;
+    CHECK(!sco::game::pak::Resolve(untouched) && !untouched.loader && !untouched.cryPak);
+
+    l = PakImage(img, true);
+    img.pdata = {};
+    sco::ResolveAll(img);
+    r = sco::SigLookup("pak.datacore_loader");
+    CHECK(r->state == S::Failed && strcmp(r->why, "no .pdata entry for the DCB size message's function") == 0);
+
+    l = PakImage(img, true);
+    l.loader[0x2300] = 0xCC;   // no close call
+    sco::ResolveAll(img);
+    r = sco::SigLookup("pak.slots");
+    CHECK(r->state == S::Failed && strcmp(r->why, "no call [rax+0x1e0] (CryPak close) in the loader") == 0);
+    CHECK(sco::SigLookup("pak.crypak")->state == S::Ok && !sco::game::pak::Resolve(untouched));
+
+    l = PakImage(img, true);
+    l.loader[0x41] = 0x8A;   // the CryPak load
+    sco::ResolveAll(img);
+    r = sco::SigLookup("pak.crypak");
+    CHECK(r->state == S::Failed && strcmp(r->why, "CryPak FOpen call not in the loader's first 0x400 bytes") == 0);
+
+    l = PakImage(img, true);   // a second lea r9 of the message, in another function
+    uint8_t* lea2 = g_pakImg + 0x3650;
+    memcpy(lea2, l.loader + 0x1000, 3);
+    const int32_t m2 = static_cast<int32_t>((img.rdata.base + 0x20) - (lea2 + 7));
+    memcpy(lea2 + 3, &m2, 4);
+    sco::ResolveAll(img);
+    CHECK(sco::SigLookup("pak.datacore_loader")->state == S::Ambiguous && sco::SigLookup("pak.datacore_loader")->matches == 2);
+
+    PakImage(img, false);
+    sco::ResolveAll(img);
+    CHECK(sco::SigLookup("pak.datacore_loader")->state == S::Missing);
+    g_lines.clear();
+    sco::LogSignatureReport(false);
+    CHECK(Logged("[core] MISSING  pak.datacore_loader") && Logged("[core] BLOCKED  pak.crypak (needs pak.datacore_loader)"));
+}
+
 static void TestStatus() {
     char buf[64] = "junk";
     CHECK(!sco::GetStatus(buf, sizeof(buf)) && buf[0] == 0);
@@ -223,6 +337,7 @@ int main() {
     TestScan();
     TestRegistry();
     TestSystemQuit();
+    TestPakRows();
     std::printf("sco-core tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

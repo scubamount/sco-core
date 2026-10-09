@@ -104,6 +104,23 @@ size_t RemoveAll();
 bool   IsHooked(const void* target);
 size_t DetourCount();
 
+// Vtable slots: switches the function pointer at `slot` (an entry of a C++ object's vtable) to fn.
+// *original = the pointer that was there, set before the slot changes, so fn can call it from
+// the first call on. The slot is made writable with MemoryProtectScope (on Windows its old
+// protection comes back; on POSIX the page goes back to read + execute, as for code) and written
+// with one atomic pointer store, so a thread calling through the vtable at that moment sees the
+// old or the new function, never a torn pointer. Every caller through the object's vtable on any
+// thread reaches fn while it is swapped: fn must pass calls it doesn't handle to *original.
+// No stolen bytes, no trampoline: RestoreSlot writes the original back. One swap per slot.
+// BadArg: a null or unaligned slot, null fn or original. AlreadyHooked: slot already swapped.
+// Protect: the OS refused (LastOsError()).
+Error SwapSlot(void** slot, void* fn, void** original);
+// Writes back what SwapSlot found in slot. NotHooked when slot isn't swapped; Protect as above
+// (the slot stays swapped and registered).
+Error RestoreSlot(void** slot);
+bool  IsSlotSwapped(void* const* slot);
+size_t SlotCount();
+
 // Hooks that only make sense together: all of them are installed, or none.
 //
 //   sco::hook::Transaction tx;
@@ -123,18 +140,21 @@ public:
 
     // Queues a detour; nothing is checked or patched until Commit.
     void Add(void* target, size_t stolen, void* detour, void** original);
-    // Installs the queued detours in order. If one fails, removes the ones this Commit
+    // Queues a vtable slot swap (SwapSlot); it commits and rolls back with the detours.
+    void AddSlot(void** slot, void* fn, void** original);
+    // Installs the queued detours and slot swaps in order. If one fails, removes the ones this Commit
     // installed (last first) and returns that first Error. Either way the queue is emptied.
     Error Commit();
-    // Removes every detour this transaction's Commits installed (last first) and drops queued
-    // ones. Returns the first error; a detour the OS refused to restore stays installed and is
-    // retried by the next Rollback.
+    // Removes every detour and restores every slot this transaction's Commits installed (last
+    // first) and drops queued ones. Returns the first error; one the OS refused to restore stays
+    // installed and is retried by the next Rollback.
     Error Rollback();
 
 private:
-    struct Item { void* target; size_t stolen; void* detour; void** original; };
-    std::vector<Item>  queued_;
-    std::vector<void*> installed_;
+    struct Item { void* target; size_t stolen; void* detour; void** original; bool slot; };
+    struct Installed { void* target; bool slot; };
+    std::vector<Item>      queued_;
+    std::vector<Installed> installed_;
 };
 
 // Test-only: replaces the near-cave search InstallDetour uses (nullptr restores the default), so a

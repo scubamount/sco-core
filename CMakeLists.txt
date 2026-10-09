@@ -58,6 +58,8 @@ set(SCO_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # Pattern scanning, signatures, log/status, PE files and the game signature tables.
 file(GLOB SCO_GAME_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.cpp")
+# The CryPak hooks are their own library (sco_pak): the rows and sco-sigcheck don't need hooks.
+list(FILTER SCO_GAME_SOURCES EXCLUDE REGEX "/pak_hooks\\.cpp$")
 add_library(sco_core STATIC
   src/sco_scan.cpp src/sco_signatures.cpp src/sco_log_status.cpp src/sco_pe_file.cpp
   ${SCO_GAME_SOURCES})
@@ -100,6 +102,12 @@ add_library(sco_vfs STATIC src/vfs/compose.cpp src/vfs/table.cpp)
 target_include_directories(sco_vfs PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_vfs PUBLIC Threads::Threads)
 sco_project_target(sco_vfs)
+
+# The CryPak adapter (sco/game/pak.h): the loader detour and the vtable slot swaps that serve
+# sco::vfs mounts to the engine. Its rows are in sco_core; the vfs.pak capability in sco_host.
+add_library(sco_pak STATIC src/game/pak_hooks.cpp)
+target_link_libraries(sco_pak PUBLIC sco_core sco_hook sco_vfs sco_host)
+sco_project_target(sco_pak)
 
 # The DataCore parser, validation and patcher (sco/datacore.h): bytes in, tables and sco::vfs splices
 # out. No engine, no Windows.
@@ -328,6 +336,13 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_spatial PRIVATE sco_engine)
   sco_project_target(test_spatial)
   add_test(NAME test_spatial COMMAND test_spatial)
+
+  # sco::game::pak over a fake ICryPak (a real vtable) and a fake loader; x86-64 only (the loader
+  # detour), skipped elsewhere.
+  add_executable(test_pak tests/test_pak.cpp)
+  target_link_libraries(test_pak PRIVATE sco_pak)
+  sco_project_target(test_pak)
+  add_test(NAME test_pak COMMAND test_pak)
 
   add_executable(test_vfs tests/test_vfs.cpp)
   target_link_libraries(test_vfs PRIVATE sco_vfs)
