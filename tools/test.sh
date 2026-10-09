@@ -78,6 +78,10 @@ SDKT=("$ROOT/tests/test_sdk.cpp" "${HOST[@]:1}")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore.cpp" "$ROOT/src/datacore/datacore.cpp" \
   -o "$OUT/test_datacore"
 "$OUT/test_datacore" "$OUT"
+# The patcher over the same fixtures, its splices applied through sco::vfs (ASan+UBSan).
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore_patch.cpp" "$ROOT/src/datacore/datacore.cpp" \
+  "$ROOT/src/datacore/patch.cpp" "${VFS[@]:1}" -o "$OUT/test_datacore_patch"
+"$OUT/test_datacore_patch"
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tools/sco-dcb.cpp" "$ROOT/src/datacore/datacore.cpp" -o "$OUT/sco-dcb"
 "$OUT/sco-dcb" info "$OUT/datacore_36.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: valid fixture not OK"; exit 1; }
 "$OUT/sco-dcb" info "$OUT/datacore_32.dcb" | grep -q '^record size: 32 bytes' || { echo "sco-dcb: 32-byte records not derived"; exit 1; }
