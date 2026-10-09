@@ -8,6 +8,8 @@
 #
 # Needs python3, cmake, a C and C++20 compiler and Lua 5.4 (lua5.4). SCO_SDK_NO_LUA=1 skips the Lua
 # example's run (the Windows CI job, which has no Lua); the job that packages runs it.
+# SCO_SDK_CSHARP=1 also runs the C# SDK's test and publishes cs_hello with NativeAOT (needs the
+# .NET 8 SDK, and on Windows Visual Studio's linker), then checks it like the C examples.
 #
 # Exit 0 = the zip is complete and every example builds and passes its check.
 set -euo pipefail
@@ -57,6 +59,32 @@ grep -q 'invoke  my_plugin.ping -> ok "pong"' "$WORK/template.txt"
 "$CHECK" "$P/quantum_pack" | tee "$WORK/quantum_pack.txt"
 grep -q 'content datacore/eos.toml' "$WORK/quantum_pack.txt"
 "$CHECK" "$P/greeter"
+
+# The C# layer (csharp/Sco.Sdk): its layout and fake-host test, then cs_hello published with
+# NativeAOT into a native library named cs_hello.dll (also on Linux, as sco_add_plugin names it).
+if [ "${SCO_SDK_CSHARP:-0}" = 1 ]; then
+  # The NativeAOT build finds Visual Studio with vswhere, which Git Bash may not have on PATH.
+  VSW="/c/Program Files (x86)/Microsoft Visual Studio/Installer"
+  if [ -d "$VSW" ]; then PATH="$PATH:$VSW"; fi
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) RID=win-x64; LIB=cs_hello.dll ;;
+    Darwin) RID=osx-$(uname -m | sed 's/x86_64/x64/'); LIB=cs_hello.dylib ;;
+    *) RID=linux-x64; LIB=cs_hello.so ;;
+  esac
+  dotnet run -c Release --project "$ROOT/csharp/Sco.Sdk.Tests" | tee "$WORK/cs_tests.txt"
+  grep -q '^Sco.Sdk.Tests: OK' "$WORK/cs_tests.txt"
+  dotnet publish "$ROOT/examples/cs_hello/cs_hello.csproj" -c Release -r "$RID" -o "$WORK/cs_publish"
+  mkdir -p "$WORK/cs/cs_hello"
+  cp "$WORK/cs_publish/$LIB" "$WORK/cs/cs_hello/cs_hello.dll"
+  cp "$ROOT/examples/cs_hello/plugin.ini" "$WORK/cs/cs_hello/"
+  "$CHECK" "$WORK/cs/cs_hello" --invoke cs_hello.wave "Pilot One" | tee "$WORK/cs_hello.txt"
+  grep -q 'invoke  cs_hello.wave -> ok "Hello, Pilot One"' "$WORK/cs_hello.txt"
+  grep -q 'invoke  cs_hello.ticks -> ok "3 ticks"' "$WORK/cs_hello.txt"
+  grep -q 'service cs_hello.greeter 1.0' "$WORK/cs_hello.txt"
+  echo "C#: cs_hello ($RID, NativeAOT) checked"
+else
+  echo "C#: skipped (SCO_SDK_CSHARP=1 runs it)"
+fi
 
 # sco-plugin-check reads plugin.ini with the host's rules (src/plugins/manifest.cpp): it refuses
 # what the game refuses and accepts what the game accepts.

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- cs_hello: a native plugin written in C#, published with NativeAOT into one self-contained
+       DLL with the three C exports. No .NET runtime is needed on the player's machine.
+
+         dotnet publish -c Release -r win-x64 -o out/cs_hello
+         copy plugin.ini out/cs_hello/
+
+       See README.md and docs/sdk-csharp.md. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>cs_hello</AssemblyName>
+    <RootNamespace>CsHello</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!-- NativeAOT: a native shared library. Plugins are 64-bit Windows DLLs; sco-plugin-check
+         also loads a linux-x64 build. -->
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <SelfContained>true</SelfContained>
+    <!-- No ICU next to the game: culture data isn't shipped, every culture is invariant. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <UseSystemResourceKeys>true</UseSystemResourceKeys>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../../csharp/Sco.Sdk/Sco.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>
