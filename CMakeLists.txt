@@ -223,6 +223,21 @@ if(SCO_BUILD_TESTS)
   sco_project_target(test_spatial)
   add_test(NAME test_spatial COMMAND test_spatial)
 
+  # The DataCore parser over tests/dcb_builder.h fixtures; it also writes the fixtures dcb_tool
+  # runs sco-dcb on.
+  add_executable(test_datacore tests/test_datacore.cpp)
+  target_link_libraries(test_datacore PRIVATE sco_datacore)
+  sco_project_target(test_datacore)
+  add_test(NAME test_datacore COMMAND test_datacore "${SCO_TEST_OUT}")
+  set_tests_properties(test_datacore PROPERTIES FIXTURES_SETUP dcb_fixtures)
+  add_test(NAME dcb_tool
+           COMMAND "${CMAKE_COMMAND}" "-DDCB=$<TARGET_FILE:sco-dcb>" "-DDIR=${SCO_TEST_OUT}"
+                   -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dcb_tool.cmake")
+  set_tests_properties(dcb_tool PROPERTIES
+    FIXTURES_REQUIRED dcb_fixtures
+    PASS_REGULAR_EXPRESSION "dcb_tool: OK"
+    FAIL_REGULAR_EXPRESSION "dcb_tool: FAIL")
+
   # Fake native plugins for test_plugins, laid out like tools/test.sh (tools/test-win.sh on
   # Windows): <out>/plugins/m<mode>/{plugin.ini,m<mode>.<ext>}, m11 a second clean plugin, and
   # text/ an entry that is not a library.
