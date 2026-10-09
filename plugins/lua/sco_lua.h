@@ -24,6 +24,7 @@ extern "C" {
 #define SCO_LUA_MAX_SOURCE    (1024u * 1024)     /* entry script size */
 #define SCO_LUA_MAX_SCRIPTS   64
 #define SCO_LUA_MAX_EVENTS    16                 /* distinct event names one script subscribes to */
+#define SCO_LUA_MAX_SUBSCRIBERS 64               /* functions one script subscribes to one event */
 #define SCO_LUA_MAX_COMMANDS  64                 /* commands one script registers */
 
 /* Creates a sandboxed state for plugin `self`, then runs `source` (text only; bytecode is

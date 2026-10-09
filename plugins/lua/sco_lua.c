@@ -398,6 +398,8 @@ static int L_subscribe(lua_State* L) {
     PushSubs(L, event, 1);
     const int list = lua_gettop(L);
     if (StillSubscribed(L, list, 2)) return PushResult(L, SCO_BAD_ARG);   /* same key twice */
+    /* Dispatch rescans the list before each callback, uncharged: keep it short. */
+    if (lua_rawlen(L, list) >= SCO_LUA_MAX_SUBSCRIBERS) return PushResult(L, SCO_TOO_MANY);
     EventSub* e = NULL;
     for (int i = 0; i < SCO_LUA_MAX_EVENTS && !e; ++i)
         if (s->events[i].live && strcmp(s->events[i].name, event) == 0) e = &s->events[i];

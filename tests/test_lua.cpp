@@ -127,6 +127,9 @@ static void TestTable() {
         assert(sco.subscribe("tick", on_tick))
         local ok, err = sco.subscribe("tick", on_tick)
         assert(not ok and err == "bad_arg", "same key twice")
+        for i = 1, 64 do assert(sco.subscribe("game.exit", function() return i end)) end
+        local full, why = sco.subscribe("game.exit", function() end)
+        assert(not full and why == "too_many", "65th function on one event: " .. tostring(why))
         assert(sco.api_major == 1 and sco.api_minor == 0)
         assert(sco.host_version() == "sco-lua test 1.0")
         assert(sco.run_on_game_thread(function() tasks = tasks + 1 end))
