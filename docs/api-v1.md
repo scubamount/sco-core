@@ -1,8 +1,8 @@
 # Plugin API v1 reference (`sco_api.h`)
 
-Version 1.0-pre. This is the plain-C interface a plugin uses to talk to its host (sc-offline). It is the only header a plugin includes; the C++ headers in `include/sco/` are internal and are not part of it.
+Version 1.1, released in `sdk-v1.1.0`. This is the plain-C interface a plugin uses to talk to its host (sc-offline). It is the only header a plugin includes; the C++ headers in `include/sco/` are internal and are not part of it.
 
-**Status: pre-release.** The header, this page and [`tests/abi_v1.c`](../tests/abi_v1.c) can still change until the `sdk-v1.0.0` tag. sco-core implements the table ([`sco::host::BuildApi`](api.md#scohosth-the-hosts-sco_api-table)) and the loader ([Plugins](plugins.md)); sc-offline wires them in, and loads plugins, in a later release. From the tag on, version 1 only grows (see [Compatibility](#compatibility)).
+**Status: stable.** Since `sdk-v1.1.0` the header, this page and [`tests/abi_v1.c`](../tests/abi_v1.c) only grow: version 1 adds fields and functions at the end of structs and never changes what was released (see [Compatibility](#compatibility)). sco-core implements the table ([`sco::host::BuildApi`](api.md#scohosth-the-hosts-sco_api-table)) and the loader ([Plugins](plugins.md)); sc-offline hosts it.
 
 Plugins are native DLLs and run with the game's full rights. Only install plugins you trust. Plugins are GPL-3.0, like sco-core; there is no linking exception.
 
@@ -332,7 +332,7 @@ Within major version 1:
 
 - The host reads only the fields the plugin's `size` covers in `sco_plugin_info` and `sco_command`, and reads `sco_arg_def` arrays with the plugin's `arg_def_size`.
 
-[`tests/abi_v1.c`](../tests/abi_v1.c) enforces this. It pins, with static asserts, every struct's size and field offsets, every enum value and size, both version numbers, and the parameter types of every function and callback. `tools/test.sh` compiles it with `-Werror` as C11 and C++20 for the host, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc`, so CI fails on any change. After `sdk-v1.0.0` the file is append-only: an addition gets new lines, and an existing line never changes.
+[`tests/abi_v1.c`](../tests/abi_v1.c) enforces this. It pins, with static asserts, every struct's size and field offsets, every enum value and size, both version numbers, and the parameter types of every function and callback. `tools/test.sh` compiles it with `-Werror` as C11 and C++20 for the host, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc`, so CI fails on any change. Since `sdk-v1.1.0` the file is append-only: an addition gets new lines, and an existing line never changes.
 
 ## Layout
 

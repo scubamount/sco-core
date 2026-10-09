@@ -158,9 +158,20 @@ sdk/test-zip.sh dist/sco-sdk-*.zip       # builds and checks every example from 
 | [`test`](../.github/workflows/test.yml) | ubuntu-24.04 | `CC=clang CXX=clang++ tools/test.sh`, and checks that `sco-sigcheck` builds |
 | [`cmake`](../.github/workflows/cmake.yml) | ubuntu-24.04 (clang, ASan+UBSan), windows-2025 (MSVC x64) | Configure, build and `ctest` |
 | [`sdk`](../.github/workflows/sdk.yml) | ubuntu-24.04, then windows-2025 (MSVC x64) | Packages the SDK zip, builds and checks every example from it, keeps the zip as an artifact |
+| [`release`](../.github/workflows/release.yml) | ubuntu-24.04, on a `sdk-v*` tag | Checks the tag against `sdk/VERSION`, packages and checks the SDK as `sdk` does, and publishes the GitHub release ([Releases](#releases)) |
 | [`discord`](../.github/workflows/discord.yml) | ubuntu | Posts repository activity to the sc-offline Discord channel |
 
-Every workflow has `contents: read` permissions and pins its actions to commit SHAs. A pull request needs `test`, `cmake` and `sdk` green.
+Every workflow pins its actions to commit SHAs and has `contents: read` permissions, except `release`, which has `contents: write` to create the release and nothing more. A pull request needs `test`, `cmake` and `sdk` green.
+
+## Releases
+
+The SDK is released as `sco-sdk-<version>.zip` under a tag `sdk-v<version>` (`sdk-v1.1.0` was the first). The version lives in `sdk/VERSION`; the plugin ABI's own version is `SCO_API_MAJOR` / `SCO_API_MINOR` in `sco_api.h`, and version 1 only grows ([Compatibility](api-v1.md#compatibility)).
+
+1. Set `sdk/VERSION`, and rename `## Unreleased` in [CHANGELOG.md](../CHANGELOG.md) to `## sdk-v<version> (<date>)` with a short summary on top. Merge it with `test`, `cmake` and `sdk` green.
+2. Tag that commit on `main` and push the tag: `git tag sdk-v<version> && git push origin sdk-v<version>`.
+3. The [`release`](../.github/workflows/release.yml) workflow refuses a tag that doesn't match `sdk/VERSION` or has no `CHANGELOG` section, packages and checks the zip, and publishes the release with the zip, `sco-sdk-<version>.zip.sha256` and the `CHANGELOG` section as notes.
+
+A release the workflow creates doesn't trigger other workflows (GitHub doesn't run workflows on events made with a workflow's own token), so the `discord` post for it doesn't happen automatically; post it by hand or publish the release from the web instead.
 
 ## Adding a source file
 

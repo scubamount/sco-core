@@ -2,7 +2,7 @@
 
 A Lua plugin is a folder with `plugin.ini` (`kind = lua`, `entry = main.lua`) and its scripts. sc-offline's bundled `sco-lua` runtime runs the entry script once at load, in a sandbox. The script registers commands and subscribes to events; those callbacks run on the game thread.
 
-> **Status: 1.0-pre.** This page matches the `sco-lua` runtime in sco-core (`plugins/lua/`), whose tests run [`examples/greeter`](../examples/greeter). Until `sdk-v1.0.0` it can still change.
+> **Version 1.1** (`sdk-v1.1.0`). This page matches the `sco-lua` runtime in sco-core (`plugins/lua/`), whose tests run [`examples/greeter`](../examples/greeter) and [`examples/notebook`](../examples/notebook). Version 1 only grows.
 
 ## The sandbox
 

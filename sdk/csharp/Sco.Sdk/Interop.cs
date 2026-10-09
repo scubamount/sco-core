@@ -94,6 +94,7 @@ namespace Sco.Sdk
 
         public const string DataCoreName = "sco.datacore";        // SCO_DATACORE_NAME
         public const uint DataCoreVersion1_0 = 0x00010000u;
+        public const uint DataCoreVersion1_1 = 0x00010001u;
         public const string DataCoreAppliedEvent = "datacore.applied"; // SCO_DC_APPLIED_EVENT
         public const uint DcOpen = 1u;             // state()
         public const uint DcLoaded = 2u;

@@ -2,7 +2,7 @@
  * abi_v1.c: pins the layout of every sco_api.h v1 type and enum value.
  *
  * Compile-only: if anything here fails, a v1 declaration changed and every
- * plugin built against the old header would break. After sdk-v1.0.0 this
+ * plugin built against the old header would break. Since sdk-v1.1.0 this
  * file is append-only: new fields and functions get new lines at the end
  * of their struct's block; existing lines never change.
  *

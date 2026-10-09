@@ -1,0 +1,65 @@
+name: release
+
+# Publishes an SDK release when a tag sdk-v<version> is pushed. The tag must match sdk/VERSION. The
+# job packages the SDK and checks it exactly as the sdk workflow does (the C# layout test against the
+# ABI pins, every example built and checked from the zip, cs_hello published with NativeAOT), then
+# creates the GitHub release with the zip, its .sha256 file and the tag's CHANGELOG section as notes.
+#
+# Releasing: set sdk/VERSION, add a "## sdk-v<version> (<date>)" section to CHANGELOG.md, merge,
+# then tag that commit on main: git tag sdk-v<version> && git push origin sdk-v<version>.
+
+on:
+  push:
+    tags: ['sdk-v*']
+
+permissions:
+  contents: write   # creating the release; nothing else
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The tag matches sdk/VERSION and has a CHANGELOG section
+        run: |
+          v=$(tr -d '\r\n' < sdk/VERSION)
+          if [ "$GITHUB_REF_NAME" != "sdk-v$v" ]; then
+            echo "tag $GITHUB_REF_NAME doesn't match sdk/VERSION ($v)"; exit 1
+          fi
+          awk -v t="$GITHUB_REF_NAME" '
+            $0 ~ "^## " { if (on) exit; if (index($0, "## " t " ") == 1 || $0 == "## " t) { on = 1; next } }
+            on { print }' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "CHANGELOG.md has no '## $GITHUB_REF_NAME' section"; exit 1; fi
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+
+      - name: Install Lua 5.4
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
+
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 8.0.x
+
+      - name: C# SDK layout test against tests/abi_*.c
+        run: dotnet run -c Release --project sdk/csharp/Sco.Sdk.Tests -- tests/abi_v1.c tests/abi_storage.c tests/abi_ui.c tests/abi_datacore.c
+
+      - name: Package the SDK
+        run: python3 sdk/package.py --out dist
+
+      - name: Build and check the examples from the zip
+        env:
+          SCO_SDK_CSHARP: "1"
+        run: sdk/test-zip.sh dist/sco-sdk-*.zip
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          zip="dist/sco-sdk-$VERSION.zip"
+          test -f "$zip"
+          (cd dist && sha256sum "sco-sdk-$VERSION.zip" > "sco-sdk-$VERSION.zip.sha256")
+          gh release create "$GITHUB_REF_NAME" "$zip" "$zip.sha256" \
+            --repo "$GITHUB_REPOSITORY" --title "sco-core SDK $VERSION" --notes-file notes.md --verify-tag
