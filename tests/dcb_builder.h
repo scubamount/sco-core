@@ -44,7 +44,7 @@ struct Record {
     Guid        id{};
     uint16_t    instance = 0;
     uint32_t    unknown = 0;      // written at +8 when recordSize > 32 and team is empty
-    std::string team;             // else +8 is this name-pool string's offset (research R1: a team tag)
+    std::string team{};           // else +8 is this name-pool string's offset (research R1: a team tag)
 };
 
 // Value pools, in file order.

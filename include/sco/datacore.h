@@ -247,7 +247,7 @@ struct Value {
 struct PatchOptions {
     bool atomic = true;   // Emit refuses the whole batch if any operation was refused (design: per pack)
     std::string packId = "sco";            // AddRecord's default file path: libs/foundry/records/sco/<packId>/<name>.xml
-    std::optional<uint64_t> guidSeed;      // AddRecord's GUID generator (std::mt19937_64); none: std::random_device
+    std::optional<uint64_t> guidSeed = std::nullopt;   // AddRecord's GUID generator (std::mt19937_64); none: std::random_device
 };
 
 // The value an OverrideField or SetPointer wrote, as an opaque identity: two operations with the same
