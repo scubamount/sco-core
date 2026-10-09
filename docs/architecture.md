@@ -71,13 +71,15 @@ The first line always appears. Then one line per row that isn't OK, in registrat
 In sc-offline (`src/dllmain.cpp`), after the offline patches are applied:
 
 ```cpp
-sco::SetLogSink(CoreLog);                                // sco-core lines go to mod.log
-if (sco::game::RegisterGameSignatures())                 // all game tables, once
-    sco::ResolveAll(sco::ModuleImage());                 // the running StarCitizen.exe
+sco::SetLogSink(ForwardCoreLog);                         // sco-core lines go to mod.log
+sco::game::RegisterGameSignatures();                     // all game tables, once
+sco::ResolveAll(sco::ModuleImage());                     // the running StarCitizen.exe
 if (ResolveTeleportApi()) { ... }                        // features read their rows
 ...
 sco::LogSignatureReport(false);                          // one block in mod.log
 ```
+
+Then, on the first main-thread tick, `sco::app::Start` runs the host kit (capabilities, the `sco_api` table, plugins with `plugins = on`, `game.ready`) with `image` left null, since the rows are already resolved; `sco::app::Tick` runs on every tick after. See [C++ API § sco/app.h](api.md#scoapph-the-host-kit).
 
 `sco::ModuleImage()` (Windows only) reads the running executable's PE headers to find `.text` and `.rdata`. In `sco-sigcheck`, `sco::FileImage::Load()` builds the same `Image` from the file on disk by copying each section to its RVA, so every scanner and resolver sees the same bytes at the same offsets. No relocations are applied and no game code runs; addresses are only compared.
 

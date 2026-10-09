@@ -8,7 +8,7 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 | `data` | Files only: missions, rules, scripts and lists. Runs no code | [`examples/travel_pack`](examples/travel_pack) |
 | `lua` | A Lua 5.4 script, run in a sandbox by sc-offline's bundled Lua runtime | [`examples/greeter`](examples/greeter) |
 
-> **Status: 1.0-pre.** The API can still change until the `sdk-v1.0.0` tag. sc-offline doesn't load plugins yet; plugin loading arrives in a later sc-offline release, switched off by default (`plugins = on` in `sc-offline.ini` turns it on).
+> **Status: 1.0-pre.** The API can still change until the `sdk-v1.0.0` tag. Plugin loading is in sc-offline's `main` branch, switched off by default (`plugins = on` in `sc-offline.ini` turns it on), but not yet in a tagged sc-offline release.
 
 **Native plugins run with the game's full rights.** Only install plugins you trust; sc-offline doesn't review them. Plugins must stay offline and single-player: see [Plugin rules](docs/plugin-rules.md).
 

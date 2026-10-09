@@ -1,6 +1,6 @@
 # sco-core documentation
 
-Start with the [README](../README.md) for what sco-core is. Pick your path below. Where sco-core and sc-offline are heading: [Framework plan](framework.md).
+Start with the [README](../README.md) for what sco-core is. Pick your path below. Where sco-core and sc-offline stand, where they are heading and what the work so far taught: [Framework plan](framework.md).
 
 ## Writing a plugin
 
@@ -20,7 +20,9 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 | [Plugins](plugins.md) | Discovery, `plugin.ini` checks, the native loader, crash containment, Lua, data packs, status |
 | [sco-lua](../plugins/lua/README.md) | The Lua runtime: sandbox, step and memory limits, updating Lua |
 | [How it works](architecture.md) | The runtime (tasks, events, commands, owners), threading and limits |
-| [C++ API reference](api.md) | Every function and type in `include/sco/`, including `caps`, `host` and the runtime |
+| [C++ API reference](api.md) | Every function and type in `include/sco/`, including the host kit (`sco/app.h`), `caps`, `host` and the runtime |
+| [Building: sco-host-sim](building.md#sco-host-sim) | Running plugins through the real host kit, without the game |
+| [Framework plan § Lessons](framework.md#lessons) | Rules for hosts learned in game: where to call `Stop`, starting the host kit, adopting sco-core's types |
 
 ## Game core
 
@@ -35,5 +37,5 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 | Doc | What |
 |---|---|
 | [Building and testing](building.md) | `tools/test.sh`, CMake and CTest, the Windows run, the SDK zip, CI |
-| [Contributing](../CONTRIBUTING.md) | What fits, how to make a change, how it reaches sc-offline |
+| [Contributing](../CONTRIBUTING.md) | What fits, how to make a change, how it reaches sc-offline, how lessons come back |
 | [Changelog](../CHANGELOG.md) | What changed |
