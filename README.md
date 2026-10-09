@@ -135,7 +135,7 @@ A product (sc-offline today) builds sco-core into its own DLL (`add_subdirectory
 
 ## Scope
 
-sco-core is for an offline, single-player mod. It finds addresses and reports on them, and gives plugins a bounded way to use the game; it never connects to anything. Contributions or plugins that help online play, cheating or anti-cheat bypass are out of scope, as in [sc-offline](https://github.com/scubamount/sc-offline/blob/main/CONTRIBUTING.md#what-fits-this-project) and the [plugin rules](sdk/docs/plugin-rules.md).
+sco-core is for an offline mod: the game never connects to Cloud Imperium Games' servers. It finds addresses and reports on them, and gives plugins a bounded way to use the game. Two kinds of connection are allowed, both planned and not shipped yet: local IPC with other processes on the same PC (bridges to other games), and private co-presence between sc-offline players over a LAN or VPN through `sco.net` (design: [PR #37](https://github.com/scubamount/sco-core/pull/37)). Online play, cheating, getting around anti-cheat and the other bans in the [plugin rules](sdk/docs/plugin-rules.md) are out of scope for good, as in [sc-offline](https://github.com/scubamount/sc-offline/blob/main/CONTRIBUTING.md#what-fits-this-project) and the [plugin rules](sdk/docs/plugin-rules.md).
 
 ## License
 

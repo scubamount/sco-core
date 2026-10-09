@@ -10,7 +10,7 @@ Build plugins for [sc-offline](https://github.com/scubamount/sc-offline), the St
 
 > **Version 1.1** (`sdk-v1.1.0`). The API is stable: version 1 only grows, so a plugin built with this SDK keeps loading in later 1.x hosts. In sc-offline, plugin loading is switched off by default; `plugins = on` in `sc-offline.ini` turns it on.
 
-**Native plugins run with the game's full rights.** Only install plugins you trust; sc-offline doesn't review them. Plugins must stay offline and single-player: see [Plugin rules](docs/plugin-rules.md).
+**Native plugins run with the game's full rights.** Only install plugins you trust; sc-offline doesn't review them. Plugins never connect to Cloud Imperium Games' servers; the only connections allowed are local IPC and private LAN/VPN co-presence through `sco.net`, both planned and not shipped yet: see [Plugin rules](docs/plugin-rules.md).
 
 ## What's in the SDK
 
