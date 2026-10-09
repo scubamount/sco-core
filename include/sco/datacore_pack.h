@@ -25,15 +25,16 @@ constexpr size_t kMaxPackOps = 65536;             // operations per file ([[inst
 struct PackPointer {
     enum class Kind : uint8_t { None, Null, Local, Existing };
     Kind           kind = Kind::None;
-    std::string    local;      // Local: the [[instance]] id, without '@'
+    std::string    local;      // Local: the [[instance]] (or [[record]]: its root) id, without '@'
     InstanceSource existing;   // Existing
 };
 
 struct PackOp {
-    enum class Kind : uint8_t { Set, Instance, Append };
+    enum class Kind : uint8_t { Set, Instance, Append, Record };
     Kind     kind = Kind::Set;
     uint32_t line = 0;                      // of its [[...]] header; 0 when built in code
     // Set, Append: the target, a record (`record` name and/or `guid`) or an added instance (`instance = "@id"`).
+    // Record: `name` and the optional `guid` of the new record.
     std::optional<RecordRef> record;
     std::string instance;                   // without '@'
     std::string field;
@@ -43,9 +44,11 @@ struct PackOp {
     std::string element;                    // Append: an added instance to copy into an array of structs
     // Instance (`id`, `struct`, optional `clone`, optional `set`); Append with an inline
     // `value = { struct = ..., clone = ..., set = ... }` uses type, clone and sets for its element.
+    // Record (`struct`, `name`, `clone`, optional `id`, `guid`, `file`, `set`): id may be empty.
     std::string id, type;
-    InstanceSource clone;                   // no record: zero-filled
+    InstanceSource clone;                   // no record: zero-filled (Record: required, a record without field)
     std::vector<std::pair<std::string, Value>> sets;
+    std::string file;                       // Record: the file path; "" = libs/foundry/records/sco/<plugin>/<name>.xml
 };
 
 struct Pack {
@@ -61,6 +64,15 @@ struct Pack {
 // before use and unique, a field set twice by one file (same target, same path), the size and
 // operation limits. Names (records, structs, fields) resolve only against a .dcb (ApplyPacks).
 bool ParsePack(std::string_view text, Pack& out, std::string& error);
+
+// The GUID a [[record]] without `guid` gets: derived from the plugin id and the record name (a
+// version-4 form), so the record keeps its GUID across launches and saved games that store it
+// still find it. ApplyPacks uses it; tools print it.
+Guid PackRecordGuid(std::string_view plugin, std::string_view name);
+// The file path a [[record]] without `file` gets: libs/foundry/records/sco/<plugin>/<name>.xml.
+std::string PackRecordFile(std::string_view plugin, std::string_view name);
+// The rule for `file` (design "AddRecord", R1): libs/foundry/records/... ending in .xml, no NUL.
+bool PackRecordFileOk(std::string_view path);
 
 // The canonical .toml for a pack, `comment` lines first (each prefixed "# "). ParsePack of the
 // result gives the same operations back (lines aside). Values that TOML can't hold as they are

@@ -132,16 +132,22 @@ public:
             return SCO_TOO_MANY;
         }
     }
-    // SCO_UNAVAILABLE in sco.datacore 1.0 (saved patches have no record operation yet).
-    sco_result AddRecord(std::string_view type, std::string_view name, std::string_view guid, std::string_view cloneRecord,
-                         std::string_view filePath = {}) noexcept {
-        if (!t_) return r_;
+    // A new record of type named name, its root copied from cloneRecord (a record of the same
+    // struct). guid "": stable, derived from the plugin id and name; filePath "":
+    // libs/foundry/records/sco/<plugin id>/<name>.xml. The result is the record's root: a value
+    // for pointer fields, and Ref() addresses its fields (the name works too; DataCoreRef{name}
+    // points a reference field at it). Result() is SCO_UNAVAILABLE on a sco.datacore 1.0 host.
+    DataCoreInstance AddRecord(std::string_view type, std::string_view name, std::string_view cloneRecord, std::string_view guid = {},
+                               std::string_view filePath = {}) noexcept {
+        if (!t_) return { 0, r_ };
         try {
             const std::string a(type), b(name), c(guid), d(cloneRecord), e(filePath);
-            uint64_t out = 0;
-            return t_->add_record(id_, a.c_str(), b.c_str(), c.c_str(), d.c_str(), e.empty() ? nullptr : e.c_str(), &out);
+            uint64_t id = 0;
+            const sco_result r = t_->add_record(id_, a.c_str(), b.c_str(), c.empty() ? nullptr : c.c_str(), d.c_str(),
+                                                e.empty() ? nullptr : e.c_str(), &id);
+            return { r == SCO_OK ? id : 0, r };
         } catch (...) {
-            return SCO_TOO_MANY;
+            return { 0, SCO_TOO_MANY };
         }
     }
 
@@ -226,15 +232,22 @@ private:
 // The service for one plugin. Open once (OnLoad); keep it for the plugin's life.
 class DataCore {
 public:
-    // SCO_OK, SCO_NOT_FOUND (the product doesn't publish sco.datacore), SCO_UNAVAILABLE (a 1.0 host).
+    // SCO_OK, SCO_NOT_FOUND (the product doesn't publish sco.datacore), SCO_UNAVAILABLE (a 1.0 sco_api).
+    // Any 1.x service is taken; AddRecordSupported() says whether it is 1.1 or later.
     sco_result Open(const Plugin& plugin) noexcept { return Open(plugin.Api(), plugin.Self()); }
     sco_result Open(const sco_api* api, sco_plugin* self) noexcept {
         self_ = self;
+        api_ = api;
         return ref_.Query(api, SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_0);
     }
     explicit operator bool() const noexcept { return static_cast<bool>(ref_); }
     // SCO_DC_OPEN or SCO_DC_LOADED; SCO_DC_LOADED when not open.
     uint32_t State() const noexcept { return ref_ ? ref_->state() : SCO_DC_LOADED; }
+    // Whether add_record works (sco.datacore 1.1).
+    bool AddRecordSupported() const noexcept {
+        const void* t = nullptr;
+        return ref_ && api_ && api_->query_service(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_1, &t) == SCO_OK;
+    }
     // A new patch; empty (Result() says why) on failure. flags: 0 or SCO_DC_NON_ATOMIC.
     DataCorePatch Begin(uint32_t flags = 0) const noexcept {
         if (!ref_) return { nullptr, 0, SCO_UNAVAILABLE };
@@ -247,6 +260,7 @@ public:
 private:
     ServiceRef<sco_datacore_v1> ref_;
     sco_plugin* self_ = nullptr;
+    const sco_api* api_ = nullptr;
 };
 
 }  // namespace sco::sdk

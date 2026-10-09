@@ -776,15 +776,27 @@ static int L_dc_set_pointer(lua_State* L) {
     return PushResult(L, r);
 }
 
+/* p:add_record(type, name, clone_record [, guid [, file_path]]): the new record's root as an
+ * instance (a pointer value, and with set/append targets by name), or nil, err. "unavailable" on
+ * a sco.datacore 1.0 host. */
 static int L_dc_add_record(lua_State* L) {
     DcPatch* p = CheckPatch(L);
+    const char* type = luaL_checkstring(L, 2);
+    const char* name = luaL_checkstring(L, 3);
+    const char* clone = luaL_checkstring(L, 4);
+    const char* guid = luaL_optstring(L, 5, NULL);
+    const char* file = luaL_optstring(L, 6, NULL);
     const sco_datacore_v1* dc = DataCore(Of(L));
-    if (!dc) return PushResult(L, SCO_UNAVAILABLE);
+    if (!dc) { lua_pushnil(L); lua_pushstring(L, ResultName(SCO_UNAVAILABLE)); return 2; }
     uint64_t id = 0;
-    const sco_result r = dc->add_record(p->id, luaL_checkstring(L, 2), luaL_checkstring(L, 3), luaL_optstring(L, 4, NULL),
-                                        luaL_optstring(L, 5, NULL), luaL_optstring(L, 6, NULL), &id);
+    const sco_result r = dc->add_record(p->id, type, name, guid, clone, file, &id);
     CheckBudget(L);
-    return PushResult(L, r);   /* SCO_UNAVAILABLE in 1.0 (no record operation in saved patches yet) */
+    if (r != SCO_OK) { lua_pushnil(L); lua_pushstring(L, ResultName(r)); return 2; }
+    DcInst* inst = (DcInst*)lua_newuserdatauv(L, sizeof(DcInst), 0);
+    inst->patch = p->id;
+    inst->id = id;
+    luaL_setmetatable(L, DC_INST);
+    return 1;
 }
 
 static int L_dc_commit(lua_State* L) {

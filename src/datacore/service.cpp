@@ -1,4 +1,4 @@
-// sco::datacore::service (sco/datacore_service.h): the host service "sco.datacore" 1.0
+// sco::datacore::service (sco/datacore_service.h): the host service "sco.datacore" 1.1
 // (include/sco_datacore.h) and the DataCore load. docs/design/vfs-datacore.md section 6 and
 // decision 9: patches committed before the load apply at it; after it, commit saves the patch as
 // <dataRoot>/datacore/pending/<plugin id>.toml and it applies from the next launch.
@@ -39,7 +39,7 @@ struct PatchRec {
     bool        atomic = true;
     Stage       stage = Stage::Open;
     std::vector<PackOp> ops;
-    std::map<uint64_t, std::string> instances;   // instance id -> local id in the pack
+    std::map<uint64_t, std::string> instances;   // instance and record ids -> local id in the pack
     std::set<std::string> fieldsSet;             // target + field of every set, to refuse a second one
     std::vector<Entry> results;                  // after the load: one per op, then the patch's
 };
@@ -251,12 +251,42 @@ sco_result T_append(uint64_t patch, const char* record, const char* field, const
     return SCO_OK;
 }
 
-sco_result T_add_record(uint64_t patch, const char*, const char*, const char*, const char*, const char*, uint64_t* out) {
+// A [[record]] operation: the new record's root gets an id like an added instance's ("@<id>" as a
+// record argument, SCO_DC_INSTANCE as a value). Without guid, the pack's default applies: derived
+// from the plugin id and the name, so a saved patch adds the same GUID at every launch.
+sco_result T_add_record(uint64_t patch, const char* type, const char* name, const char* guid, const char* cloneRecord,
+                        const char* filePath, uint64_t* out) {
     if (out) *out = 0;
     std::lock_guard<std::mutex> hold(g_lock);
     PatchRec* p = nullptr;
     if (const sco_result r = Open(patch, p); r != SCO_OK) return r;
-    return SCO_UNAVAILABLE;   // saved patches are packs, and the pack format has no record operation yet
+    if (!out || !Text(type) || !Text(name)) return SCO_BAD_ARG;
+    PackOp op;
+    op.kind = PackOp::Kind::Record;
+    op.type = type;
+    RecordRef rec;
+    rec.name = name;
+    if (guid && *guid) {
+        Guid g;
+        if (!ParseGuid(guid, g) || g == Guid{}) return SCO_BAD_ARG;
+        rec.guid = g;
+    }
+    PackOp clone;
+    if (!Target(*p, cloneRecord, clone) || !clone.record) return SCO_BAD_ARG;   // required, and a record
+    op.clone.record = *clone.record;
+    if (filePath && *filePath) {
+        if (!Utf8(filePath) || !PackRecordFileOk(filePath)) return SCO_BAD_ARG;
+        op.file = filePath;
+    }
+    for (const PackOp& o : p->ops)   // a name or GUID this patch already adds
+        if (o.kind == PackOp::Kind::Record && (o.record->name == rec.name || (rec.guid && o.record->guid == rec.guid))) return SCO_BAD_ARG;
+    const uint64_t rid = g_next++;
+    op.id = "r" + std::to_string(rid);
+    op.record = std::move(rec);
+    p->instances.emplace(rid, op.id);
+    p->ops.push_back(std::move(op));
+    *out = rid;
+    return SCO_OK;
 }
 
 // Writes the pack text to <id>.toml through a temporary file renamed over it.
@@ -409,7 +439,7 @@ Result Start(const Options& opts) {
         g_patches.clear();
         g_started = true;
     }
-    r = host::ProvideHostService(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_0, &kTable);
+    r = host::ProvideHostService(SCO_DATACORE_NAME, SCO_DATACORE_VERSION_1_1, &kTable);
     if (r != Result::Ok) {
         RemoveReleaseHook(OnRelease);
         std::lock_guard<std::mutex> hold(g_lock);
