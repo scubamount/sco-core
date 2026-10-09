@@ -53,9 +53,7 @@ SCO_EXPORT const sco_plugin_info* sco_plugin_query(void) {
     info.name = FAKE_ID;
     info.version = "1.0.0";
     info.author = "tests";
-#if FAKE_MODE == MODE_QUERY_NULL
-    return NULL;
-#elif FAKE_MODE == MODE_API_2
+#if FAKE_MODE == MODE_API_2
     info.api_major = 2;
 #elif FAKE_MODE == MODE_WRONG_NAME
     info.name = "someone_else";
@@ -66,7 +64,11 @@ SCO_EXPORT const sco_plugin_info* sco_plugin_query(void) {
 #elif FAKE_MODE == MODE_BAD_NAME_PTR
     info.name = (const char*)(uintptr_t)0x10;
 #endif
+#if FAKE_MODE == MODE_QUERY_NULL
+    return NULL;
+#else
     return &info;
+#endif
 }
 
 SCO_EXPORT sco_result sco_plugin_load(const sco_api* api, sco_plugin* self) {
@@ -75,12 +77,14 @@ SCO_EXPORT sco_result sco_plugin_load(const sco_api* api, sco_plugin* self) {
     sco_result r = api->subscribe(self, "tick", OnTick, NULL);
     if (r != SCO_OK) return r;
     api->log(self, SCO_LOG_INFO, "hello from " FAKE_ID);
-#if FAKE_MODE == MODE_LOAD_FAILS
-    return SCO_UNAVAILABLE;
-#elif FAKE_MODE == MODE_LOAD_CRASHES
+#if FAKE_MODE == MODE_LOAD_CRASHES
     Fault();
 #endif
+#if FAKE_MODE == MODE_LOAD_FAILS
+    return SCO_UNAVAILABLE;
+#else
     return SCO_OK;
+#endif
 }
 
 #if FAKE_MODE != MODE_NO_UNLOAD
