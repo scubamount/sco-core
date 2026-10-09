@@ -32,7 +32,7 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 | [How it works](architecture.md) | Signature rows, results, resolving, the report, startup |
 | [Adding a signature](adding-signatures.md) | Moving a feature's addresses into a table, and the rules rows follow |
 | [Checking a game build](sigcheck.md) | `sco-sigcheck`: output, exit codes, the patch-day routine |
-| [Design: game-file overrides and DataCore patches](design/vfs-datacore.md) | Proposal: `sco::vfs`, the DataCore layout, a semantic patcher and data-pack overrides that survive game patches |
+| [Design: game-file overrides and DataCore patches](design/vfs-datacore.md) | `sco::vfs`, `sco::game::pak`, the DataCore layout, a semantic patcher (with `AddRecord`), `.toml` overrides in data packs and the `sco.datacore` service; decisions of 2026-10-09 |
 
 ## Working on sco-core
 
