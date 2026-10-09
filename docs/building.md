@@ -24,7 +24,7 @@ In order, it:
 
 1. compiles the ABI pin `tests/abi_v1.c` with `-Werror` as C11 and C++20, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc` (compile-only),
 2. compiles the SDK template, the `hello` and `cpp_hello` examples, each `include/scosdk/` header and `sco-plugin-check` against `sco_api.h`,
-3. builds and runs `test_core` (ASan+UBSan), `test_runtime`, `test_host` and `test_sdk` (each under ASan+UBSan and again under ThreadSanitizer),
+3. builds and runs `test_core` and `test_hook` (ASan+UBSan), `test_runtime`, `test_host`, `test_spatial` and `test_sdk` (each under ASan+UBSan and again under ThreadSanitizer),
 4. builds the fake plugins from `tests/fixtures/plugins/native/fake_plugin.c` into `tests/out/plugins/` and runs `test_plugins` (ASan+UBSan),
 5. builds Lua and sco-lua and runs `test_lua` (ASan+UBSan), which also loads `sdk/examples/greeter` through the real loader,
 6. runs `test_app` (ASan+UBSan): the host kit with built-in plugins, two fake plugins, `greeter` and `travel_pack`,
@@ -65,6 +65,7 @@ The build is 64-bit only; configuring for 32 bits stops with an error.
 | `sco_core` | Scanners, signatures, log/status, PE file loader, `src/game/*.cpp`; on Windows also `sco_image_win.cpp` | |
 | `sco_runtime` | `src/api/sco_tasks.cpp`, `sco_events.cpp`, `sco_commands.cpp`, `sco_services.cpp` | |
 | `sco_hook` | `src/hook/sco_hook.cpp`: detours and near-code memory, `sco/hook.h` (x86-64) | |
+| `sco_engine` | `src/engine/zone.cpp`: the zone tree, `sco/engine/zone.h` (spatial math `sco/engine/types.h` is header-only) | |
 | `sco_host` | `src/api/sco_caps.cpp`, `src/host/sco_host.cpp` | `sco_runtime`, `sco_core` |
 | `sco_plugins` | `src/plugins/*.cpp` (`guard_win.cpp` on Windows only) | `sco_runtime`, `sco_core`, `dl` |
 | `sco_lua_vendor` | `plugins/lua/third_party/lua/src/*.c` without `lua.c`/`luac.c` | `m` on Unix |
@@ -105,6 +106,8 @@ add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
 | `test_core` | Scanners and the signature registry against a synthetic image |
 | `test_runtime` | Task queue, event bus, command registry, `Release` |
 | `test_host` | Capabilities and the `sco_api` table |
+| `test_hook` | Detours over small functions written into executable memory |
+| `test_spatial` | Vector, quaternion and transform math; the zone tree (chains, round trips at 1e11 m, failures, readers beside a writer) |
 | `test_sdk` | The C++20 SDK layer (`include/scosdk/`): two SDK plugins over the real host table |
 | `test_plugins` | `plugin.ini`, discovery, the content index and the native loader against the fake plugins in `<build>/tests/out/plugins/` |
 | `test_lua` | sco-lua through the real loader and host table, including `sdk/examples/greeter` |

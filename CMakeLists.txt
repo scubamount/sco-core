@@ -87,6 +87,13 @@ target_include_directories(sco_hook PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_hook PUBLIC Threads::Threads)
 sco_project_target(sco_hook)
 
+# Engine-agnostic spatial math (sco/engine/types.h, header-only) and the zone tree (sco/engine/zone.h)
+# the host feeds each tick. No game offsets, no game memory.
+add_library(sco_engine STATIC src/engine/zone.cpp)
+target_include_directories(sco_engine PUBLIC "${SCO_INCLUDE_DIR}")
+target_link_libraries(sco_engine PUBLIC Threads::Threads)
+sco_project_target(sco_engine)
+
 add_library(sco_plugins STATIC
   src/plugins/manifest.cpp src/plugins/discover.cpp src/plugins/loader.cpp src/plugins/content.cpp)
 if(WIN32)
@@ -200,6 +207,11 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_hook PRIVATE sco_hook)
   add_test(NAME test_hook COMMAND test_hook)
   sco_project_target(test_hook)
+
+  add_executable(test_spatial tests/test_spatial.cpp)
+  target_link_libraries(test_spatial PRIVATE sco_engine)
+  sco_project_target(test_spatial)
+  add_test(NAME test_spatial COMMAND test_spatial)
 
   # Fake native plugins for test_plugins, laid out like tools/test.sh (tools/test-win.sh on
   # Windows): <out>/plugins/m<mode>/{plugin.ini,m<mode>.<ext>}, m11 a second clean plugin, and
