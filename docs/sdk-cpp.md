@@ -31,6 +31,7 @@ The C++20 layer of the sco plugin SDK: header-only, over [`sco_api.h`](api-v1.md
 | [`scosdk/net.hpp`](../include/scosdk/net.hpp) | `Net`, `NetChannel`: typed message channels with the other players of a session the product opened, callbacks as lambdas on the game thread (the host service `sco.net`, [`sco_net.h`](../include/sco_net.h); [Multiplayer messages](net.md)) |
 | [`scosdk/ipc.hpp`](../include/scosdk/ipc.hpp) | `Ipc`, `IpcChannel`: shared-memory channels to another program on the same PC (the host service `sco.ipc`, [`sco_ipc.h`](../include/sco_ipc.h); [IPC](ipc.md)); `IpcChannel` closes its channel on destruction; not in `scosdk.hpp` |
 | [`scosdk/game/vehicles.hpp`](../include/scosdk/game/vehicles.hpp) | `sco::sdk::game::Vehicles`: the ship you're aboard, its seats, `Seat` / `Eject` / `PowerOn` for your own actors and ships (the game service `game.vehicles`, [`sc_vehicles.h`](../include/sc_vehicles.h); [API](api-v1.md#gamevehicles-10-game-pack)); not in `scosdk.hpp` |
+| [`scosdk/settings.hpp`](../include/scosdk/settings.hpp) | `Settings`, `AsSettingsChanged`: read the typed `[settings]` of your `plugin.ini` (the host service `sco.settings`, [`sco_settings.h`](../include/sco_settings.h)); not in `scosdk.hpp`, include it when you use settings |
 | [`scosdk/ui.hpp`](../include/scosdk/ui.hpp) | `Ui`: tabs, overlays, badges and hotkeys (the host service `sco.ui`, [`sco_ui.h`](../include/sco_ui.h)); not in `scosdk.hpp`, include it when you use UI |
 | [`scosdk/game/actors.hpp`](../include/scosdk/game/actors.hpp) | `sco::sdk::game::Actors`: `LocalPlayer`, `SpawnNpc`, `Despawn`, `LastError`, `LastReadError` (the game pack's service `game.actors`, [`sc_actors.h`](../include/sc_actors.h); [game services](game-services.md)); not in `scosdk.hpp` |
 | [`scosdk/scosdk.hpp`](../include/scosdk/scosdk.hpp) | All of the above |
@@ -196,6 +197,26 @@ if (ui.Open(*this) == SCO_OK) {
 
 - The object passed to `AddTab` / `AddOverlay` is borrowed until `RemoveTab` / `RemoveOverlay` or unload; an exception from its `Draw` is caught and dropped.
 - Draws run on the game thread; registration and hotkeys work from any thread ([UI § Threads](ui.md#threads)).
+
+## Settings
+
+`sco::sdk::Settings` reads the `[settings]` your `plugin.ini` declares ([format](plugins.md#typed-settings-settings)), through the host service [`sco.settings`](api-v1.md#scosettings-10). It is read-only; the player changes values in the product's menu.
+
+```cpp
+#include "scosdk/settings.hpp"
+
+sco::sdk::Settings settings;
+if (settings.Open(*this) == SCO_OK) {
+    int64_t speed = settings.Int("speed", 5);               // the value, or the fallback if the call fails
+    std::string mode = settings.String("mode", "normal");   // an enum's choice
+    double fov;
+    if (settings.GetFloat("fov", fov) != SCO_OK) Warn("fov: %s", settings.LastError().c_str());
+}
+// React to a change: subscribe to the event "settings.changed" (SCO_SETTINGS_CHANGED_EVENT)
+//   if (const sco_settings_changed* c = sco::sdk::AsSettingsChanged(data)) { /* c->plugin, c->name */ }
+```
+
+`GetBool` / `GetInt` / `GetFloat` / `GetString` answer `SCO_NOT_FOUND` (not declared) or `SCO_BAD_ARG` (another type) and leave the out value alone; `Bool` / `Int` / `Float` / `String` return a fallback instead. Every call is `noexcept`.
 
 ## Lifetimes
 

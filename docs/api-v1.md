@@ -288,9 +288,39 @@ Some services are published by the host itself rather than by a plugin. They liv
 | `sco.datacore` | 1.0 | [`sco_datacore.h`](../include/sco_datacore.h) | DataCore overrides from code: the operations of a data pack's `.toml` files, queued call by call; after the game's DataCore load they are saved and apply from the next launch. Published only when the product enables it (`sco::app::Platform::dataCore`; sc-offline will in design plan PR 8). [The sco.datacore service](datacore.md#the-scodatacore-service) |
 | `sco.ipc` | 1.0 | [`sco_ipc.h`](../include/sco_ipc.h) | Local shared-memory channels to another program on the same PC (a bridge): `Local\SCO_<plugin id>.<name>`, the current user only, rings and seqlock blocks laid out with the MIT wire [`sc_ipc.h`](../include/sc_ipc.h), which the other program includes alone. [IPC](ipc.md) |
 | `sco.net` | 1.0 | [`sco_net.h`](../include/sco_net.h) | Typed message channels between the players of a private session the product opened (`<plugin id>.<name>`, unreliable or reliable, per-plugin send quotas); callbacks on the game thread, `net.state` / `net.peer` events. Published with the capability `sco.net` (`requires = sco.net`); plugins can't open or join sessions. [Multiplayer messages](net.md) |
+| `sco.settings` | 1.0 | [`sco_settings.h`](../include/sco_settings.h) | The typed `[settings]` of the plugin's `plugin.ini`, read-only: `get_bool` / `get_int` / `get_float` / `get_string`, and the event `settings.changed`. [Below](#scosettings-10), [plugin.ini](plugins.md#typed-settings-settings) |
 | `sco.ui` | 1.0 | [`sco_ui.h`](../include/sco_ui.h) | Tabs, overlays and badges in the product's menu, drawn by the product through the plugin's draw function, and hotkeys: key chords bound to commands. [UI](ui.md) |
 
 The host side is `sco::host::ProvideHostService` ([API: sco/host.h](api.md#scohosth-the-hosts-sco_api-table)).
+
+### `sco.settings` 1.0
+
+[`sco_settings.h`](../include/sco_settings.h), layout pinned by [`tests/abi_settings.c`](../tests/abi_settings.c) (48 bytes). A plugin declares typed settings in `plugin.ini` ([grammar](plugins.md#typed-settings-settings)); the host keeps the values, the player changes them in the product's menu ([UI](ui.md#settings)), and the plugin reads. `sco_api.h` is unchanged: the table comes from `query_service("sco.settings", 0x00010000, ...)`.
+
+```c
+const sco_settings_v1* st = NULL;
+if (api->size > offsetof(sco_api, query_service) &&
+    api->query_service(SCO_SETTINGS_NAME, SCO_SETTINGS_VERSION_1_0, (const void**)&st) == SCO_OK) {
+    int64_t speed = 5;
+    st->get_int(self, "speed", &speed);        /* the declared default until the player changes it */
+}
+```
+
+| Function | Does |
+|---|---|
+| `get_bool(self, name, &out)` | `*out` is 0 or 1 |
+| `get_int(self, name, &out)` | An `int` setting, 64 bits |
+| `get_float(self, name, &out)` | A `float` setting |
+| `get_string(self, name, out, &size)` | A `string` setting's text or an `enum` setting's choice, with the size handshake (`SCO_TOO_MANY` and the bytes needed; the NUL counts; at most 255 bytes of text) |
+| `last_error(self, out, &size)` | Why the last call failed (`setting 'speed' is int, not a bool`) |
+
+- A plugin reads only its own settings. `SCO_NOT_FOUND`: it declares none by that name. `SCO_BAD_ARG`: the setting has another type, a NULL name or out, or a bad or released `self`. `*out` is untouched on any failure. `SCO_UNAVAILABLE` after the host stopped the service.
+- A read returns a value the declaration allows (type, range, choice, length): the host checks every value before it keeps it, and a kept value that no longer fits is replaced by the default at start.
+- Reads copy from memory and work from any thread. There is no setter in the table.
+- **Event `settings.changed`**, on the game thread, once per change and after the new value is stored: the data is a `const sco_settings_changed*` (the plugin id and the setting name, valid during the callback; `size` first). Setting a value to what it already is, or a refused value, dispatches nothing. Every subscriber hears every plugin's changes; read the new value with the getters.
+- Values persist in the plugin's `sco.storage` namespace (keys `sco.settings.<name>`), in memory without storage. A write joins the plugin's open storage transaction if it has one, so a plugin that leaves a transaction open can lose a setting on rollback: commit or roll back before returning to the game loop.
+- Unload and crash withdraw the plugin's settings; the table stays valid for the life of the host.
+- Wrappers: C++ [`scosdk/settings.hpp`](sdk-cpp.md#settings), C# [`Settings`](sdk-csharp.md#storage-datacore-and-ui), Lua [`sco.settings.get`](../sdk/docs/lua.md#scosettings).
 
 ## Built-in services
 

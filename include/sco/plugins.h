@@ -51,12 +51,54 @@ constexpr size_t kMaxManifestBytes = 16 * 1024;
 // docs/design/vfs-datacore.md decision 10); the others are reserved command prefixes.
 constexpr const char* kReservedIds[] = { "sco", "host", "menu", "game" };
 
+// ---- typed settings ([settings] in plugin.ini; the grammar is in docs/plugins.md) -----------------
+
+enum class SettingType : uint32_t { Bool = 0, Int = 1, Float = 2, String = 3, Enum = 4 };
+const char* SettingTypeName(SettingType t);       // "bool", "int", "float", "string", "enum"
+
+constexpr size_t kMaxSettings = 32;               // per plugin
+constexpr size_t kMaxSettingNameLen = 31;         // [a-z0-9_]
+constexpr size_t kMaxSettingLabelLen = 63, kMaxSettingHelpLen = 255;
+constexpr size_t kMaxSettingStringLen = 255;      // a string value, bytes
+constexpr size_t kMaxSettingChoices = 16, kMaxSettingChoiceLen = 31;   // enum(a,b,c): [a-z0-9_]
+
+// One setting's value. Which member is meaningful follows the type: b (Bool), i (Int), f (Float),
+// s (String, and Enum: the choice's name).
+struct SettingValue {
+    bool        b = false;
+    int64_t     i = 0;
+    double      f = 0;
+    std::string s;
+};
+
+struct Setting {
+    std::string name;                             // [a-z0-9_], 1-31; unique in the plugin
+    SettingType type = SettingType::Bool;
+    std::string label;                            // shown to the player; the name when not declared
+    std::string help;                             // may be empty
+    SettingValue def;                             // the default, always valid for the declaration
+    bool        hasMin = false, hasMax = false;   // Int and Float
+    int64_t     minI = 0, maxI = 0;
+    double      minF = 0, maxF = 0;
+    std::vector<std::string> choices;             // Enum: declaration order, no duplicates
+};
+
+// Parses text as a value of s (a default, or a value kept in storage): bool "true" / "false",
+// int, float (plain decimal, optional exponent, finite), a string of at most 255 printable
+// bytes, an enum choice. Range and choice rules apply. False with `why` ("above max 10").
+bool ParseSettingValue(const Setting& s, std::string_view text, SettingValue& out, std::string& why);
+// Checks a typed value against s the way ParseSettingValue does (range, choice, string rules).
+bool CheckSettingValue(const Setting& s, const SettingValue& v, std::string& why);
+// The text ParseSettingValue reads back to the same value (a float round-trips exactly).
+std::string FormatSettingValue(const Setting& s, const SettingValue& v);
+
 struct Manifest {
     std::string id, name, version, author;        // author may be empty
     uint16_t    apiMajor = 0, apiMinor = 0;
     Kind        kind = Kind::Data;
     std::string entry;                            // empty for data packs
     std::vector<std::string> requires_;           // capability names, file order, no duplicates
+    std::vector<Setting>     settings;            // the [settings] section, file order
 };
 
 // Parses plugin.ini text. Lines are `key = value`; `;` or `#` starts a comment at the start of a
@@ -66,7 +108,9 @@ struct Manifest {
 // version, api, kind), a value that breaks its rule (see the constants above), entry on a data
 // pack or missing on native/lua, entry not a bare file name, text over kMaxManifestBytes ("too
 // big"), a reserved id (sco, host, menu, game), text starting with a UTF-16 BOM ("plugin.ini must
-// be UTF-8"). On failure `out` is left empty.
+// be UTF-8"), a malformed or repeated [settings] section, or a bad setting line ("line 9: setting
+// 'speed': default 11 is above max 10"); a [settings] section on a data pack ("a data pack has no
+// settings"). Other sections are skipped, like unknown keys. On failure `out` is left empty.
 bool ParseManifest(std::string_view text, Manifest& out, std::string& error);
 
 // ---- discovery ------------------------------------------------------------------------------

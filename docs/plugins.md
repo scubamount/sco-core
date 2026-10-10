@@ -21,6 +21,7 @@ requires = teleport, spawn.ship   ; optional capabilities
 - Reserved ids: `sco`, `host`, `menu`, `game`.
 - `entry` is a bare file name inside the plugin folder: no `/`, `\`, `:` or `..`.
 - `plugin.ini` is at most 16 KiB.
+- A line `[name]` starts a section that runs to the next one. Only `[settings]` is defined ([typed settings](#typed-settings-settings)); keys go above it. Other sections are skipped like unknown keys.
 
 ## Discovery
 
@@ -90,6 +91,37 @@ This limits damage. It is not a sandbox: stack corruption, `__fastfail` and `/GS
 2. Calls the runtime's `load` (guarded like a native call). It runs the script once in a sandbox; an error refuses the plugin with the script's message (`main.lua:3: ...`) and releases what it registered.
 
 A script talks to the host only through the `sco_api` table, like a native plugin, and has no file, OS or network access. It runs under a step budget and a 64 MiB memory cap (256 MiB for every script together); past either, or after 3 errors, the runtime disables it (`[<id>] error: script disabled: <why>`). `UnloadAll(list, ops, &runtime)` releases each script, then frees it. What scripts can call: [`sdk/docs/lua.md`](../sdk/docs/lua.md).
+
+## Typed settings (`[settings]`)
+
+A native or Lua plugin can declare settings in a `[settings]` section at the end of its `plugin.ini`. The host keeps their values, keeps them across launches, draws them in the plugin's menu page (the product asks [`sco::settings::Pages()`](ui.md#settings)) and announces each change; the plugin only reads, through the host service `sco.settings` ([API v1](api-v1.md#scosettings-10), Lua `sco.settings.get`). A data pack has no code to read them: `a data pack has no settings`.
+
+```ini
+[settings]
+god_mode   = bool   default false label "God mode" help "Take no damage"
+speed      = int    default 5 min 1 max 10 label "Walk speed"
+fov        = float  default 90 min 60 max 120
+nickname   = string default "Pilot"
+difficulty = enum(easy,normal,hard) default normal
+```
+
+One declaration per line: `name = type [default V] [min N] [max N] [label "text"] [help "text"]`. The fields may come in any order, each at most once. A value is a bare word or text in double quotes (no escapes, so no quote inside); `;` or `#` starts a comment outside quotes, at the start of the line or after a space or tab.
+
+| Type | Value | Default when none is given | Notes |
+|---|---|---|---|
+| `bool` | `true` or `false` | `false` | |
+| `int` | An integer in 64 bits, `-12` | `0`, or the nearest bound | `min` / `max` optional |
+| `float` | Plain decimal with an optional exponent, `1.5`, `-2e-3`: no `nan`, `inf`, hex, `.5` or `5.` | `0`, or the nearest bound | `min` / `max` optional |
+| `string` | At most 255 bytes of printable text (empty is fine) | `""` | |
+| `enum(a,b,c)` | One of the choices | The first choice | 1-16 choices of 1-31 of `[a-z0-9_]`, no repeats, spaces after commas allowed |
+
+- `name`: 1-31 of `[a-z0-9_]`, unique in the plugin. At most 32 settings.
+- `min` and `max` apply to `int` and `float` only, and `min` may not exceed `max`. The default must lie inside them.
+- `label`: what the player sees (1-63 printable characters; the name when there is none). `help`: a hint (1-255).
+- **Refused, with the line and the setting:** an unknown field (a typo such as `defualt` is an error, not skipped), a field twice, a field without a value, an unclosed quote, a type that isn't one of the five, a default or bound that isn't a value of its type, a default outside its range, `min` above `max`, `min` / `max` on a type that has no range, a bad or repeated name, more than 32 settings, a repeated `[settings]` section. The reason is the plugin's `refused` line: `plugin.ini: line 9: setting 'speed': default 11 is above max 10`. `sco-plugin-check` reports the same.
+- **A host older than this feature** reads `[settings]` as a bad line and refuses the plugin; sco_api.h is unchanged, so it still loads there without the section.
+
+**Values.** `Declare` (called by `sco::app::Start` before the plugin's code runs) reads each kept value from the plugin's own `sco.storage` namespace, key `sco.settings.<name>`, text `<type>:<value>` (`int:7`, `enum:hard`). A kept value that no longer fits the declaration, because the plugin's update changed the type, narrowed the range or dropped a choice, is not used: the default applies, the stale key is deleted, and `mod.log` says `[settings] pilot.speed: kept value dropped (it was saved as int, the setting is string now); the default applies`. Without storage (no data folder) values live in memory and every start begins at the defaults. Keys of settings a plugin no longer declares are left alone. The `sco.settings.` key prefix belongs to the host.
 
 ## Data packs
 

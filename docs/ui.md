@@ -133,6 +133,53 @@ The host normalizes a chord to lower case, the modifiers in the order `ctrl`, `a
 - When a plugin unloads, fails its load or crashes, the host releases it, and a release hook removes everything it registered: tabs, badges, overlays, hotkeys and its last error. Every later call naming its handle is `SCO_BAD_ARG`. Its chords are free for others.
 - `sco::app::Stop` stops the service after every plugin has unloaded: `sco.ui` is withdrawn, the reservations cleared, and the table answers `SCO_UNAVAILABLE`.
 
+## Settings
+
+A plugin's typed `[settings]` ([plugin.ini grammar](plugins.md#typed-settings-settings)) are drawn by the product, in the plugin's menu page; the plugin sees none of it and only reads them through [`sco.settings`](api-v1.md#scosettings-10). sco-core has no renderer, so it exposes the settings as data through [`sco/settings.h`](../include/sco/settings.h) (library `sco_settings`) and the product turns them into widgets, next to the `sco.ui` tab registry it already walks:
+
+```cpp
+// Inside the menu window, on the game thread, after the plugin's own tab content:
+for (const sco::settings::Page& page : sco::settings::Pages()) {      // one per plugin with settings
+    // page.tab is the id of the plugin's first sco.ui tab (by order), or "" when it has none:
+    // draw the entries under that tab, or list the plugin under a "Settings" section.
+    for (const sco::settings::Entry& e : page.entries) {
+        const sco::plugins::Setting& d = e.decl;                       // name, label, help, type, range, choices
+        switch (d.type) {
+        case sco::plugins::SettingType::Bool: {
+            bool v = e.value.b;
+            if (ImGui::Checkbox(d.label.c_str(), &v)) sco::settings::SetBool(page.plugin.c_str(), d.name.c_str(), v);
+            break;
+        }
+        case sco::plugins::SettingType::Int: {
+            int v = static_cast<int>(e.value.i);
+            if (ImGui::SliderInt(d.label.c_str(), &v, static_cast<int>(d.minI), static_cast<int>(d.maxI)))
+                sco::settings::SetInt(page.plugin.c_str(), d.name.c_str(), v);
+            break;
+        }
+        case sco::plugins::SettingType::Enum: {
+            if (ImGui::BeginCombo(d.label.c_str(), e.value.s.c_str())) {
+                for (const std::string& c : d.choices)
+                    if (ImGui::Selectable(c.c_str(), c == e.value.s)) sco::settings::SetString(page.plugin.c_str(), d.name.c_str(), c.c_str());
+                ImGui::EndCombo();
+            }
+            break;
+        }
+        /* Float (SliderFloat / InputDouble, bounds when d.hasMin / d.hasMax) and String (InputText) likewise */
+        }
+        if (!d.help.empty() && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", d.help.c_str());
+    }
+}
+```
+
+| Function | Does |
+|---|---|
+| `Start()` / `Stop()` / `Started()` / `Table()` | Publish and withdraw `sco.settings` 1.0 (`sco::app::Start` does, after storage; `Stop` forgets every declaration) |
+| `Declare(self, decls)` | Declares a plugin's settings and reads their kept values (`sco::app::Start` calls it from the manifest before the plugin loads) |
+| `Pages()`, `Entries(plugin)` | Snapshots, any thread: `Entry` is the declaration and the current value; `Page` adds the plugin's first tab id |
+| `SetBool` / `SetInt` / `SetFloat` / `SetString(plugin, name, v)` | What a widget calls (game thread; `SetString` sets a string or an enum choice). Checks the declaration, stores the value, dispatches `settings.changed`. `Ok` also for the current value (silent). `BadArg`: another type, out of range, not a choice. `NotFound`, `WrongThread`, or storage's error (then nothing changed) |
+
+A plugin that unloads or crashes drops off `Pages()` with the rest of its registrations. The values are kept in the plugin's storage namespace ([plugin.ini](plugins.md#typed-settings-settings) says how a stale one is dropped).
+
 ## Hosting it
 
 The product side is [`sco/ui.h`](../include/sco/ui.h) (library `sco_ui`, [API: sco/ui.h](api.md#scouih-the-scoui-service)). `sco::app::Start` calls `ui::Start` and reserves `Platform::reservedChords`; another host calls them itself. A sketch of sc-offline's menu:
@@ -167,6 +214,7 @@ if (sco::ui::Dispatch(chord.c_str(), &reply) == sco::Result::Ok && !reply.empty(
 | `Tabs()`, `Overlays()`, `Badge(id)`, `Hotkeys()`, `ReservedChords()` | Snapshots, any thread: tabs by order, overlays by registration, hotkeys by chord |
 | `DrawTab(id, frame)` | Runs the tab's draw as a callout of its plugin. `NotFound`, `WrongThread`, `Crashed` |
 | `DrawOverlays(frame)` | Runs every overlay; returns how many completed |
+| `settings::Pages()` | The plugins' typed settings, as data to draw: see [Settings](#settings) |
 | `Dispatch(chord, reply)` | Invokes the bound command through the registry. `NotFound` for no binding or a reserved chord |
 
 The draw context is the product's choice: sco-core passes `frame` through as `void*`. ImGui never crosses the ABI as a type; a plugin that draws with ImGui links the same ImGui version as the product, which is the product's contract to publish.

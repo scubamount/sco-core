@@ -2,8 +2,17 @@
 // Private to src/plugins/.
 #include "sco/plugins.h"
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace sco::plugins::detail {
+
+// plugin.ini [settings] (settings.cpp). A comment in a settings line starts at ';' or '#' outside
+// double quotes, at the start of the line or after a space or tab.
+std::string_view StripSettingsComment(std::string_view line);
+// One declaration, comment stripped and trimmed: `name = type [default V] [min N] [max N] [label "x"]
+// [help "x"]`. Appends to out; false with `why` ("setting 'speed': default 11 is above max 10").
+bool ParseSettingLine(std::string_view line, std::vector<Setting>& out, std::string& why);
 
 // A path component from UTF-8 text. std::filesystem::path(std::string) uses the ANSI code page on
 // Windows; manifest values are UTF-8.

@@ -116,11 +116,22 @@ refused "api = 1.0x" "api=1.0x"
 refused "api = +1.0" "api=+1.0"
 refused "api = -0.0" "api=-0.0"
 refused "a plugin.ini over 16 KiB" "extra=;$(head -c 17000 /dev/zero | tr '\0' x)"
+refused "a setting default above its max" "extra=[settings]
+a = int default 11 max 10"
+refused "an unknown setting type" "extra=[settings]
+a = integer"
+refused "a misspelled setting field" "extra=[settings]
+a = bool defualt true"
 good=$(case_ini id=good "extra=homepage = a
 homepage = b
 notes = $(head -c 3000 /dev/zero | tr '\0' x)")
 "$CHECK" "$good" > "$WORK/case.txt" || { cat "$WORK/case.txt"; echo "sco-plugin-check refused unknown keys or a long line"; exit 1; }
-echo "sco-plugin-check: 10 bad plugin.ini refused, unknown keys and a 3000-byte line accepted"
+settings=$(case_ini id=settings "extra=[settings]
+speed = int default 5 min 1 max 10 label \"Speed ; fast\" ; comment
+mode = enum(easy, hard) default hard")
+"$CHECK" "$settings" > "$WORK/case.txt" || { cat "$WORK/case.txt"; echo "sco-plugin-check refused a good [settings] section"; exit 1; }
+grep -q '^  setting speed (int)$' "$WORK/case.txt" && grep -q '^  setting mode (enum)$' "$WORK/case.txt" || { cat "$WORK/case.txt"; echo "sco-plugin-check didn't list the settings"; exit 1; }
+echo "sco-plugin-check: 13 bad plugin.ini refused, unknown keys, a 3000-byte line and a [settings] section accepted"
 
 if [ "${SCO_SDK_NO_LUA:-0}" = 1 ]; then
   echo "lua-check: skipped (SCO_SDK_NO_LUA=1)"

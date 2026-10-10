@@ -11,6 +11,7 @@
 #include "sco/log.h"
 #include "sco/plugins.h"
 #include "sco/runtime.h"
+#include "sco/settings.h"
 #include "sco/status.h"
 #include "sco/storage.h"
 #include "sco/ui.h"
@@ -45,10 +46,10 @@ static const sco_api* g_api;
 static fs::path g_root;
 
 // Writes data/plugins/<id>/{plugin.ini,main.lua} under the test root.
-static void Write(const std::string& id, const std::string& lua) {
+static void Write(const std::string& id, const std::string& lua, const std::string& extraIni = "") {
     const fs::path dir = g_root / id;
     fs::create_directories(dir);
-    std::ofstream(dir / "plugin.ini") << "id = " << id << "\nname = " << id << "\nversion = 1.0\napi = 1.0\nkind = lua\nentry = main.lua\n";
+    std::ofstream(dir / "plugin.ini") << "id = " << id << "\nname = " << id << "\nversion = 1.0\napi = 1.0\nkind = lua\nentry = main.lua\n" << extraIni;
     std::ofstream(dir / "main.lua", std::ios::binary) << lua;
 }
 
@@ -64,7 +65,11 @@ static Loaded Load(const std::string& id, const sco_api* api = nullptr) {
     opts.enabled = true;
     l.list = P::Discover(g_root, opts);
     for (auto& p : l.list) if (p.folder == id) l.p = &p;
-    if (l.p && l.p->state == State::Ready) P::LoadScript(*l.p, api ? api : g_api, sco::host::NewPlugin(id.c_str()), kLua);
+    if (l.p && l.p->state == State::Ready) {
+        sco_plugin* self = sco::host::NewPlugin(id.c_str());
+        if (!l.p->manifest.settings.empty()) sco::settings::Declare(self, l.p->manifest.settings);   // as sco::app::Start does
+        P::LoadScript(*l.p, api ? api : g_api, self, kLua);
+    }
     return l;
 }
 
@@ -629,6 +634,57 @@ static bool AllCursorsFree(sco_plugin* self) {
     return ok;
 }
 
+static void TestSettings() {
+    // Without the service: sco.settings is there, get answers unavailable.
+    Write("setnone", R"lua(
+        local v, err, msg = sco.settings.get("speed")
+        assert(v == nil and err == "unavailable" and msg == "sco.settings is not available on this host", tostring(msg))
+        sco.log("info", "no settings: clean")
+    )lua");
+    Loaded none = Load("setnone");
+    CHECK(none.p && none.p->state == State::Loaded && Logged("[setnone] no settings: clean"));
+    Unload(none);
+
+    CHECK(sco::settings::Start() == Result::Ok);
+    Write("setting", R"lua(
+        assert(sco.settings.set == nil and sco.settings.put == nil, "read-only")
+        local speed = sco.settings.get("speed")
+        assert(speed == 5 and math.type(speed) == "integer", tostring(speed))
+        local fov = sco.settings.get("fov")
+        assert(fov == 90.5 and math.type(fov) == "float", tostring(fov))
+        assert(sco.settings.get("god_mode") == false)
+        assert(sco.settings.get("nick") == "Pilot")
+        assert(sco.settings.get("mode") == "normal")
+        local v, err, msg = sco.settings.get("nope")
+        assert(v == nil and err == "not_found" and msg == "this plugin declares no setting 'nope'", tostring(msg))
+        v, err, msg = sco.settings.get("bad\0name")
+        assert(v == nil and err == "bad_arg" and msg == "a setting name with a NUL byte", tostring(msg))
+        assert(not pcall(sco.settings.get))        -- a name is required
+        sco.register_command{ name = "setting.speed", title = "Speed",
+          fn = function() return tostring(sco.settings.get("speed")) .. " " .. sco.settings.get("mode") end }
+        sco.log("info", "settings: clean")
+    )lua", "[settings]\nspeed = int default 5 min 1 max 10\nfov = float default 90.5\ngod_mode = bool\n"
+           "nick = string default \"Pilot\"\nmode = enum(easy,normal,hard) default normal\n");
+    Loaded l = Load("setting");
+    CHECK(l.p && l.p->state == State::Loaded && Logged("[setting] settings: clean"));
+    if (l.p && l.p->state != State::Loaded) std::printf("  setting: %s\n", l.p->reason.c_str());
+    // The script reads what the host keeps now.
+    CHECK(Invoke(g_caller, "setting.speed").text == "5 normal");
+    CHECK(sco::settings::SetInt("setting", "speed", 8) == Result::Ok && sco::settings::SetString("setting", "mode", "hard") == Result::Ok);
+    CHECK(Invoke(g_caller, "setting.speed").text == "8 hard");
+    Unload(l);
+    // A plugin that declares nothing finds nothing, with the service up.
+    Write("setempty", R"lua(
+        local v, err = sco.settings.get("speed")
+        assert(v == nil and err == "not_found")
+        sco.log("info", "no declarations: clean")
+    )lua");
+    Loaded e = Load("setempty");
+    CHECK(e.p && e.p->state == State::Loaded && Logged("[setempty] no declarations: clean"));
+    Unload(e);
+    sco::settings::Stop();
+}
+
 static void TestStore(const fs::path& sdk) {
     // A host without the service: sco.store is there, every call answers unavailable.
     static const char* const kNone = R"lua(
@@ -823,6 +879,7 @@ int main(int argc, char** argv) {
     TestDataCore();
 #endif
     TestGameActors();
+    TestSettings();
     TestStore(argv[1]);
     std::printf("sco-lua tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

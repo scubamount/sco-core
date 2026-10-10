@@ -32,6 +32,13 @@ echo "abi_storage: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-m
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ui.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ui.c"
 echo "abi_ui: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The sco.settings table (tests/abi_settings.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_settings.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_settings.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_settings.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_settings.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_settings.c"
+echo "abi_settings: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 # The sco.datacore table (tests/abi_datacore.c), the same five ways.
 "$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_datacore.c"
 "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_datacore.c"
@@ -245,7 +252,7 @@ DATACORE=("$ROOT/src/datacore/datacore.cpp" "$ROOT/src/datacore/patch.cpp" "$ROO
 # datacore.applied and scosdk/datacore.hpp (ASan+UBSan).
 SERVICE=("$ROOT/src/datacore/service.cpp" "${DATACORE[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "${RUNTIME[@]}"
          "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "$ROOT/src/sco_log_status.cpp"
-         "$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" "$ROOT/src/plugins/content.cpp")
+         "$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/settings_ini.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" "$ROOT/src/plugins/content.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_datacore_service.cpp" "${SERVICE[@]}" -ldl -o "$OUT/test_datacore_service"
 "$OUT/test_datacore_service" "$OUT"
 "$OUT/sco-dcb" info "$OUT/datacore_36.dcb" | grep -q '^layout: OK$' || { echo "sco-dcb: valid fixture not OK"; exit 1; }
@@ -295,7 +302,7 @@ plugin svc_caller 12
 mkdir -p "$PLUG/text"
 printf 'id = text\nname = Not a library\nversion = 1\napi = 1.0\nkind = native\nentry = text.so\n' > "$PLUG/text/plugin.ini"
 echo "not a shared library" > "$PLUG/text/text.so"
-PLUGINS=("$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" \
+PLUGINS=("$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/settings_ini.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" \
          "$ROOT/src/plugins/content.cpp" "$ROOT/src/sco_log_status.cpp")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_plugins.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
   -ldl -o "$OUT/test_plugins"
@@ -310,6 +317,17 @@ UI=("$ROOT/tests/test_ui.cpp" "$ROOT/src/ui/ui.cpp" "${PLUGINS[@]}" "${RUNTIME[@
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${UI[@]}" -ldl -o "$OUT/test_ui_tsan"
 "$OUT/test_ui_tsan"
 
+# sco.settings (sco/settings.h, sco_settings.h, scosdk/settings.hpp): the declarations' values, the service
+# over the real host table and storage, persistence across a restart, settings.changed; readers on
+# threads beside the game thread's sets, so both sanitizer sets.
+SETTINGS=("$ROOT/tests/test_settings.cpp" "$ROOT/src/settings/settings.cpp" "$ROOT/src/ui/ui.cpp" "$ROOT/src/storage/storage.cpp"
+          "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
+          "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${SETTINGS[@]}" "$SQLITE_ASAN" -ldl -lm -o "$OUT/test_settings"
+"$OUT/test_settings" "$OUT"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${SETTINGS[@]}" "$SQLITE_TSAN" -ldl -lm -o "$OUT/test_settings_tsan"
+"$OUT/test_settings_tsan" "$OUT"
+
 # sco-lua (plugins/lua): the sandboxed Lua runtime, loaded through the real loader and host table.
 # Vendored Lua is built as C with its own warnings off; sco_lua.c with -Werror like the rest.
 LUA_SRC=$ROOT/plugins/lua/third_party/lua/src
@@ -323,7 +341,7 @@ for f in "$LUA_SRC"/*.c "$ROOT/plugins/lua/sco_lua.c"; do
 done
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_lua.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" \
   "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp" "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" \
-  "$ROOT/src/ui/ui.cpp" "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}" "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN" \
+  "$ROOT/src/ui/ui.cpp" "$ROOT/src/settings/settings.cpp" "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}" "$ROOT/src/storage/storage.cpp" "$SQLITE_ASAN" \
   "${LUA_OBJS[@]}" -ldl -lm -o "$OUT/test_lua"
 "$OUT/test_lua" "$ROOT/sdk" "$OUT"
 
@@ -331,7 +349,7 @@ done
 # sco::app (ASan+UBSan). Then sco-host-sim over the SDK examples, laid out like data/plugins with
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
-     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$SQLITE_ASAN"
+     "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$ROOT/src/settings/settings.cpp" "$SQLITE_ASAN"
      "$ROOT/src/ipc/ipc.cpp" "$ROOT/src/ipc/shm_posix.cpp" "${NETSVC_SRC[@]}" "$OUT/sha2_asan.o"
      "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
