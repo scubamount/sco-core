@@ -1,4 +1,4 @@
-// Interop.cs: the C ABI of sco_api.h 1.1, sco_storage.h 1.0, sco_ui.h 1.0 and sco_datacore.h 1.0,
+// Interop.cs: the C ABI of sco_api.h 1.1, sco_storage.h 1.0, sco_ui.h 1.0, sco_settings.h 1.0 and sco_datacore.h 1.0,
 // as blittable C# structs.
 //
 // Field names are the C names, so the layout test (Sco.Sdk.Tests) can check every offset that
@@ -91,6 +91,12 @@ namespace Sco.Sdk
         public const uint UiMaxChord = 31u;
         public const uint UiMaxHotkeyArgs = 16u;
         public const uint UiMaxArgString = 255u;
+
+        public const string SettingsName = "sco.settings";        // SCO_SETTINGS_NAME
+        public const uint SettingsVersion1_0 = 0x00010000u;
+        public const uint SettingsMaxName = 31u;
+        public const uint SettingsMaxString = 255u;
+        public const string SettingsChangedEvent = "settings.changed"; // SCO_SETTINGS_CHANGED_EVENT
 
         public const string DataCoreName = "sco.datacore";        // SCO_DATACORE_NAME
         public const uint DataCoreVersion1_0 = 0x00010000u;
@@ -262,6 +268,29 @@ namespace Sco.Sdk.Interop
         public delegate* unmanaged[Cdecl]<void*, byte*, byte*, ScoArg*, uint, ScoResult> bind_hotkey;
         public delegate* unmanaged[Cdecl]<void*, byte*, ScoResult> unbind_hotkey;
         public delegate* unmanaged[Cdecl]<byte*, byte*, uint*, ScoResult> normalize_chord;
+        public delegate* unmanaged[Cdecl]<void*, byte*, uint*, ScoResult> last_error;
+    }
+
+    /// <summary>sco_settings_changed, the data of the event settings.changed: 24 bytes.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public unsafe struct ScoSettingsChanged
+    {
+        public uint size;
+        public uint _pad;
+        public byte* plugin;
+        public byte* name;
+    }
+
+    /// <summary>sco_settings_v1, the table of the host service "sco.settings": 48 bytes.</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public unsafe struct ScoSettingsV1
+    {
+        public uint size;
+        public uint _pad;
+        public delegate* unmanaged[Cdecl]<void*, byte*, int*, ScoResult> get_bool;
+        public delegate* unmanaged[Cdecl]<void*, byte*, long*, ScoResult> get_int;
+        public delegate* unmanaged[Cdecl]<void*, byte*, double*, ScoResult> get_float;
+        public delegate* unmanaged[Cdecl]<void*, byte*, byte*, uint*, ScoResult> get_string;
         public delegate* unmanaged[Cdecl]<void*, byte*, uint*, ScoResult> last_error;
     }
 

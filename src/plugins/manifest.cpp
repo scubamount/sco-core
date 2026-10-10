@@ -1,5 +1,6 @@
 // plugin.ini parsing. Pure text in, Manifest out; no file system, no plugin code.
 #include "sco/plugins.h"
+#include "internal.h"
 #include <cstdio>
 #include <cstring>
 
@@ -80,7 +81,7 @@ static bool ParseApi(std::string_view s, uint16_t& major, uint16_t& minor) {
 }
 
 static bool Fail(std::string& error, size_t line, const char* what) {
-    char buf[160];
+    char buf[256];
     if (line) std::snprintf(buf, sizeof(buf), "line %zu: %s", line, what);
     else      std::snprintf(buf, sizeof(buf), "%s", what);
     error = buf;
@@ -109,6 +110,9 @@ static bool ParseInto(std::string_view text, Manifest& out, std::string& error) 
     enum Key { kId, kName, kVersion, kAuthor, kApi, kKind, kEntry, kRequires, kCount };
     static constexpr const char* kKeys[kCount] = { "id", "name", "version", "author", "api", "kind", "entry", "requires" };
     bool seen[kCount] = {};
+    enum class Section { Top, Settings, Other };   // after a [name] line, every line belongs to it
+    Section section = Section::Top;
+    bool seenSettings = false;
 
     size_t lineNo = 0;
     while (!text.empty()) {
@@ -117,8 +121,28 @@ static bool ParseInto(std::string_view text, Manifest& out, std::string& error) 
         std::string_view line = text.substr(0, nl);
         text.remove_prefix(nl == std::string_view::npos ? text.size() : nl + 1);
 
+        const std::string_view raw = line;
         line = Trim(StripComment(line));
+        if (section == Section::Settings) line = Trim(detail::StripSettingsComment(raw));   // quotes may hold ';'
         if (line.empty()) continue;
+        if (line.front() == '[') {
+            if (line.back() != ']') return Fail(error, lineNo, "a [section] line ends with ]");
+            const std::string_view name = Trim(line.substr(1, line.size() - 2));
+            if (name == "settings") {
+                if (seenSettings) return Fail(error, lineNo, "duplicate section '[settings]'");
+                seenSettings = true;
+                section = Section::Settings;
+            } else {
+                section = Section::Other;   // a later minor's: skipped like an unknown key
+            }
+            continue;
+        }
+        if (section == Section::Settings) {
+            std::string why;
+            if (!detail::ParseSettingLine(line, out.settings, why)) return Fail(error, lineNo, why.c_str());
+            continue;
+        }
+        if (section == Section::Other) continue;
         const size_t eq = line.find('=');
         if (eq == std::string_view::npos) return Fail(error, lineNo, "expected key = value");
         const std::string_view key = Trim(line.substr(0, eq));
@@ -184,6 +208,7 @@ static bool ParseInto(std::string_view text, Manifest& out, std::string& error) 
         if (!seen[k]) return Fail(error, 0, (std::string("missing key '") + kKeys[k] + "'").c_str());
     if (out.kind == Kind::Data && seen[kEntry]) return Fail(error, 0, "a data pack has no entry");
     if (out.kind != Kind::Data && !seen[kEntry]) return Fail(error, 0, "missing key 'entry'");
+    if (out.kind == Kind::Data && !out.settings.empty()) return Fail(error, 0, "a data pack has no settings");
     return true;
 }
 

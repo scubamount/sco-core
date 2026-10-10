@@ -39,7 +39,7 @@ echo "not a DLL" > "$PLUG/text/text.dll"
 
 "$GXX" -std=c++20 -O1 -g -Wall -Wextra -Werror -I "$ROOT/include" -static \
   "$ROOT/tests/test_plugins.cpp" \
-  "$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" \
+  "$ROOT/src/plugins/manifest.cpp" "$ROOT/src/plugins/settings_ini.cpp" "$ROOT/src/plugins/discover.cpp" "$ROOT/src/plugins/loader.cpp" \
   "$ROOT/src/plugins/content.cpp" "$OUT/guard_win.o" "$ROOT/src/sco_log_status.cpp" \
   "$ROOT/src/api/sco_tasks.cpp" "$ROOT/src/api/sco_events.cpp" "$ROOT/src/api/sco_commands.cpp" \
   "$ROOT/src/api/sco_services.cpp" "$ROOT/src/api/sco_raw.cpp" \

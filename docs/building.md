@@ -22,7 +22,7 @@ CC=clang CXX=clang++ tools/test.sh     # what CI runs
 
 In order, it:
 
-1. compiles the ABI pins `tests/abi_v1.c`, `tests/abi_storage.c` and `tests/abi_ui.c` with `-Werror` as C11 and C++20, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc` (compile-only),
+1. compiles the ABI pins `tests/abi_v1.c`, `tests/abi_storage.c`, `tests/abi_ui.c` and `tests/abi_settings.c` with `-Werror` as C11 and C++20, again with `-fshort-enums`, and for `x86_64-pc-windows-msvc` (compile-only),
 2. compiles the SDK template, the `hello` and `cpp_hello` examples, each `include/scosdk/` header and `sco-plugin-check` against `sco_api.h`,
 3. builds and runs `test_core` and `test_hook` (ASan+UBSan), `test_runtime`, `test_host`, `test_spatial` and `test_sdk` (each under ASan+UBSan and again under ThreadSanitizer),
    then builds vendored SQLite once per sanitizer set and runs `test_storage` under both (it also spawns and kills copies of itself for the crash tests),
@@ -113,6 +113,8 @@ add_subdirectory(external/sco-core EXCLUDE_FROM_ALL)
 | `abi_v1` | Rebuilds the ABI pin objects (C11, C++20 and, off MSVC, `-fshort-enums`); fails if any static assert breaks |
 | `abi_storage` | The same for the `sco.storage` table pin, `tests/abi_storage.c` |
 | `abi_ui` | The same for the `sco.ui` table pin, `tests/abi_ui.c` |
+| `abi_settings` | The same for the `sco.settings` table pin, `tests/abi_settings.c` |
+| `test_settings` | `sco.settings` over the real host table and storage: defaults, typed sets, `settings.changed`, persistence across a restart, stale kept values |
 | `test_ui` | `sco.ui`: tab order, ids outside the plugin's prefix, badges, overlays, the chord grammar, conflicts and reserved chords, dispatch with arguments, unload, a fault in a draw under the loader's guard, threads registering beside frames |
 | `test_storage` | Host-owned services and `sco.storage`: key-value and the size handshake, transactions, SQL, isolation (no `ATTACH`, `PRAGMA` or `VACUUM INTO` escape), the quota, unload, threads, and a child process killed mid-transaction |
 | `test_core` | Scanners and the signature registry against a synthetic image |

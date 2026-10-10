@@ -1,5 +1,5 @@
 // Pins.cs: the SIZE / AT / PIN lines of tests/abi_v1.c, tests/abi_storage.c, tests/abi_ui.c,
-// tests/abi_datacore.c, tests/abi_game_actors.c and tests/abi_game_vehicles.c, copied so the test runs from the SDK zip, where tests/ isn't shipped. Given
+// tests/abi_settings.c, tests/abi_datacore.c, tests/abi_game_actors.c and tests/abi_game_vehicles.c, copied so the test runs from the SDK zip, where tests/ isn't shipped. Given
 // those files on the command line, the test also fails unless this copy equals them line for line.
 //
 // Part of the sco SDK. GPL-3.0, like sco-core.
@@ -143,6 +143,25 @@ namespace Sco.Sdk.Tests
             ("tests/abi_ui.c", "AT(sco_ui_v1, unbind_hotkey, 56);"),
             ("tests/abi_ui.c", "AT(sco_ui_v1, normalize_chord, 64);"),
             ("tests/abi_ui.c", "AT(sco_ui_v1, last_error, 72);"),
+            ("tests/abi_settings.c", "PIN(sizeof(void*) == 8);"),
+            ("tests/abi_settings.c", "PIN(SCO_SETTINGS_VERSION_1_0 == 0x00010000u);"),
+            ("tests/abi_settings.c", "PIN(SCO_SETTINGS_MAX_NAME == 31u);"),
+            ("tests/abi_settings.c", "PIN(SCO_SETTINGS_MAX_STRING == 255u);"),
+            ("tests/abi_settings.c", "PIN(sizeof(SCO_SETTINGS_NAME) == 13); /* \"sco.settings\" */"),
+            ("tests/abi_settings.c", "PIN(sizeof(SCO_SETTINGS_CHANGED_EVENT) == 17); /* \"settings.changed\" */"),
+            ("tests/abi_settings.c", "SIZE(sco_settings_changed, 24);"),
+            ("tests/abi_settings.c", "AT(sco_settings_changed, size, 0);"),
+            ("tests/abi_settings.c", "AT(sco_settings_changed, _pad, 4);"),
+            ("tests/abi_settings.c", "AT(sco_settings_changed, plugin, 8);"),
+            ("tests/abi_settings.c", "AT(sco_settings_changed, name, 16);"),
+            ("tests/abi_settings.c", "SIZE(sco_settings_v1, 48);"),
+            ("tests/abi_settings.c", "AT(sco_settings_v1, size, 0);"),
+            ("tests/abi_settings.c", "AT(sco_settings_v1, _pad, 4);"),
+            ("tests/abi_settings.c", "AT(sco_settings_v1, get_bool, 8);"),
+            ("tests/abi_settings.c", "AT(sco_settings_v1, get_int, 16);"),
+            ("tests/abi_settings.c", "AT(sco_settings_v1, get_float, 24);"),
+            ("tests/abi_settings.c", "AT(sco_settings_v1, get_string, 32);"),
+            ("tests/abi_settings.c", "AT(sco_settings_v1, last_error, 40);"),
             ("tests/abi_datacore.c", "PIN(sizeof(void*) == 8);"),
             ("tests/abi_datacore.c", "PIN(SCO_DATACORE_VERSION_1_0 == 0x00010000u);"),
             ("tests/abi_datacore.c", "PIN(SCO_DATACORE_VERSION_1_1 == 0x00010001u);"),

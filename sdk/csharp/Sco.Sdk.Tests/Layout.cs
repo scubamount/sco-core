@@ -33,6 +33,8 @@ namespace Sco.Sdk.Tests
             ["sco_sql_value"] = typeof(ScoSqlValue),
             ["sco_storage_v1"] = typeof(ScoStorageV1),
             ["sco_ui_v1"] = typeof(ScoUiV1),
+            ["sco_settings_changed"] = typeof(ScoSettingsChanged),
+            ["sco_settings_v1"] = typeof(ScoSettingsV1),
             ["sco_dc_type"] = typeof(ScoDcType),
             ["sco_dc_value"] = typeof(ScoDcValue),
             ["sco_dc_report"] = typeof(ScoDcReport),
@@ -83,6 +85,9 @@ namespace Sco.Sdk.Tests
             ["SCO_UI_MAX_CHORD"] = Abi.UiMaxChord,
             ["SCO_UI_MAX_HOTKEY_ARGS"] = Abi.UiMaxHotkeyArgs,
             ["SCO_UI_MAX_ARG_STRING"] = Abi.UiMaxArgString,
+            ["SCO_SETTINGS_VERSION_1_0"] = Abi.SettingsVersion1_0,
+            ["SCO_SETTINGS_MAX_NAME"] = Abi.SettingsMaxName,
+            ["SCO_SETTINGS_MAX_STRING"] = Abi.SettingsMaxString,
             ["SCO_DATACORE_VERSION_1_0"] = Abi.DataCoreVersion1_0,
             ["SCO_DATACORE_VERSION_1_1"] = Abi.DataCoreVersion1_1,
             ["SCO_DC_OPEN"] = Abi.DcOpen,
@@ -121,6 +126,8 @@ namespace Sco.Sdk.Tests
         {
             ["SCO_STORAGE_NAME"] = Abi.StorageName,
             ["SCO_UI_NAME"] = Abi.UiName,
+            ["SCO_SETTINGS_NAME"] = Abi.SettingsName,
+            ["SCO_SETTINGS_CHANGED_EVENT"] = Abi.SettingsChangedEvent,
             ["SCO_DATACORE_NAME"] = Abi.DataCoreName,
             ["SCO_DC_APPLIED_EVENT"] = Abi.DataCoreAppliedEvent,
             ["SC_ACTORS_NAME"] = GameAbi.ActorsName,
@@ -199,6 +206,8 @@ namespace Sco.Sdk.Tests
             if (t == typeof(ScoSqlValue)) return Unsafe.SizeOf<ScoSqlValue>();
             if (t == typeof(ScoStorageV1)) return Unsafe.SizeOf<ScoStorageV1>();
             if (t == typeof(ScoUiV1)) return Unsafe.SizeOf<ScoUiV1>();
+            if (t == typeof(ScoSettingsChanged)) return Unsafe.SizeOf<ScoSettingsChanged>();
+            if (t == typeof(ScoSettingsV1)) return Unsafe.SizeOf<ScoSettingsV1>();
             if (t == typeof(ScoDcValue)) return Unsafe.SizeOf<ScoDcValue>();
             if (t == typeof(ScoDcReport)) return Unsafe.SizeOf<ScoDcReport>();
             if (t == typeof(ScoDcApplied)) return Unsafe.SizeOf<ScoDcApplied>();

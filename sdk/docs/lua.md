@@ -106,6 +106,22 @@ Every call fails with `nil, err, message`: `err` is the result name (`"bad_arg"`
 
 `lua-check.lua` has an in-memory `sco.store` (key-value and transactions; `exec` and `sql` answer `unavailable`, since a stock Lua has no SQLite).
 
+## `sco.settings`
+
+The values of the `[settings]` your `plugin.ini` declares ([format](plugin-ini.md#settings)), read-only: the player changes them in the game menu (the host service `sco.settings`).
+
+```lua
+local speed = sco.settings.get("speed")      -- an integer, 5 until the player changes it
+local mode  = sco.settings.get("mode")       -- an enum's choice, as a string
+local v, err, msg = sco.settings.get("nope") -- nil, "not_found", "this plugin declares no setting 'nope'"
+```
+
+| Call | Returns |
+|---|---|
+| `sco.settings.get(name)` | A boolean, integer, number or string (`bool`, `int`, `float`, `string` or `enum`), or `nil, err, message`: `"not_found"` (no such setting), `"bad_arg"` (a NUL in the name), `"unavailable"` (a host without the service) |
+
+There is no setter. Read again when you need the value (it follows the player's changes), for example inside a command or a tick handler. A failed read can leave a `last_error` note for the C++ and C# wrappers; ignore it from Lua. `lua-check` doesn't provide `sco.settings` yet.
+
 ## `sco.datacore`
 
 Present only when the product publishes the host service [`sco.datacore`](../../docs/datacore.md#the-scodatacore-service) (check `if sco.datacore then`); `lua-check.lua` has no stand-in for it. It queues DataCore overrides, the operations of a data pack's `.toml`, from a script. In sc-offline the game loads DataCore before scripts run, so a committed patch is saved and **applies from the next launch**; overrides that never change belong in a [data pack](data-packs.md#game-data-datacore).

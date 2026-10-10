@@ -15,6 +15,7 @@
 #include "lualib.h"
 #include "sc_actors.h"
 #include "sco_datacore.h"
+#include "sco_settings.h"
 #include "sco_storage.h"
 #include "sco_ui.h"
 #include "sc_vehicles.h"
@@ -874,6 +875,56 @@ static void DataCoreTypes(lua_State* L) {
     lua_pop(L, 1);
 }
 
+/* ---- sco.settings (the host service sco_settings.h): read-only ------------------------------ */
+
+#define SETTINGS_STEPS 20   /* steps per sco.settings.get */
+
+static const sco_settings_v1* Settings(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service) || !s->api->query_service) return NULL;
+    if (s->api->query_service(SCO_SETTINGS_NAME, SCO_SETTINGS_VERSION_1_0, &t) != SCO_OK) return NULL;
+    return (const sco_settings_v1*)t;
+}
+
+/* get(name): the value of one of this plugin's declared settings (a boolean, an integer, a
+ * number, or a string for string and enum settings), or nil, err, message: "not_found" when the
+ * plugin declares no such setting, "unavailable" on a host without the service. There is no set:
+ * the player changes values in the product's menu. */
+static int L_settings_get(lua_State* L) {
+    Script* s = Of(L);
+    size_t n = 0;
+    const char* name = luaL_checklstring(L, 1, &n);
+    const sco_settings_v1* st = Settings(s);
+    sco_result r = SCO_UNAVAILABLE;
+    sco_lua_step(L, SETTINGS_STEPS);
+    if (st && strlen(name) != n) {
+        r = SCO_BAD_ARG;                          /* a NUL in the name */
+    } else if (st) {
+        int32_t b = 0;
+        int64_t i = 0;
+        double f = 0;
+        char buf[SCO_SETTINGS_MAX_STRING + 1];
+        uint32_t size = sizeof(buf);
+        /* The host has no type query: try each getter; only a type mismatch (bad_arg) moves on. */
+        if ((r = st->get_bool(s->self, name, &b)) == SCO_OK) { lua_pushboolean(L, b); return 1; }
+        if (r == SCO_BAD_ARG && (r = st->get_int(s->self, name, &i)) == SCO_OK) { lua_pushinteger(L, (lua_Integer)i); return 1; }
+        if (r == SCO_BAD_ARG && (r = st->get_float(s->self, name, &f)) == SCO_OK) { lua_pushnumber(L, (lua_Number)f); return 1; }
+        if (r == SCO_BAD_ARG && (r = st->get_string(s->self, name, buf, &size)) == SCO_OK) { lua_pushlstring(L, buf, size - 1); return 1; }
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(r));
+    if (!st) {
+        lua_pushliteral(L, "sco.settings is not available on this host");
+    } else {
+        char msg[256];
+        uint32_t size = sizeof(msg);
+        if (r == SCO_BAD_ARG && strlen(name) != n) lua_pushliteral(L, "a setting name with a NUL byte");
+        else if (st->last_error(s->self, msg, &size) == SCO_OK && msg[0]) lua_pushstring(L, msg);
+        else return 2;
+    }
+    return 3;
+}
+
 /* ---- sco.store (the host service sco_storage.h) --------------------------------------------- */
 
 #define STORE_CURSOR   "sco-lua.cursor"
@@ -1509,6 +1560,11 @@ static int SetupBody(lua_State* L) {
             { "sql", L_store_sql }, { NULL, NULL } };
         luaL_newlib(L, stfns);
         lua_setfield(L, -2, "store");
+    }
+    {                                                 /* sco.settings: always there; unavailable without the service */
+        static const luaL_Reg sefns[] = { { "get", L_settings_get }, { NULL, NULL } };
+        luaL_newlib(L, sefns);
+        lua_setfield(L, -2, "settings");
     }
     if (DataCore(s)) {                                /* sco.datacore: only when the host publishes it */
         static const luaL_Reg dcfns[] = { { "begin", L_dc_begin }, { "state", L_dc_state }, { NULL, NULL } };

@@ -9,7 +9,7 @@ sco-core is the engine abstraction layer and mod framework under [sc-offline](ht
 It gives mod authors:
 
 - **One stable ABI, several languages.** [`sco_api.h`](include/sco_api.h) is the contract. Write a plugin in C, in C++20 with [`scosdk/`](docs/sdk-cpp.md), in C# with [`Sco.Sdk`](docs/sdk-csharp.md) (published with NativeAOT, so players need no .NET), in sandboxed [Lua](sdk/docs/lua.md), or as a [data pack](sdk/docs/data-packs.md) with no code at all.
-- **Host services.** Per-plugin [storage](docs/storage.md) (`sco.storage`: key-value and SQL over SQLite), [UI](docs/ui.md) (`sco.ui`: menu tabs, overlays, hotkeys bound to commands) and [game-data patches](docs/datacore.md) (`sco.datacore`: DataCore overrides and new records that survive game patches). Plugins also provide services and raw handlers to each other.
+- **Host services.** Per-plugin [storage](docs/storage.md) (`sco.storage`: key-value and SQL over SQLite), [UI](docs/ui.md) (`sco.ui`: menu tabs, overlays, hotkeys bound to commands), [typed settings](docs/plugins.md#typed-settings-settings) (`sco.settings`: a `[settings]` section in `plugin.ini` becomes values the player edits in the plugin's menu page and the plugin reads) and [game-data patches](docs/datacore.md) (`sco.datacore`: DataCore overrides and new records that survive game patches). Plugins also provide services and raw handlers to each other.
 - **Game services.** The Star Citizen game pack publishes services under the owner `game` ([game services](docs/game-services.md)): today `teleport.spatial` 1.0 and `spawn.entities` 1.2, moved from sc-offline, `game.actors` 1.0 (your player, NPCs a plugin spawns and despawns, removed when it unloads) and `game.vehicles` 1.0 (ship seats, seating your own actors and NPCs, Flight Ready), with C++, C# and read-only Lua wrappers. The game pack also holds internal helpers such as `sco::game::missions::ScriptLibrary`, the mission script library lookup sc-offline calls. The game pack has its own version line (`SCO_GAME_PACK_VERSION` in `sc_game_pack.h`, tags `game-sc-vX.Y`) and a list of the game builds it was verified on ([game pack](docs/game-pack.md)).
 - **A crash-contained runtime.** Commands, events and game-thread tasks are owned by the plugin that made them; a plugin that faults is unloaded, and everything it registered goes with it. A fault inside a service call is blamed on the provider whose code faulted, not on its caller, and a provider whose service table was handed out is never unmapped ([design](docs/design/service-safety.md)).
 
@@ -21,7 +21,7 @@ It gives mod authors:
  plugins     C / C++20 (scosdk) / C# (Sco.Sdk, NativeAOT)   Lua (sco-lua sandbox)   data packs
                         |                                         |                    |
  ABI         ---------- sco_api.h 1.1: plain C, versioned, size-prefixed ----------------
-                        |              service tables: sco_storage.h, sco_ui.h, sco_datacore.h
+                        |              service tables: sco_storage.h, sco_ui.h, sco_settings.h, sco_datacore.h
  services    sco.storage (SQLite)   sco.ui (tabs, overlays, hotkeys)   sco.datacore (patches)
              plugin-provided services, raw handlers
  host kit    sco/app.h      Start / Tick / Stop, built-in plugins, host-owned services
@@ -101,7 +101,7 @@ On patch day these say what still resolves and which data packs still apply, bef
 | Path | What |
 |---|---|
 | [`include/sco_api.h`](include/sco_api.h) | The plugin ABI: the one header every native plugin includes |
-| `include/sco_storage.h`, `sco_ui.h`, `sco_datacore.h` | The host services' tables, each pinned by its own `tests/abi_*.c` |
+| `include/sco_storage.h`, `sco_ui.h`, `sco_settings.h`, `sco_datacore.h` | The host services' tables, each pinned by its own `tests/abi_*.c` |
 | [`include/scosdk/`](docs/sdk-cpp.md) | The C++20 SDK layer (header-only) |
 | [`sdk/csharp/`](docs/sdk-csharp.md) | The C# SDK layer (`Sco.Sdk`, .NET 8, no package references) |
 | [`plugins/lua/`](plugins/lua/README.md) | sco-lua: Lua 5.4.8 (vendored, MIT) in a sandbox, built only on `sco_api.h` |

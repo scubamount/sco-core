@@ -4,7 +4,7 @@
  *   sco-plugin-check <plugin folder> [--cap NAME]... [--invoke NAME [ARG]...]
  *
  * For every kind it reads plugin.ini with the same rules as the host (id, name, version, api,
- * kind, entry, requires) and checks the folder name matches the id.
+ * kind, entry, requires and the [settings] section) and checks the folder name matches the id.
  *   data:   lists the files the host would index (missions/, rules/, scripts/, lists/).
  *   lua:    checks the entry script exists (syntax is checked separately with luac -p).
  *   native: loads the plugin, runs sco_plugin_query and sco_plugin_load against a stand-in
@@ -29,6 +29,7 @@
 #include <sys/stat.h>
 #endif
 #include <ctype.h>
+#include <math.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -53,16 +54,22 @@ static void fail(const char* fmt, ...) {
 
 #define MAX_REQUIRES 16
 #define MAX_MANIFEST_BYTES (16 * 1024)
+#define MAX_SETTINGS 32
 #define MAX_PACK_FILES 4096
+
+/* One [settings] declaration, as far as the checker reports it. */
+typedef struct setting { char name[32]; char type[16]; } setting;
 
 typedef struct manifest {
     char id[64], name[128], version[64], author[128], api[16], kind[16], entry[128];
     char requires_[MAX_REQUIRES][64];
     int  nrequires;
     int  api_major, api_minor;
+    setting settings[MAX_SETTINGS];
+    int  nsettings;
 } manifest;
 
-/* The rules below are the host's (src/plugins/manifest.cpp), one for one: a manifest passes here
+/* The rules below are the host's (src/plugins/manifest.cpp, settings_ini.cpp), one for one: a manifest passes here
  * exactly when the game would read it. Text is a pointer and a length, like the host's
  * string_view, so long lines and NUL bytes are handled the same way. */
 typedef struct strv { const char* p; size_t n; } strv;
@@ -162,12 +169,299 @@ static void set_field(char* dst, strv v) {   /* v fits: its length was checked *
 
 static int bad_line(int line, const char* what) { fail("plugin.ini line %d: %s", line, what); return 0; }
 
+/* ---- plugin.ini [settings] (the host's src/plugins/settings_ini.cpp, one for one) ------------- */
+
+#define MAX_CHOICES 16
+
+typedef struct sdecl {
+    int       type;   /* 0 bool, 1 int, 2 float, 3 string, 4 enum */
+    int       has_min, has_max;
+    long long min_i, max_i;
+    double    min_f, max_f;
+    char      choices[MAX_CHOICES][32];
+    int       nchoices;
+} sdecl;
+
+typedef struct tok { strv t; int quoted; } tok;
+typedef struct lexer { strv s; size_t p; int bad; } lexer;
+
+static int is_space(char c) { return c == ' ' || c == '\t'; }
+
+/* A comment starts at ';' or '#' outside double quotes, at the start or after a space or tab. */
+static strv strip_settings_comment(strv s) {
+    size_t i;
+    int quoted = 0;
+    for (i = 0; i < s.n; ++i) {
+        const char c = s.p[i];
+        if (c == '"') quoted = !quoted;
+        else if (!quoted && (c == ';' || c == '#') && (i == 0 || is_space(s.p[i - 1]))) { s.n = i; break; }
+    }
+    return s;
+}
+
+static int valid_word(strv s, size_t max) {
+    size_t i;
+    if (s.n < 1 || s.n > max) return 0;
+    for (i = 0; i < s.n; ++i) if (!id_char(s.p[i])) return 0;
+    return 1;
+}
+
+static int lex_next(lexer* l, tok* t) {
+    size_t b;
+    while (l->p < l->s.n && is_space(l->s.p[l->p])) ++l->p;
+    if (l->p >= l->s.n) return 0;
+    if (l->s.p[l->p] == '"') {
+        const char* q = (const char*)memchr(l->s.p + l->p + 1, '"', l->s.n - l->p - 1);
+        if (!q) { l->bad = 1; return 0; }
+        t->t.p = l->s.p + l->p + 1;
+        t->t.n = (size_t)(q - t->t.p);
+        t->quoted = 1;
+        l->p = (size_t)(q - l->s.p) + 1;
+        if (l->p < l->s.n && !is_space(l->s.p[l->p])) { l->bad = 1; return 0; }
+        return 1;
+    }
+    b = l->p;
+    while (l->p < l->s.n && !is_space(l->s.p[l->p])) {
+        if (l->s.p[l->p] == '"') { l->bad = 1; return 0; }
+        ++l->p;
+    }
+    t->t.p = l->s.p + b;
+    t->t.n = l->p - b;
+    t->quoted = 0;
+    return 1;
+}
+
+/* [+-]digits, at most 19 digits, in int64 range. */
+static int parse_i64(strv s, long long* out) {
+    size_t i = 0;
+    int neg = 0;
+    unsigned long long v = 0;
+    if (s.n && (s.p[0] == '+' || s.p[0] == '-')) { neg = s.p[0] == '-'; i = 1; }
+    if (i == s.n || s.n - i > 19) return 0;
+    for (; i < s.n; ++i) {
+        if (s.p[i] < '0' || s.p[i] > '9') return 0;
+        v = v * 10 + (unsigned long long)(s.p[i] - '0');
+    }
+    if (neg) {
+        if (v > 9223372036854775808ULL) return 0;
+        *out = v == 9223372036854775808ULL ? (-9223372036854775807LL - 1) : -(long long)v;
+    } else {
+        if (v > 9223372036854775807ULL) return 0;
+        *out = (long long)v;
+    }
+    return 1;
+}
+
+/* [+-]digits[.digits][(e|E)[+-]digits], finite. No nan, inf, hex or leading/trailing dot. */
+static int parse_f64(strv s, double* out) {
+    size_t i = 0, d;
+    char buf[72], *end = NULL;
+    double v;
+    if (s.n > 64) return 0;
+    if (i < s.n && (s.p[i] == '+' || s.p[i] == '-')) ++i;
+    d = i;
+    while (i < s.n && s.p[i] >= '0' && s.p[i] <= '9') ++i;
+    if (i == d) return 0;
+    if (i < s.n && s.p[i] == '.') {
+        size_t f;
+        ++i;
+        f = i;
+        while (i < s.n && s.p[i] >= '0' && s.p[i] <= '9') ++i;
+        if (i == f) return 0;
+    }
+    if (i < s.n && (s.p[i] == 'e' || s.p[i] == 'E')) {
+        size_t e;
+        ++i;
+        if (i < s.n && (s.p[i] == '+' || s.p[i] == '-')) ++i;
+        e = i;
+        while (i < s.n && s.p[i] >= '0' && s.p[i] <= '9') ++i;
+        if (i == e) return 0;
+    }
+    if (i != s.n) return 0;
+    memcpy(buf, s.p, s.n);
+    buf[s.n] = 0;
+    v = strtod(buf, &end);
+    if (end != buf + s.n || !isfinite(v)) return 0;
+    *out = v;
+    return 1;
+}
+
+/* 1 when text is a value of d (type, range, choice); else 0 and why. */
+static int check_setting(const sdecl* d, strv text, char* why, size_t cap) {
+    long long i = 0;
+    double f = 0;
+    int k;
+    switch (d->type) {
+        case 0:
+            if (is(text, "true") || is(text, "false")) return 1;
+            snprintf(why, cap, "'%.*s' is not true or false", (int)text.n, text.p);
+            return 0;
+        case 1:
+            if (!parse_i64(text, &i)) { snprintf(why, cap, "'%.*s' is not an integer", (int)text.n, text.p); return 0; }
+            if (d->has_min && i < d->min_i) { snprintf(why, cap, "%lld is below min %lld", i, d->min_i); return 0; }
+            if (d->has_max && i > d->max_i) { snprintf(why, cap, "%lld is above max %lld", i, d->max_i); return 0; }
+            return 1;
+        case 2:
+            if (!parse_f64(text, &f)) { snprintf(why, cap, "'%.*s' is not a number", (int)text.n, text.p); return 0; }
+            if (d->has_min && f < d->min_f) { snprintf(why, cap, "%.17g is below min %.17g", f, d->min_f); return 0; }
+            if (d->has_max && f > d->max_f) { snprintf(why, cap, "%.17g is above max %.17g", f, d->max_f); return 0; }
+            return 1;
+        case 3: {
+            size_t n;
+            if (text.n > 255) { snprintf(why, cap, "a string is at most 255 printable characters"); return 0; }
+            for (n = 0; n < text.n; ++n)
+                if ((unsigned char)text.p[n] < 0x20 || (unsigned char)text.p[n] == 0x7f) {
+                    snprintf(why, cap, "a string is at most 255 printable characters");
+                    return 0;
+                }
+            return 1;
+        }
+        default: {
+            size_t n;
+            for (k = 0; k < d->nchoices; ++k) if (is(text, d->choices[k])) return 1;
+            n = (size_t)snprintf(why, cap, "'%.*s' is not one of ", (int)text.n, text.p);
+            for (k = 0; k < d->nchoices && n < cap; ++k)
+                n += (size_t)snprintf(why + n, cap - n, "%s%s", k ? ", " : "", d->choices[k]);
+            return 0;
+        }
+    }
+}
+
+static int setting_bad(int line, strv name, const char* what, const char* detail) {
+    fail("plugin.ini line %d: setting '%.*s': %s%s", line, (int)name.n, name.p, what, detail ? detail : "");
+    return 0;
+}
+
+/* Parses one declaration (comment stripped, trimmed) into m. 0 after reporting why. */
+static int setting_line(strv line, manifest* m, int lineno) {
+    static const char* const fields[5] = { "default", "min", "max", "label", "help" };
+    enum { F_DEFAULT, F_MIN, F_MAX, F_LABEL, F_HELP };
+    const char* eq = line.n ? (const char*)memchr(line.p, '=', line.n) : NULL;
+    strv name, type, value[5];
+    int have[5] = { 0 }, f, i;
+    char why[512];
+    sdecl d;
+    lexer lx;
+    tok key, v;
+    if (!eq) return bad_line(lineno, "expected name = type ...");
+    name.p = line.p;
+    name.n = (size_t)(eq - line.p);
+    name = trim(name);
+    if (!valid_word(name, 31)) return bad_line(lineno, "setting name must be 1-31 of [a-z0-9_]");
+    for (i = 0; i < m->nsettings; ++i)
+        if (is(name, m->settings[i].name)) return setting_bad(lineno, name, "declared twice", NULL);
+    if (m->nsettings == MAX_SETTINGS) return setting_bad(lineno, name, "more than 32 settings", NULL);
+
+    memset(&d, 0, sizeof d);
+    memset(value, 0, sizeof value);
+    memset(&key, 0, sizeof key);
+    memset(&v, 0, sizeof v);
+    lx.s.p = eq + 1;
+    lx.s.n = line.n - (size_t)(eq + 1 - line.p);
+    lx.p = 0;
+    lx.bad = 0;
+    while (lx.p < lx.s.n && is_space(lx.s.p[lx.p])) ++lx.p;
+    if (lx.s.n - lx.p >= 5 && memcmp(lx.s.p + lx.p, "enum(", 5) == 0) {
+        const char* close = (const char*)memchr(lx.s.p + lx.p, ')', lx.s.n - lx.p);
+        if (!close) return setting_bad(lineno, name, "enum( needs a closing )", NULL);
+        type.p = lx.s.p + lx.p;
+        type.n = (size_t)(close + 1 - type.p);
+        lx.p = (size_t)(close + 1 - lx.s.p);
+        if (lx.p < lx.s.n && !is_space(lx.s.p[lx.p])) return setting_bad(lineno, name, "expected a space after the type", NULL);
+    } else {
+        tok t;
+        if (!lex_next(&lx, &t) || t.quoted) return setting_bad(lineno, name, "missing type (bool, int, float, string or enum(a,b,c))", NULL);
+        type = t.t;
+    }
+    if (is(type, "bool")) d.type = 0;
+    else if (is(type, "int")) d.type = 1;
+    else if (is(type, "float")) d.type = 2;
+    else if (is(type, "string")) d.type = 3;
+    else if (type.n >= 5 && memcmp(type.p, "enum(", 5) == 0) {
+        strv rest;
+        d.type = 4;
+        rest.p = type.p + 5;
+        rest.n = type.n - 6;   /* without "enum(" and ")" */
+        for (;;) {
+            const char* comma = rest.n ? (const char*)memchr(rest.p, ',', rest.n) : NULL;
+            strv c;
+            c.p = rest.p;
+            c.n = comma ? (size_t)(comma - rest.p) : rest.n;
+            c = trim(c);
+            if (!valid_word(c, 31)) return setting_bad(lineno, name, "enum choices are a comma list of 1-31 of [a-z0-9_]", NULL);
+            for (i = 0; i < d.nchoices; ++i)
+                if (is(c, d.choices[i])) return setting_bad(lineno, name, "enum lists a choice twice", NULL);
+            if (d.nchoices == MAX_CHOICES) return setting_bad(lineno, name, "enum lists more than 16 choices", NULL);
+            set_field(d.choices[d.nchoices++], c);
+            if (!comma) break;
+            rest.n -= (size_t)(comma + 1 - rest.p);
+            rest.p = comma + 1;
+        }
+    } else {
+        return setting_bad(lineno, name, "type must be bool, int, float, string or enum(a,b,c)", NULL);
+    }
+
+    while (lex_next(&lx, &key)) {
+        f = -1;
+        for (i = 0; i < 5; ++i) if (!key.quoted && is(key.t, fields[i])) f = i;
+        if (f < 0) {
+            char buf[96];
+            snprintf(buf, sizeof buf, "unknown field '%.*s' (default, min, max, label, help)", (int)key.t.n, key.t.p);
+            return setting_bad(lineno, name, buf, NULL);
+        }
+        if (have[f]) { snprintf(why, sizeof why, "field '%s' given twice", fields[f]); return setting_bad(lineno, name, why, NULL); }
+        if (!lex_next(&lx, &v)) {
+            if (lx.bad) break;
+            snprintf(why, sizeof why, "field '%s' needs a value", fields[f]);
+            return setting_bad(lineno, name, why, NULL);
+        }
+        have[f] = 1;
+        value[f] = v.t;
+    }
+    if (lx.bad) return setting_bad(lineno, name, "a quote is not closed, or not at the start of a value", NULL);
+
+    if (have[F_MIN] || have[F_MAX]) {
+        if (d.type != 1 && d.type != 2) return setting_bad(lineno, name, "min and max apply to int and float only", NULL);
+        const sdecl probe = d;   /* the bounds are values of the type, checked before any bound exists */
+        for (f = F_MIN; f <= F_MAX; ++f) {
+            if (!have[f]) continue;
+            if (!check_setting(&probe, value[f], why + 8, sizeof why - 8)) {
+                memcpy(why, f == F_MIN ? "min " : "max ", 4);
+                memmove(why + 4, why + 8, strlen(why + 8) + 1);
+                return setting_bad(lineno, name, why, NULL);
+            }
+            if (d.type == 1) {
+                long long b = 0;
+                parse_i64(value[f], &b);
+                if (f == F_MIN) { d.has_min = 1; d.min_i = b; } else { d.has_max = 1; d.max_i = b; }
+            } else {
+                double b = 0;
+                parse_f64(value[f], &b);
+                if (f == F_MIN) { d.has_min = 1; d.min_f = b; } else { d.has_max = 1; d.max_f = b; }
+            }
+        }
+        if (d.has_min && d.has_max && (d.type == 1 ? d.min_i > d.max_i : d.min_f > d.max_f)) {
+            snprintf(why, sizeof why, "min %.*s is above max %.*s", (int)value[F_MIN].n, value[F_MIN].p, (int)value[F_MAX].n, value[F_MAX].p);
+            return setting_bad(lineno, name, why, NULL);
+        }
+    }
+    if (have[F_LABEL] && !valid_text(value[F_LABEL], 63)) return setting_bad(lineno, name, "label must be 1-63 printable characters", NULL);
+    if (have[F_HELP] && !valid_text(value[F_HELP], 255)) return setting_bad(lineno, name, "help must be 1-255 printable characters", NULL);
+    if (have[F_DEFAULT] && !check_setting(&d, value[F_DEFAULT], why, sizeof why)) return setting_bad(lineno, name, "default ", why);
+
+    set_field(m->settings[m->nsettings].name, name);
+    strcpy(m->settings[m->nsettings].type, d.type == 0 ? "bool" : d.type == 1 ? "int" : d.type == 2 ? "float" : d.type == 3 ? "string" : "enum");
+    ++m->nsettings;
+    return 1;
+}
+
 static int read_manifest(const char* path, manifest* m) {
     enum { K_ID, K_NAME, K_VERSION, K_AUTHOR, K_API, K_KIND, K_ENTRY, K_REQUIRES, K_COUNT };
     static const char* const keys[K_COUNT] = { "id", "name", "version", "author", "api", "kind", "entry", "requires" };
     static char buf[MAX_MANIFEST_BYTES + 1];
     int seen[K_COUNT] = { 0 };
     int line = 0, k, i;
+    int section = 0, seen_settings = 0;   /* 0 top level, 1 [settings], 2 another section */
     size_t len;
     strv all;
     FILE* f = fopen(path, "rb");
@@ -183,14 +477,33 @@ static int read_manifest(const char* path, manifest* m) {
     while (all.n) {
         const char* nl = (const char*)memchr(all.p, '\n', all.n);
         const char* eq;
-        strv ln, key, val;
+        strv ln, raw, key, val;
         ln.p = all.p;
         ln.n = nl ? (size_t)(nl - all.p) : all.n;
         all.p += ln.n + (nl ? 1 : 0);
         all.n -= ln.n + (nl ? 1 : 0);
         ++line;
+        raw = ln;
         ln = trim(strip_comment(ln));
+        if (section == 1) ln = trim(strip_settings_comment(raw));   /* quotes may hold ';' or '#' */
         if (!ln.n) continue;
+        if (ln.p[0] == '[') {
+            strv sec;
+            if (ln.p[ln.n - 1] != ']') return bad_line(line, "a [section] line ends with ]");
+            sec.p = ln.p + 1;
+            sec.n = ln.n - 2;
+            sec = trim(sec);
+            if (is(sec, "settings")) {
+                if (seen_settings) { fail("plugin.ini line %d: duplicate section '[settings]'", line); return 0; }
+                seen_settings = 1;
+                section = 1;
+            } else {
+                section = 2;   /* a later minor's: skipped like an unknown key */
+            }
+            continue;
+        }
+        if (section == 1) { if (!setting_line(ln, m, line)) return 0; continue; }
+        if (section == 2) continue;
         eq = (const char*)memchr(ln.p, '=', ln.n);
         if (!eq) return bad_line(line, "expected key = value");
         key.p = ln.p; key.n = (size_t)(eq - ln.p);
@@ -260,6 +573,7 @@ static int read_manifest(const char* path, manifest* m) {
     }
     if (!strcmp(m->kind, "data") && seen[K_ENTRY]) { fail("plugin.ini: a data pack has no entry"); return 0; }
     if (strcmp(m->kind, "data") && !seen[K_ENTRY]) { fail("plugin.ini: missing key 'entry'"); return 0; }
+    if (!strcmp(m->kind, "data") && m->nsettings) { fail("plugin.ini: a data pack has no settings"); return 0; }
     /* What discovery checks next (src/plugins/discover.cpp). */
     if (m->api_major != SCO_API_MAJOR || m->api_minor > SCO_API_MINOR) {
         fail("plugin.ini: api %s, but this SDK is %d.%d", m->api, SCO_API_MAJOR, SCO_API_MINOR);
@@ -782,6 +1096,8 @@ int main(int argc, char** argv) {
         if (strcmp(folder, m.id)) fail("id '%s' does not match folder '%s'", m.id, folder);
         for (i = 0; i < m.nrequires; ++i)
             printf("  needs   %s%s\n", m.requires_[i], has(m.requires_[i]) ? "" : " (missing: the host won't load it)");
+        for (i = 0; i < m.nsettings; ++i)
+            printf("  setting %s (%s)\n", m.settings[i].name, m.settings[i].type);
         if (m.entry[0]) {
             snprintf(path, sizeof path, "%s/%s", dir, m.entry);
             if (!file_exists(path)) fail("entry '%s' not found", m.entry);

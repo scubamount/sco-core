@@ -15,6 +15,7 @@
 #include "sco/runtime.h"
 #include "sco/status.h"
 #include "sco_api.h"
+#include <cmath>
 #include <csetjmp>
 #include <csignal>
 #include <cstdio>
@@ -122,6 +123,163 @@ static void TestManifest() {
     CHECK(!P::ParseManifest(std::string_view("\xFE\xFF\0i\0d", 6), m, err) && err == "plugin.ini must be UTF-8");
     // A failed parse leaves no half-filled manifest behind.
     CHECK(!Parse("id=keep\nname=", m, err) && m.id.empty());
+}
+
+// ---- [settings] -----------------------------------------------------------------------------
+
+static const char* const kHead = "id=a\nname=N\nversion=1\napi=1.0\nkind=native\nentry=a.dll\n";
+// The error for a manifest whose [settings] section holds body ("<ok>" when it parses).
+static std::string SettingsError(const std::string& body) { return ParseError((std::string(kHead) + "[settings]\n" + body).c_str()); }
+
+static void TestSettings() {
+    P::Manifest m; std::string err;
+    CHECK(Parse((std::string(kHead) +
+                 "requires = teleport\n"
+                 "; a comment\n"
+                 "[settings]\n"
+                 "god_mode   = bool   default true label \"God mode\" help \"Take no damage ; really\"   ; trailing\n"
+                 "speed      = int    default 5 min 1 max 10 # trailing\n"
+                 "fov        = float  default 90.5 min 60 max 1.2e2\n"
+                 "nick       = string default \"Pilot # 1\"\r\n"
+                 "mode       = enum(easy, normal ,hard) default normal\n"
+                 "bare       = string default Pilot label Name\n").c_str(), m, err));
+    CHECK(err.empty() && m.settings.size() == 6 && m.requires_.size() == 1);
+    const auto& s = m.settings;
+    CHECK(s[0].name == "god_mode" && s[0].type == P::SettingType::Bool && s[0].def.b && s[0].label == "God mode" &&
+          s[0].help == "Take no damage ; really");
+    CHECK(s[1].type == P::SettingType::Int && s[1].def.i == 5 && s[1].hasMin && s[1].minI == 1 && s[1].hasMax && s[1].maxI == 10 &&
+          s[1].label == "speed" && s[1].help.empty());
+    CHECK(s[2].type == P::SettingType::Float && s[2].def.f == 90.5 && s[2].minF == 60.0 && s[2].maxF == 120.0);
+    CHECK(s[3].type == P::SettingType::String && s[3].def.s == "Pilot # 1");
+    CHECK(s[4].type == P::SettingType::Enum && s[4].def.s == "normal" &&
+          (s[4].choices == std::vector<std::string>{ "easy", "normal", "hard" }));
+    CHECK(s[5].def.s == "Pilot" && s[5].label == "Name");
+
+    // Defaults when none is given: false, 0 (or the nearest bound), "", the first choice.
+    CHECK(Parse((std::string(kHead) + "[settings]\na = bool\nb = int\nc = float\nd = string\ne = enum(x,y)\n"
+                 "f = int min 3\ng = int max -3\nh = float min 0.5 max 2\n").c_str(), m, err));
+    CHECK(!m.settings[0].def.b && m.settings[1].def.i == 0 && m.settings[2].def.f == 0 && m.settings[3].def.s.empty() &&
+          m.settings[4].def.s == "x" && m.settings[5].def.i == 3 && m.settings[6].def.i == -3 && m.settings[7].def.f == 0.5);
+
+    // No [settings], an empty one, an unknown section (skipped, even with junk in it), and a
+    // section on a lua plugin.
+    CHECK(Parse(kHead, m, err) && m.settings.empty());
+    CHECK(Parse((std::string(kHead) + "[settings]\n").c_str(), m, err) && m.settings.empty());
+    CHECK(Parse((std::string(kHead) + "[future]\njust words\nx = 1\n[settings]\na = bool\n").c_str(), m, err) && m.settings.size() == 1);
+    CHECK(Parse("id=l\nname=L\nversion=1\napi=1.0\nkind=lua\nentry=main.lua\n[ settings ]\na = bool\n", m, err) && m.settings.size() == 1);
+    // Keys after a section line belong to it: "kind" is read as a setting line.
+    CHECK(SettingsError("a = bool\nkind = lua\n") == "line 9: setting 'kind': type must be bool, int, float, string or enum(a,b,c)");
+
+    // Section errors.
+    CHECK(ParseError((std::string(kHead) + "[settings\n").c_str()) == "line 7: a [section] line ends with ]");
+    CHECK(SettingsError("a = bool\n[settings]\n") == "line 9: duplicate section '[settings]'");
+    CHECK(ParseError("id=a\nname=N\nversion=1\napi=1.0\nkind=data\n[settings]\na = bool\n") == "a data pack has no settings");
+    CHECK(ParseError("id=a\nname=N\nversion=1\napi=1.0\nkind=data\n[settings]\n") == "<ok>");
+
+    // Every bad declaration says which line, which setting and why.
+    CHECK(SettingsError("just words\n") == "line 8: expected name = type ...");
+    CHECK(SettingsError("Speed = int\n") == "line 8: setting name must be 1-31 of [a-z0-9_]");
+    CHECK(SettingsError(" = int\n") == "line 8: setting name must be 1-31 of [a-z0-9_]");
+    CHECK(SettingsError("abcdefghijabcdefghijabcdefghij12 = int\n") == "line 8: setting name must be 1-31 of [a-z0-9_]");
+    CHECK(SettingsError("abcdefghijabcdefghijabcdefghij1 = int\n") == "<ok>");
+    CHECK(SettingsError("a = bool\na = int\n") == "line 9: setting 'a': declared twice");
+    CHECK(SettingsError("a =\n") == "line 8: setting 'a': missing type (bool, int, float, string or enum(a,b,c))");
+    CHECK(SettingsError("a = \"int\"\n") == "line 8: setting 'a': missing type (bool, int, float, string or enum(a,b,c))");
+    CHECK(SettingsError("a = integer\n") == "line 8: setting 'a': type must be bool, int, float, string or enum(a,b,c)");
+    CHECK(SettingsError("a = Bool\n") == "line 8: setting 'a': type must be bool, int, float, string or enum(a,b,c)");
+    CHECK(SettingsError("a = bool default\n") == "line 8: setting 'a': field 'default' needs a value");
+    CHECK(SettingsError("a = bool default true default false\n") == "line 8: setting 'a': field 'default' given twice");
+    CHECK(SettingsError("a = bool defualt true\n") == "line 8: setting 'a': unknown field 'defualt' (default, min, max, label, help)");
+    CHECK(SettingsError("a = bool \"default\" true\n") == "line 8: setting 'a': unknown field 'default' (default, min, max, label, help)");
+    CHECK(SettingsError("a = bool default \"true\n") == "line 8: setting 'a': a quote is not closed, or not at the start of a value");
+    CHECK(SettingsError("a = string default \"x\"y\n") == "line 8: setting 'a': a quote is not closed, or not at the start of a value");
+    CHECK(SettingsError("a = string default x\"y\"\n") == "line 8: setting 'a': a quote is not closed, or not at the start of a value");
+
+    // bool
+    CHECK(SettingsError("a = bool default yes\n") == "line 8: setting 'a': default 'yes' is not true or false");
+    CHECK(SettingsError("a = bool default 1\n") == "line 8: setting 'a': default '1' is not true or false");
+    CHECK(SettingsError("a = bool min 0\n") == "line 8: setting 'a': min and max apply to int and float only");
+    // int
+    CHECK(SettingsError("a = int default 1.5\n") == "line 8: setting 'a': default '1.5' is not an integer");
+    CHECK(SettingsError("a = int default abc\n") == "line 8: setting 'a': default 'abc' is not an integer");
+    CHECK(SettingsError("a = int default \"\"\n") == "line 8: setting 'a': default '' is not an integer");
+    CHECK(SettingsError("a = int default 9223372036854775808\n") == "line 8: setting 'a': default '9223372036854775808' is not an integer");
+    CHECK(SettingsError("a = int default 99999999999999999999\n") == "line 8: setting 'a': default '99999999999999999999' is not an integer");
+    CHECK(SettingsError("a = int default 9223372036854775807\n") == "<ok>");
+    CHECK(SettingsError("a = int default -9223372036854775808\n") == "<ok>");
+    CHECK(SettingsError("a = int default 11 max 10\n") == "line 8: setting 'a': default 11 is above max 10");
+    CHECK(SettingsError("a = int default 0 min 1 max 10\n") == "line 8: setting 'a': default 0 is below min 1");
+    CHECK(SettingsError("a = int min 5 max 4\n") == "line 8: setting 'a': min 5 is above max 4");
+    CHECK(SettingsError("a = int min 5 max 5\n") == "<ok>");
+    CHECK(SettingsError("a = int min x\n") == "line 8: setting 'a': min 'x' is not an integer");
+    CHECK(SettingsError("a = int max 2.5\n") == "line 8: setting 'a': max '2.5' is not an integer");
+    // float
+    for (const char* bad : { "nan", "inf", "-inf", "1e999", "0x10", ".5", "5.", "1e", "1,5", "--1", "1 2" })
+        CHECK(SettingsError(std::string("a = float default \"") + bad + "\"\n").find("is not a number") != std::string::npos);
+    CHECK(SettingsError("a = float default 2.5 max 2\n") == "line 8: setting 'a': default 2.5 is above max 2");
+    CHECK(SettingsError("a = float default 0 min 0.25\n") == "line 8: setting 'a': default 0 is below min 0.25");
+    CHECK(SettingsError("a = float min 3 max 2.5\n") == "line 8: setting 'a': min 3 is above max 2.5");
+    CHECK(SettingsError("a = float default -1.5e-3 min -1 max 1\n") == "<ok>");
+    // string
+    CHECK(SettingsError("a = string default \"" + std::string(255, 'x') + "\"\n") == "<ok>");
+    CHECK(SettingsError("a = string default \"" + std::string(256, 'x') + "\"\n") ==
+          "line 8: setting 'a': default a string is at most 255 printable characters");
+    CHECK(SettingsError("a = string default \"\"\n") == "<ok>");
+    CHECK(SettingsError("a = string min 1\n") == "line 8: setting 'a': min and max apply to int and float only");
+    // enum
+    CHECK(SettingsError("a = enum(x,y) default z\n") == "line 8: setting 'a': default 'z' is not one of x, y");
+    CHECK(SettingsError("a = enum(x,y) default X\n") == "line 8: setting 'a': default 'X' is not one of x, y");
+    CHECK(SettingsError("a = enum(x,x)\n") == "line 8: setting 'a': enum lists a choice twice");
+    CHECK(SettingsError("a = enum()\n") == "line 8: setting 'a': enum choices are a comma list of 1-31 of [a-z0-9_]");
+    CHECK(SettingsError("a = enum(x,)\n") == "line 8: setting 'a': enum choices are a comma list of 1-31 of [a-z0-9_]");
+    CHECK(SettingsError("a = enum(X)\n") == "line 8: setting 'a': enum choices are a comma list of 1-31 of [a-z0-9_]");
+    CHECK(SettingsError("a = enum(x y)\n") == "line 8: setting 'a': enum choices are a comma list of 1-31 of [a-z0-9_]");
+    CHECK(SettingsError("a = enum(x\n") == "line 8: setting 'a': enum( needs a closing )");
+    CHECK(SettingsError("a = enum(x)default x\n") == "line 8: setting 'a': expected a space after the type");
+    CHECK(SettingsError("a = enum(x) min 1\n") == "line 8: setting 'a': min and max apply to int and float only");
+    {
+        std::string ok = "a = enum(c0", over = "a = enum(c0";
+        for (int i = 1; i < 16; ++i) { ok += ",c" + std::to_string(i); over += ",c" + std::to_string(i); }
+        CHECK(SettingsError(ok + ")\n") == "<ok>");
+        CHECK(SettingsError(over + ",c16)\n") == "line 8: setting 'a': enum lists more than 16 choices");
+        CHECK(SettingsError("a = enum(" + std::string(31, 'c') + ")\n") == "<ok>");
+        CHECK(SettingsError("a = enum(" + std::string(32, 'c') + ")\n") == "line 8: setting 'a': enum choices are a comma list of 1-31 of [a-z0-9_]");
+    }
+    // label and help
+    CHECK(SettingsError("a = bool label \"\"\n") == "line 8: setting 'a': label must be 1-63 printable characters");
+    CHECK(SettingsError("a = bool label \"" + std::string(64, 'x') + "\"\n") == "line 8: setting 'a': label must be 1-63 printable characters");
+    CHECK(SettingsError("a = bool label \"" + std::string(63, 'x') + "\"\n") == "<ok>");
+    CHECK(SettingsError("a = bool help \"\"\n") == "line 8: setting 'a': help must be 1-255 printable characters");
+    CHECK(SettingsError("a = bool help \"" + std::string(256, 'x') + "\"\n") == "line 8: setting 'a': help must be 1-255 printable characters");
+    CHECK(SettingsError("a = bool label \"tab\there\"\n") == "line 8: setting 'a': label must be 1-63 printable characters");
+    // a count of settings
+    {
+        std::string body;
+        for (int i = 0; i < 32; ++i) body += "s" + std::to_string(i) + " = bool\n";
+        CHECK(SettingsError(body) == "<ok>");
+        CHECK(SettingsError(body + "s32 = bool\n") == "line 40: setting 's32': more than 32 settings");
+    }
+    // A failed parse leaves no settings behind.
+    CHECK(!Parse((std::string(kHead) + "[settings]\na = bool\nb = nope\n").c_str(), m, err) && m.settings.empty());
+
+    // Values: the text a default or a kept value is read from, and written back as.
+    CHECK(Parse((std::string(kHead) + "[settings]\ni = int min 1 max 10\nf = float min 0 max 1\nb = bool\ns = string\ne = enum(x,y)\n").c_str(), m, err));
+    P::SettingValue v; std::string why;
+    CHECK(P::ParseSettingValue(m.settings[0], "7", v, why) && v.i == 7 && P::FormatSettingValue(m.settings[0], v) == "7");
+    CHECK(!P::ParseSettingValue(m.settings[0], "11", v, why) && why == "11 is above max 10" && v.i == 0);
+    CHECK(!P::ParseSettingValue(m.settings[0], "x", v, why) && why == "'x' is not an integer");
+    CHECK(P::ParseSettingValue(m.settings[1], "0.1", v, why) && v.f == 0.1);
+    CHECK(P::ParseSettingValue(m.settings[1], P::FormatSettingValue(m.settings[1], v), v, why) && v.f == 0.1);   // exact round trip
+    for (double d : { 0.1, 1.0 / 3.0, 1e-300, 0.999999999999 }) {
+        P::SettingValue in; in.f = d;
+        P::SettingValue back;
+        CHECK(P::ParseSettingValue(m.settings[1], P::FormatSettingValue(m.settings[1], in), back, why) && back.f == d);
+    }
+    CHECK(P::ParseSettingValue(m.settings[2], "true", v, why) && v.b && P::FormatSettingValue(m.settings[2], v) == "true");
+    CHECK(P::ParseSettingValue(m.settings[3], "any text: here", v, why) && v.s == "any text: here");
+    CHECK(P::ParseSettingValue(m.settings[4], "y", v, why) && v.s == "y" && !P::ParseSettingValue(m.settings[4], "z", v, why));
+    P::SettingValue nanv; nanv.f = std::nan("");
+    CHECK(!P::CheckSettingValue(m.settings[1], nanv, why) && why == "not a finite number");
 }
 
 // ---- discovery ------------------------------------------------------------------------------
@@ -812,6 +970,7 @@ int main(int argc, char** argv) {
     sco::SetLogSink(Sink);
     sco::SetGameThread();
     TestManifest();
+    TestSettings();
     TestDiscover();
     TestDiscoverLimits();
     TestContentIndex();

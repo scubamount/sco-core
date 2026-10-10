@@ -16,6 +16,7 @@
 #include "sco/plugins.h"
 #include "sco/runtime.h"
 #include "sco/scan.h"
+#include "sco/settings.h"
 #include "sco/ui.h"
 #include "sco_api.h"
 #include "sco_lua.h"
@@ -563,6 +564,84 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     fs::remove_all(out / "app", ec);
 }
 
+// ---- [settings]: declared in plugin.ini, read by a script, set by the product, kept across a restart ----
+
+static std::vector<std::string> g_setEvents;
+static void OnSettingsChanged(const char*, const void* data, void*) {
+    const auto* c = static_cast<const sco_settings_changed*>(data);
+    g_setEvents.push_back(std::string(c->plugin) + "." + c->name);
+}
+
+static void WriteSettingsPlugin(const fs::path& dir, const char* speedDecl) {
+    fs::create_directories(dir);
+    std::FILE* f = std::fopen((dir / "plugin.ini").string().c_str(), "wb");
+    std::fputs("id = setdemo\nname = Settings demo\nversion = 1.0.0\napi = 1.0\nkind = lua\nentry = main.lua\n[settings]\n", f);
+    std::fputs(speedDecl, f);
+    std::fputs("\nmode = enum(easy,normal,hard) default normal\ngod_mode = bool\n", f);
+    std::fclose(f);
+    f = std::fopen((dir / "main.lua").string().c_str(), "wb");
+    std::fputs("sco.register_command{ name = 'setdemo.show', title = 'Show', fn = function()\n"
+               "  return tostring(sco.settings.get('speed')) .. ' ' .. sco.settings.get('mode') .. ' ' .. tostring(sco.settings.get('god_mode'))\n"
+               "end }\n", f);
+    std::fclose(f);
+}
+
+static void TestAppSettings(const fs::path& out) {
+    const fs::path base = out / "app_settings";
+    std::error_code ec;
+    fs::remove_all(base, ec);
+    WriteSettingsPlugin(base / "plugins" / "setdemo", "speed = int default 5 min 1 max 10");
+
+    sco::app::Platform pf;
+    pf.hostVersion = "test-app 1.0";
+    pf.pluginRoot = base / "plugins";
+    pf.dataRoot = base / "data";
+    pf.pluginsEnabled = true;
+    pf.scripts = &kLua;
+    static int token;   // the owner of the test's own subscription
+
+    // First run: the script reads the declared defaults; the product's sets change them, once each.
+    g_log.clear();
+    g_setEvents.clear();
+    CHECK(sco::app::Start(pf));
+    CHECK(StateOf("setdemo") == State::Loaded);
+    CHECK(sco::Subscribe(&token, SCO_SETTINGS_CHANGED_EVENT, OnSettingsChanged, nullptr) == sco::Result::Ok);
+    CHECK(Invoke("setdemo.show").text == "5 normal false");
+    const auto pages = sco::settings::Pages();
+    CHECK(pages.size() == 1 && pages[0].plugin == "setdemo" && pages[0].entries.size() == 3 && pages[0].tab.empty());
+    CHECK(sco::settings::SetInt("setdemo", "speed", 8) == sco::Result::Ok);
+    CHECK(sco::settings::SetString("setdemo", "mode", "hard") == sco::Result::Ok);
+    CHECK(sco::settings::SetBool("setdemo", "god_mode", true) == sco::Result::Ok);
+    CHECK(sco::settings::SetInt("setdemo", "speed", 8) == sco::Result::Ok);          // unchanged: silent
+    CHECK(sco::settings::SetInt("setdemo", "speed", 99) == sco::Result::BadArg);     // refused: silent
+    CHECK((g_setEvents == std::vector<std::string>{ "setdemo.speed", "setdemo.mode", "setdemo.god_mode" }));
+    CHECK(Invoke("setdemo.show").text == "8 hard true");
+    sco::app::Stop();
+    CHECK(sco::settings::Entries("setdemo").empty() && !sco::settings::Started());
+
+    // Second run over the same data folder: the values are still there.
+    g_log.clear();
+    CHECK(sco::app::Start(pf));
+    CHECK(Invoke("setdemo.show").text == "8 hard true");
+    CHECK(!Logged("kept value dropped"));
+    sco::app::Stop();
+
+    // The plugin updates and speed becomes a string: its kept int is dropped, with a log line,
+    // the other two settings are kept.
+    WriteSettingsPlugin(base / "plugins" / "setdemo", "speed = string default fast");
+    g_log.clear();
+    CHECK(sco::app::Start(pf));
+    CHECK(Invoke("setdemo.show").text == "fast hard true");
+    CHECK(Logged("[settings] setdemo.speed: kept value dropped (it was saved as int, the setting is string now); the default applies"));
+    sco::app::Stop();
+    g_log.clear();
+    CHECK(sco::app::Start(pf));                    // the dropped value was deleted: nothing to say twice
+    CHECK(Invoke("setdemo.show").text == "fast hard true" && !Logged("kept value dropped"));
+    sco::app::Stop();
+    CHECK(sco::Release(&token) == sco::Result::Ok);
+    fs::remove_all(base, ec);
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) { std::printf("usage: test_app <sdk dir> <out dir>\n"); return 2; }
     sco::SetLogSink(Sink);
@@ -571,6 +650,7 @@ int main(int argc, char** argv) {
     P::SetCallGuard(SignalGuard);
 #endif
     TestApp(argv[1], argv[2]);
+    TestAppSettings(argv[2]);
     TestBuiltinLoader(sco::host::BuildApi({ "test-app 1.0" }), fs::path(argv[2]) / "plugins");
     P::SetCallGuard(nullptr);
     std::printf("sco-core app tests: %d passed, %d failed\n", g_pass, g_fail);

@@ -246,6 +246,22 @@ The host side of [`sco.ui`](ui.md) (library `sco_ui`): the registry of plugin ta
 
 Limits: `kMaxTabs` and `kMaxOverlays` 256, `kMaxHotkeys` 512, `kMaxReserved` 256.
 
+## `sco/settings.h`: the `sco.settings` service
+
+The host side of [`sco.settings`](api-v1.md#scosettings-10) (library `sco_settings`): the typed `[settings]` a plugin declares in `plugin.ini` ([grammar](plugins.md#typed-settings-settings)), their values, and what the product's menu draws. `sco::app::Start` starts it after storage and declares each plugin's settings before its code runs; other hosts call it themselves. Plugins only read. [UI § Settings](ui.md#settings) has a draw sketch.
+
+| Function | Does |
+|---|---|
+| `Result settings::Start()` | Publishes `sco.settings` 1.0 with `host::ProvideHostService` and installs a release hook, so `Release(self)` withdraws the plugin's settings. `BadArg`: already started |
+| `void settings::Stop()` | Withdraws the service and forgets every declaration; the table then answers `SCO_UNAVAILABLE`. No-op unless started. Call before `storage::Stop` |
+| `bool settings::Started()`, `const sco_settings_v1* settings::Table()` | State, and the table `query_service` hands out |
+| `Result settings::Declare(sco_plugin* self, const std::vector<plugins::Setting>& decls)` | Declares `Manifest::settings` for a handle and reads each kept value from the plugin's storage (a stale one is dropped, with a log line). `BadArg`: unknown or released handle, no or too many settings, declared twice, a default outside its own range |
+| `std::vector<Page> settings::Pages()`, `std::vector<Entry> settings::Entries(plugin)` | The declarations with their current values, one page per plugin (`tab`: its first `sco.ui` tab id, or empty). Any thread |
+| `Result settings::SetBool / SetInt / SetFloat / SetString(plugin, name, v)` | Checks the value against the declaration, stores it (the plugin's `sco.storage` namespace, key `sco.settings.<name>`) and dispatches `settings.changed` once. `Ok` for the current value too (silent). `BadArg`, `NotFound`, `WrongThread`, or storage's error with nothing changed. Game thread |
+| `std::string settings::StorageKey(name)` | The key a value is kept under |
+
+`plugins::ParseSettingValue`, `CheckSettingValue` and `FormatSettingValue` (`sco/plugins.h`) read, check and write one value of a declaration; the same rules parse a default, a kept value and what a product's widget sends.
+
 ## `sco/hook.h`: detours and near-code memory
 
 One place that patches game code (library `sco_hook`, x86-64 Windows and Linux), so two features or plugins can't detour the same function or allocate over each other.
