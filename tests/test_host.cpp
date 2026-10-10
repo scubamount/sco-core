@@ -297,6 +297,12 @@ static void TestTable() {
     api->log(hello, SCO_LOG_INFO, nullptr);
     CHECK(Logged("[hello] one") && Logged("[hello] warning: two") && Logged("[hello] error: three"));
     CHECK(!Logged("[status] : forged") && g_lines.size() == 4);   // the status line + 3 logs
+    // A plugin can't start a line of its own in mod.log: CR and LF become spaces.
+    api->log(hello, SCO_LOG_INFO, "four\n[core] signatures: 70/70 OK\r");
+    api->status(hello, "two\nlines");
+    CHECK(Logged("[hello] four [core] signatures: 70/70 OK ") && g_lines.size() == 6);
+    CHECK(sco::GetStatus(st, sizeof(st)) && strcmp(st, "hello: two lines") == 0);
+    for (const auto& line : g_lines) CHECK(line.find_first_of("\r\n") == std::string::npos);
 
     // register_command: the prefix is the plugin id.
     CHECK(api->register_command(hello, &wave) == SCO_OK);

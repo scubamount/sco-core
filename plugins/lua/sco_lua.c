@@ -60,6 +60,7 @@ static int g_depth;        /* entries of any script on the C stack */
 static uint64_t g_steps;   /* steps since the outermost entry: one budget for every script it
                             * reaches, so a script can't multiply it by invoking another's commands */
 static int g_over;         /* that budget ran out: every script still on the stack stops */
+static size_t g_mem;       /* bytes held by every script together: SCO_LUA_TOTAL_MEMORY_LIMIT */
 
 static Script* Of(lua_State* L) { return *(Script**)lua_getextraspace(L); }
 
@@ -111,12 +112,15 @@ static void* Alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
     if (nsize == 0) {
         free(ptr);
         s->mem -= old;
+        g_mem -= old;
         return NULL;
     }
-    if (nsize > old && s->mem - old + nsize > SCO_LUA_MEMORY_LIMIT) return NULL;
+    if (nsize > old && (s->mem - old + nsize > SCO_LUA_MEMORY_LIMIT ||
+                        g_mem - old + nsize > SCO_LUA_TOTAL_MEMORY_LIMIT)) return NULL;
     void* p = realloc(ptr, nsize);
     if (!p) return NULL;
     s->mem = s->mem - old + nsize;
+    g_mem = g_mem - old + nsize;
     return p;
 }
 
@@ -463,11 +467,15 @@ static int L_run_on_game_thread(lua_State* L) {
     if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);
     luaL_checktype(L, 1, LUA_TFUNCTION);
     if (s->ntasks >= SCO_LUA_MAX_TASKS) return PushResult(L, SCO_TOO_MANY);
-    Task* t = (Task*)malloc(sizeof(Task));
-    if (!t) return PushResult(L, SCO_TOO_MANY);
     lua_pushvalue(L, 1);
+    const int ref = luaL_ref(L, LUA_REGISTRYINDEX);   /* first: it raises on no memory, before any malloc */
+    Task* t = (Task*)malloc(sizeof(Task));
+    if (!t) {
+        luaL_unref(L, LUA_REGISTRYINDEX, ref);
+        return PushResult(L, SCO_TOO_MANY);
+    }
     t->s = s;
-    t->ref = luaL_ref(L, LUA_REGISTRYINDEX);   /* raises on no memory: t leaks once, bounded */
+    t->ref = ref;
     const sco_result r = s->api->run_on_game_thread(s->self, TaskThunk, t);
     if (r != SCO_OK) {
         luaL_unref(L, LUA_REGISTRYINDEX, t->ref);

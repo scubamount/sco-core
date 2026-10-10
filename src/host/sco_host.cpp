@@ -124,15 +124,27 @@ sco_result UnsubscribeC(sco_plugin* self, const char* event, sco_event_fn fn) {
     return C(Unsubscribe(self, event, fn));
 }
 
+// A plugin's text goes into mod.log as one line: CR and LF become spaces, so a plugin can't start
+// a line of its own there (a fake "[core] ..." line). Longer text is cut, as Log and Status cut it.
+static void OneLine(const char* in, char* out, size_t n) {
+    size_t i = 0;
+    for (; in[i] && i + 1 < n; ++i) out[i] = (in[i] == '\r' || in[i] == '\n') ? ' ' : in[i];
+    out[i] = '\0';
+}
+
 void StatusC(sco_plugin* self, const char* message) {
     if (!Valid(self) || !message || detail::Released(self)) return;
-    Status("%s: %s", self->id, message);
+    char line[256];
+    OneLine(message, line, sizeof(line));
+    Status("%s: %s", self->id, line);
 }
 
 void LogC(sco_plugin* self, sco_log_level level, const char* message) {
     if (!Valid(self) || !message || detail::Released(self)) return;
     const char* tag = level == SCO_LOG_WARN ? "warning: " : level == SCO_LOG_ERROR ? "error: " : "";
-    Log("[%s] %s%s", self->id, tag, message);
+    char line[512];
+    OneLine(message, line, sizeof(line));
+    Log("[%s] %s%s", self->id, tag, line);
 }
 
 sco_result RegisterCommandC(sco_plugin* self, const sco_command* cmd) {

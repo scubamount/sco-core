@@ -43,6 +43,7 @@ so nothing can call into the script, then `sco_lua_unload` frees the Lua state.
 |---|---|---|
 | Steps per entry (load, one event, one command, one task) | 1,000,000 | The entry fails, the script is disabled |
 | Memory per script | 64 MiB | The allocation fails (`not enough memory`). A `pcall` in the script can catch that; when it ends the entry, the script is disabled |
+| Memory, every script together | 256 MiB | The same: the allocation fails (`not enough memory`), in whichever script asked for it |
 | Errors in callbacks | 3 | The script is disabled |
 | Functions subscribed to one event | 64 | `sco.subscribe` returns `false, "too_many"` |
 | Event names subscribed to | 16 | `sco.subscribe` returns `false, "too_many"` |
