@@ -344,6 +344,28 @@ To also run on an older sc-offline, ask for `0x00010000` and check `sp->size > o
 
 `set_entity_transform` moves only an entity spawned through `spawn_as` with the same `self` while that plugin is loaded (unloading forgets them; `spawn_near_player` and the `spawn.ship` command count for nobody), or the player's own vehicle once the product has registered it as retrieved or delivered by ATC (`sco::game::services::RegisterPlayerVehicle`; no build does yet). Anything else answers 0. A spawn's id is final at once, but the entity streams in seconds later (up to a minute for a big ship), and until then `set_entity_transform` answers 0: check `entity_alive(id)` first, and try again on a later tick. The game pack logs why a call answered 0 (`[game] warning: set_entity_transform(<id>) -> 0: <reason>`), once per id and reason.
 
+### `game.actors` 1.0 (game pack)
+
+[`sc_actors.h`](../include/sc_actors.h), pinned by [`tests/abi_game_actors.c`](../tests/abi_game_actors.c): your player, and NPCs a plugin spawns and despawns. The game pack publishes it under the owner `game` next to `spawn.entities` (when the product sets `Platform::gameServices`; [game services](game-services.md)). Each function has a capability set from its rows at start: `game.actors.local_player`, `game.actors.spawn_npc`, `game.actors.despawn`; a function whose capability isn't ready answers `SCO_UNAVAILABLE`. Frames, units and ids are `teleport.spatial`'s; ids are session handles, never keys to store.
+
+```c
+const sc_actors_v1* actors = NULL;
+if (api->size > offsetof(sco_api, query_service) &&
+    api->query_service(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, (const void**)&actors) == SCO_OK &&
+    api->has("game.actors.spawn_npc")) { ... }
+```
+
+Every function answers `sco_result` and is game thread only: from another thread it answers `SCO_WRONG_THREAD` without touching the game (`last_error` works from any thread). Every failure leaves a reason for `last_error`.
+
+| Function | What |
+|---|---|
+| `local_player(&actor_id, &entity_id)` | Your actor id (as the game's client player record names it) and entity id (as `spawn.entities`' `local_player_id`); `SCO_NOT_FOUND` before you've spawned. Read-only: no `self`; its reason is `last_error(NULL, ...)` |
+| `spawn_npc(self, archetype_class, zone_id, pos[3], &id)` | Spawns an NPC (an entity class name, as in sc-offline's `npcs.txt`) at `pos` in zone `zone_id`'s frame; the NPC is yours. `SCO_NOT_FOUND`: the zone isn't streamed in or the class doesn't exist; `SCO_TOO_MANY`: `SC_ACTORS_MAX_NPCS` (1024) are alive or being removed |
+| `despawn(self, id)` | Removes an NPC you spawned; it leaves the world within a few seconds (once it has streamed in). `SCO_NOT_FOUND`: not yours, or despawned already |
+| `last_error(self, out, &size)` | The reason for `self`'s last failure, with the size handshake |
+
+Ownership: only the plugin that spawned an NPC may despawn it, and the host removes every NPC a plugin still owns when it unloads or crashes (design decision 6). A `self` that isn't a loaded plugin's handle is `SCO_BAD_ARG`. Removal is sc-offline's Clear NPCs: the entity system's RemoveEntity, checked 1.5 s later; if the NPC is still there, the internal remove it ends in (`npc.direct_remove`), then a move about 17,000 km away, far out of streaming range.
+
 ### `game.vehicles` 1.0 (game pack)
 
 [`sc_vehicles.h`](../include/sc_vehicles.h), pinned by [`tests/abi_game_vehicles.c`](../tests/abi_game_vehicles.c): the ship you're aboard, a ship's seats and who sits in them, seating and unseating your own actors, and Flight Ready. The Star Citizen game pack publishes it under the owner `game` before any plugin loads (when the product sets `Platform::gameServices`; [game services](game-services.md)). Each system has its own capability, set from the rows it reads ([actors](game/actors.md)), so a game patch that breaks one leaves the others:
@@ -375,7 +397,7 @@ Every function returns `sco_result` and is game thread only: from another thread
 
 Seat flags: `SC_SEAT_USABLE` (the game's own seat picker takes the seat: its owner has a live `IInteractableComponent`), `SC_SEAT_USABLE_KNOWN` (the game pack could check that on this build; without it usability is unknown, not "no"), `SC_SEAT_OCCUPIED` (the occupant field isn't 0), `SC_SEAT_PILOT` (the highest-priority seat). Ships list turret items and remote-operated parts as seats too; the game never puts anyone in them, and `seat` refuses any seat without `SC_SEAT_USABLE` (`SCO_FAILED`, "isn't interactable"). It never evicts: a seat someone else is in is `SCO_FAILED`.
 
-Whose actors and ships: `seat` and `eject` take your player's own actor, or an actor your plugin spawned through `spawn.entities`' `spawn_as` while your plugin is loaded. `power_on` takes the ship you're aboard, the player's registered vehicles (`RegisterPlayerVehicle`) and ships your plugin spawned through `spawn_as`. Anything else is `SCO_BAD_ARG`. Seat indexes are positions in the list `seats` returns; they hold while the ship stays streamed in, and `seat` / `seat_occupant` read the list afresh each call. Ids are session handles: never store one.
+Whose actors and ships: `seat` and `eject` take your player's own actor, or an actor your plugin spawned through `spawn.entities`' `spawn_as` or `game.actors`' `spawn_npc` while your plugin is loaded. `power_on` takes the ship you're aboard, the player's registered vehicles (`RegisterPlayerVehicle`) and ships your plugin spawned through `spawn_as`. Anything else is `SCO_BAD_ARG`. Seat indexes are positions in the list `seats` returns; they hold while the ship stays streamed in, and `seat` / `seat_occupant` read the list afresh each call. Ids are session handles: never store one.
 
 ## Raw handlers (1.1)
 

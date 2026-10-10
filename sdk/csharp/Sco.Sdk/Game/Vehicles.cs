@@ -1,5 +1,4 @@
-// Game.cs: the Star Citizen game pack's services (docs/game-services.md) for C# plugins.
-// Today: "game.vehicles" 1.0 (sc_vehicles.h).
+// Vehicles.cs: the game service "game.vehicles" 1.0 (sc_vehicles.h) for C# plugins.
 //
 // Part of the sco SDK. GPL-3.0, like sco-core.
 using System;
@@ -9,7 +8,7 @@ using Sco.Sdk.Interop;
 namespace Sco.Sdk.Game
 {
     /// <summary>The names, versions and limits sc_vehicles.h defines.</summary>
-    public static class GameAbi
+    public static partial class GameAbi
     {
         public const string VehiclesName = "game.vehicles";       // SC_VEHICLES_SERVICE_NAME
         public const uint VehiclesVersion1_0 = 0x00010000u;      // SC_VEHICLES_SERVICE_VERSION

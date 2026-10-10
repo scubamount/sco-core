@@ -4,12 +4,14 @@
 // Platform::gameServices and the game pack's services are built (SCO_GAME_SC, Windows: the
 // sco_game_services library, which defines SCO_GAME_SERVICES); Stop calls Stop after UnloadAll.
 //
-// Today: teleport.spatial 1.0 (sc_spatial.h), spawn.entities 1.2 (sc_spawn.h) and game.vehicles 1.0
-// (sc_vehicles.h; capabilities game.vehicles.seats / .seat / .flight_ready). teleport.spatial
-// answers 0 until the teleport.* rows are resolved (the product's ResolveAll before Start) and
-// you've spawned; spawn.entities answers "the spawner isn't available on this game build" (and 0)
-// unless the spawn.helpers rows (sco/game/actors.h) were OK at Start too; game.vehicles answers
-// SCO_UNAVAILABLE for each system whose rows weren't.
+// Today: teleport.spatial 1.0 (sc_spatial.h), spawn.entities 1.2 (sc_spawn.h), game.actors 1.0
+// (sc_actors.h) and game.vehicles 1.0 (sc_vehicles.h). teleport.spatial answers 0 until the
+// teleport.* rows are resolved (the product's ResolveAll before Start) and you've spawned;
+// spawn.entities answers "the spawner isn't available on this game build" (and 0) unless the
+// spawn.helpers rows (sco/game/actors.h) were OK at Start too; game.actors sets the capabilities
+// game.actors.local_player, .spawn_npc and .despawn, and game.vehicles game.vehicles.seats, .seat
+// and .flight_ready, from their rows at Start; each answers SCO_UNAVAILABLE for a function whose
+// capability isn't ready.
 #include "sco/runtime.h"
 #include <cstdint>
 

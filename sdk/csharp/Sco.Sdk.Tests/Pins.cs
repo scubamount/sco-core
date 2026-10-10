@@ -1,5 +1,5 @@
 // Pins.cs: the SIZE / AT / PIN lines of tests/abi_v1.c, tests/abi_storage.c, tests/abi_ui.c,
-// tests/abi_datacore.c and tests/abi_game_vehicles.c, copied so the test runs from the SDK zip, where tests/ isn't shipped. Given
+// tests/abi_datacore.c, tests/abi_game_actors.c and tests/abi_game_vehicles.c, copied so the test runs from the SDK zip, where tests/ isn't shipped. Given
 // those files on the command line, the test also fails unless this copy equals them line for line.
 //
 // Part of the sco SDK. GPL-3.0, like sco-core.
@@ -200,6 +200,17 @@ namespace Sco.Sdk.Tests
             ("tests/abi_datacore.c", "AT(sco_datacore_v1, commit, 64);"),
             ("tests/abi_datacore.c", "AT(sco_datacore_v1, discard, 72);"),
             ("tests/abi_datacore.c", "AT(sco_datacore_v1, report, 80);"),
+            ("tests/abi_game_actors.c", "PIN(sizeof(void*) == 8);"),
+            ("tests/abi_game_actors.c", "PIN(SC_ACTORS_VERSION_1_0 == 0x00010000u);"),
+            ("tests/abi_game_actors.c", "PIN(sizeof(SC_ACTORS_NAME) == 12); /* \"game.actors\" */"),
+            ("tests/abi_game_actors.c", "PIN(SC_ACTORS_MAX_NPCS == 1024u);"),
+            ("tests/abi_game_actors.c", "SIZE(sc_actors_v1, 40);"),
+            ("tests/abi_game_actors.c", "AT(sc_actors_v1, size, 0);"),
+            ("tests/abi_game_actors.c", "AT(sc_actors_v1, _pad, 4);"),
+            ("tests/abi_game_actors.c", "AT(sc_actors_v1, local_player, 8);"),
+            ("tests/abi_game_actors.c", "AT(sc_actors_v1, spawn_npc, 16);"),
+            ("tests/abi_game_actors.c", "AT(sc_actors_v1, despawn, 24);"),
+            ("tests/abi_game_actors.c", "AT(sc_actors_v1, last_error, 32);"),
             ("tests/abi_game_vehicles.c", "PIN(sizeof(void*) == 8);"),
             ("tests/abi_game_vehicles.c", "PIN(SC_VEHICLES_SERVICE_VERSION == 0x00010000u);"),
             ("tests/abi_game_vehicles.c", "PIN(sizeof(SC_VEHICLES_SERVICE_NAME) == 14); /* \"game.vehicles\" */"),

@@ -6,6 +6,7 @@ The Star Citizen game pack publishes its services under the reserved owner `game
 |---|---|---|---|---|
 | `teleport.spatial` | 1.0 | [`sc_spatial.h`](../include/sc_spatial.h) | 0.1.0 | Where you are, and positions between the game's zones |
 | `spawn.entities` | 1.2 | [`sc_spawn.h`](../include/sc_spawn.h) | unreleased (after 0.1.0) | Spawn entities near you, your entity and ship ids, and move what you spawned |
+| `game.actors` | 1.0 | [`sc_actors.h`](../include/sc_actors.h) | unreleased (after 0.1.0) | Your player (`local_player`), NPCs you spawn (`spawn_npc(self, ...)`) and despawn (`despawn(self, id)`); the host removes a plugin's NPCs when it unloads or crashes. Capabilities `game.actors.local_player`, `.spawn_npc`, `.despawn`. Wrappers: `scosdk/game/actors.hpp`, C# `Sco.Sdk.Game.Actors`, Lua `sco.game.actors.local_player` (read-only) |
 | `game.vehicles` | 1.0 | [`sc_vehicles.h`](../include/sc_vehicles.h) | unreleased (after 0.1.0) | The ship you're aboard, its seats and occupants, seating and unseating your own actors, Flight Ready. Capabilities `game.vehicles.seats`, `.seat`, `.flight_ready` ([API](api-v1.md#gamevehicles-10-game-pack)) |
 
 `teleport.spatial` and `spawn.entities` keep their names and tables for all of 1.x: sc-offline's `teleport` and `spawn` built-ins published them before the game pack did, and a plugin can't tell the difference. New game services are named `game.<name>`.
@@ -15,4 +16,13 @@ The Star Citizen game pack publishes its services under the reserved owner `game
 - `sco::host::ProvideGameService(name, version, table)` publishes under the owner `game` (`sco/host.h`): `game.<name>`, or one of the product names a game pack took over (`kGameCompatNames`). The owner is never released; `sco::app::Stop` withdraws game services after every plugin has unloaded.
 - `sco::app::Platform::gameServices = true` starts them before any plugin loads. They read the game through the `teleport.*` and `spawn.*` rows, so resolve the rows first. A product that still publishes `teleport.spatial` or `spawn.entities` itself must leave it off, or drop its own provider: the second provider of a name is refused.
 - `spawn.entities`' mover lets any plugin move the player's own vehicle once the product registers it (`sco::game::services::RegisterPlayerVehicle` / `UnregisterPlayerVehicle`, `sco/game/services.h`, game thread). Entities a plugin spawned through `spawn_as` stay movable by that plugin only, and are forgotten when it unloads or crashes.
+- `game.actors` reads your player through the `teleport.*` rows and `spawn.handle_to_id`, spawns through `spawn.entities`' spawner (`spawn.helpers` rows), and removes NPCs as sc-offline's Clear NPCs did (`npc.clear` rows: RemoveEntity, checked 1.5 s later, then the `npc.direct_remove` fallback, then a move far out of range). It logs `[game] game.actors: <plugin> spawned <class> as NPC <id>` and `[game] game.actors: <plugin> unloaded: removing the <n> NPCs it spawned`. `spawn_npc` refuses when it couldn't remove the NPC again (no `npc.clear` rows, or no release hook).
 - The implementations are in `src/game/services/` (library `sco_game_services`, Windows only: game reads run under SEH). Builds without them log `[app] game services not built` and go on.
+
+## Internal game-pack helpers
+
+Not services: no table, no `query_service`. Functions in `src/game/services/` (library `sco_game_services`, Windows only) that a product links and calls, because they read live game objects a signature row can't express. They run under SEH, answer 0 on a fault, and give a stable reason string. The game thread only.
+
+| Header | Function | What |
+|---|---|---|
+| [`sco/game/missions.h`](../include/sco/game/missions.h) | `sco::game::missions::ScriptLibrary(manager, &reason)` | The mission script library, from the live mission manager (slot `0x48` of its vtable; canary `48 8B 4B` at `+0x32` of that function; the field displacement is the byte at `+0x35`; all checked on every call). 0 with `kReasonNotFound` or `kReasonNotYet`. sc-offline's `missions` built-in calls it; the lookup used to be a raw scan there. |

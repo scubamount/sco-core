@@ -68,6 +68,12 @@ bool Init() {
 bool Ready() { return g_ready; }
 
 bool LocalPlayer(uintptr_t& actor, uintptr_t& entity) {
+    uint64_t actorId;
+    return LocalPlayer(actor, entity, actorId);
+}
+
+bool LocalPlayer(uintptr_t& actor, uintptr_t& entity, uint64_t& actorId) {
+    actorId = 0;
     if (!g_ready) return false;
     const uintptr_t mgr = *g_addrs.clientMgr;
     if (!mgr) return false;
@@ -76,13 +82,16 @@ bool LocalPlayer(uintptr_t& actor, uintptr_t& entity) {
     const uintptr_t info = VCall<uintptr_t>(sub, 0x2E0);
     if (!info) return false;
     uint64_t handle = 0;
-    reinterpret_cast<void(__fastcall*)(uint64_t*, uint64_t)>(g_addrs.handleFromId)(&handle, Rd<uint64_t>(info + 8));
+    const uint64_t id = Rd<uint64_t>(info + 8);
+    reinterpret_cast<void(__fastcall*)(uint64_t*, uint64_t)>(g_addrs.handleFromId)(&handle, id);
     actor = handle & kPtrMask;
     if (!actor) return false;
     const uintptr_t life = VCall<uintptr_t>(actor, 0xA08);
     if (!life || !VCall<uintptr_t>(life, 0x28)) return false;
     entity = Rd<uintptr_t>(actor + 8) & kPtrMask;
-    return entity != 0;
+    if (!entity) return false;
+    actorId = id;
+    return true;
 }
 
 uintptr_t   ZoneParent(uintptr_t zone) { return VCall<uintptr_t>(zone, 0x08); }

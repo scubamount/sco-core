@@ -11,6 +11,7 @@
 // ("[game] vehicles: ...": every seat's interactable flag and raw occupant field, and each link's
 // result) are there so one in-game run tells the remaining causes apart.
 #include "vehicles.h"
+#include "actors.h"
 #include "spawn.h"
 #include "sco/caps.h"
 #include "sco/game/actors.h"
@@ -448,9 +449,10 @@ uint64_t ReadOccupantField(uintptr_t seat) {
     __try { return Rd<uint64_t>(seat + actors::kSeatOccupant); } __except (EXCEPTION_EXECUTE_HANDLER) { return 0; }
 }
 
-// You may seat or eject your player's own actor, or one you spawned through spawn_as.
+// You may seat or eject your player's own actor, or one you spawned through spawn.entities'
+// spawn_as or game.actors' spawn_npc.
 bool MaySeat(const sco_plugin* self, uint64_t actor) {
-    if (SpawnedBy(self, actor)) return true;
+    if (SpawnedBy(self, actor) || NpcOwnedBy(self, actor)) return true;
     const uint64_t me = LocalPlayerId();
     return me && actor == me;
 }
@@ -574,7 +576,7 @@ sco_result SvcSeat(sco_plugin* self, uint64_t actor, uint64_t ship, uint32_t ind
     if (!g_v.seat) return Fail(self, "seat", SCO_UNAVAILABLE, "game.vehicles.seat isn't ready on this game build");
     if (!self || !host::PluginId(self)) return Fail(nullptr, "seat", SCO_BAD_ARG, "self isn't a plugin handle");
     if (!actor || !MaySeat(self, actor))
-        return Fail(self, "seat", SCO_BAD_ARG, "actor %llu isn't yours (seat your own player, or an actor you spawned with spawn_as)",
+        return Fail(self, "seat", SCO_BAD_ARG, "actor %llu isn't yours (seat your own player, or an NPC you spawned with spawn_as or spawn_npc)",
                     static_cast<unsigned long long>(actor));
     if (const sco_result r = EnumerateOrFail(self, "seat", ship); r != SCO_OK) return r;
     if (index >= g_count)
@@ -605,7 +607,7 @@ sco_result SvcEject(sco_plugin* self, uint64_t actor) {
     if (!g_v.seat) return Fail(self, "eject", SCO_UNAVAILABLE, "game.vehicles.seat isn't ready on this game build");
     if (!self || !host::PluginId(self)) return Fail(nullptr, "eject", SCO_BAD_ARG, "self isn't a plugin handle");
     if (!actor || !MaySeat(self, actor))
-        return Fail(self, "eject", SCO_BAD_ARG, "actor %llu isn't yours (eject your own player, or an actor you spawned with spawn_as)",
+        return Fail(self, "eject", SCO_BAD_ARG, "actor %llu isn't yours (eject your own player, or an NPC you spawned with spawn_as or spawn_npc)",
                     static_cast<unsigned long long>(actor));
     switch (UnlinkActor(actor)) {
     case Link::Ok:

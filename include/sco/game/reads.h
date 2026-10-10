@@ -19,6 +19,9 @@ bool Ready();
 
 // Your actor and its entity; false before you've spawned.
 bool LocalPlayer(uintptr_t& actor, uintptr_t& entity);
+// The same, plus the id the game's client player record names your actor by (the id
+// teleport.handle_from_id turns into the actor): game.actors' local_player.
+bool LocalPlayer(uintptr_t& actor, uintptr_t& entity, uint64_t& actorId);
 
 uintptr_t   ZoneParent(uintptr_t zone);
 const char* ZoneName(uintptr_t zone);

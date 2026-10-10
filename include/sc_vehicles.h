@@ -87,7 +87,7 @@ typedef struct sc_vehicles_v1 {
     sco_result (*seat_occupant)(uint64_t ship, uint32_t seat_index, uint64_t* out_actor);
     /* Puts actor into seat seat_index of ship, moving it out of any seat it's in first. You may
      * seat your player's own actor, or an actor your plugin spawned through spawn.entities'
-     * spawn_as (while your plugin is loaded); anything else is SCO_BAD_ARG. SCO_FAILED: the seat
+     * spawn_as or game.actors' spawn_npc (while your plugin is loaded); anything else is SCO_BAD_ARG. SCO_FAILED: the seat
      * isn't usable (no SC_SEAT_USABLE), someone else is in it (nobody is evicted), the actor
      * isn't streamed in yet or has no seat link, or the game faulted. SCO_OK means the game
      * accepted the link; it takes effect within a second or two: check seat_occupant() on a

@@ -92,6 +92,13 @@ echo "abi_spatial: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-m
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spawn.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spawn.c"
 echo "abi_spawn: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The game.actors table the game pack provides (tests/abi_game_actors.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_game_actors.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_game_actors.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_game_actors.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_game_actors.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_game_actors.c"
+echo "abi_game_actors: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 # The game pack's game.vehicles table (tests/abi_game_vehicles.c), the same five ways.
 "$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_game_vehicles.c"
 "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_game_vehicles.c"
