@@ -59,6 +59,13 @@ clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x
 printf '#include "sc_net.h"\n' | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
 printf '#include "sc_net.h"\n' | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
 echo "abi_sc_net: wire pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_net.h stands alone"
+# The sco.net table (tests/abi_net.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_net.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_net.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_net.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_net.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_net.c"
+echo "abi_net: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 # The teleport.spatial table sc-offline provides (tests/abi_spatial.c), the same five ways.
 "$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spatial.c"
 "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spatial.c"
@@ -181,6 +188,15 @@ NET=("$ROOT/tests/test_net.cpp" "$ROOT/src/net/wire.cpp" "$ROOT/src/net/reliable
 "$OUT/test_net"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${NET[@]}" "$OUT/sha2_tsan.o" -o "$OUT/test_net_tsan"
 "$OUT/test_net_tsan"
+# The sco.net service (sco/net/session.h) over the host table: the in-memory network with no thread,
+# two Cores over UDP loopback, and the service's network thread over UDP loopback beside table calls
+# from 8 threads, so both sanitizer sets.
+NETSVC_SRC=("$ROOT/src/net/service.cpp" "$ROOT/src/net/scope.cpp" "$ROOT/src/net/udp_posix.cpp" "${NET[@]:1}")
+NETSVC=("$ROOT/tests/test_net_service.cpp" "${NETSVC_SRC[@]}" "${HOST[@]:1}")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${NETSVC[@]}" "$OUT/sha2_asan.o" -o "$OUT/test_net_service"
+"$OUT/test_net_service"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${NETSVC[@]}" "$OUT/sha2_tsan.o" -o "$OUT/test_net_service_tsan"
+"$OUT/test_net_service_tsan"
 
 # The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
 # corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb
@@ -286,7 +302,7 @@ done
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
      "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$SQLITE_ASAN"
-     "$ROOT/src/ipc/ipc.cpp" "$ROOT/src/ipc/shm_posix.cpp"
+     "$ROOT/src/ipc/ipc.cpp" "$ROOT/src/ipc/shm_posix.cpp" "${NETSVC_SRC[@]}" "$OUT/sha2_asan.o"
      "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"

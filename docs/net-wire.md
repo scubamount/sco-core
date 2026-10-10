@@ -1,6 +1,6 @@
 # sco.net wire format (internal, as built)
 
-What plan PR 4a built for [design section 3.5](design/multiplayer.md#35-session-crypto-d4): the packets, the handshake, the keys and the delivery rules of `sco.net`, in `src/net/` with headers in `include/sco/net/`. Plugins see only the `sco_net_v1` table (plan PR 4b). The wire itself is defined once, in **[`include/sc_net.h`](../include/sc_net.h), MIT** (the [interface exception](../LICENSE), like `sc_ipc.h`): a program outside sco-core includes only that file to frame, parse and verify packets, supplying its own HMAC-SHA-256. sco-core's code takes its constants, parser, MAC input, replay window and name rules from it, and `tests/abi_sc_net.c` pins it. Change it only together with `SC_NET_PROTOCOL_VERSION`.
+What plan PR 4a built for [design section 3.5](design/multiplayer.md#35-session-crypto-d4): the packets, the handshake, the keys and the delivery rules of `sco.net`, in `src/net/` with headers in `include/sco/net/`. Plugins see only the `sco_net_v1` table ([Multiplayer messages](net.md), plan PR 4b). The wire itself is defined once, in **[`include/sc_net.h`](../include/sc_net.h), MIT** (the [interface exception](../LICENSE), like `sc_ipc.h`): a program outside sco-core includes only that file to frame, parse and verify packets, supplying its own HMAC-SHA-256. sco-core's code takes its constants, parser, MAC input, replay window and name rules from it, and `tests/abi_sc_net.c` pins it. Change it only together with `SC_NET_PROTOCOL_VERSION`.
 
 | File | What |
 |---|---|
@@ -8,7 +8,10 @@ What plan PR 4a built for [design section 3.5](design/multiplayer.md#35-session-
 | `sco/net/sha2.h`, `src/net/sha2.c` | SHA-256, HMAC-SHA-256, PBKDF2-HMAC-SHA256, constant-time compare, wipe. Plain C11, written for sco-core |
 | `sco/net/wire.h`, `src/net/wire.cpp` | Constants, framing, the hostile-input parser, the MAC, the replay window, bounds-checked reader |
 | `sco/net/reliable.h`, `src/net/reliable.cpp` | Reliable streams: fragmentation, ordering, acknowledgements, retransmission |
-| `sco/net/transport.h` | `Endpoint` and the abstract datagram `Transport` (4b adds the UDP sockets) |
+| `sco/net/transport.h` | `Endpoint` and the abstract datagram `Transport` |
+| `sco/net/udp.h`, `src/net/udp_win.cpp`, `udp_posix.cpp` | The UDP `Transport` (4b): Winsock on the real target, BSD sockets for the tests |
+| `sco/net/scope.h`, `src/net/scope.cpp` | The LAN rule and the allow-list (4b), applied around every transport by the service |
+| `sco/net/session.h`, `src/net/service.cpp` | The service (4b): the network thread, the `sco_net_v1` table, ownership, quotas, delivery on the game thread, session control |
 | `sco/net/core.h`, `src/net/core.cpp` | `sco::net::Core`: handshake, links, the channel table, relay, timers; driven by `Pump(nowMs)` |
 | `tests/net_mem.h`, `tests/test_net.cpp` | A seeded lossy, duplicating, reordering in-memory network; the tests |
 
@@ -81,8 +84,8 @@ DATA body:
 - **Control channel** (index 0, `sco.net`, reliable, 64 KiB): SYNC (1), CHANNEL (2), REGISTER (3, joiner to host), PEER_JOINED (4), PEER_LEFT (5).
 - **Receiving.** A message on a channel this endpoint didn't register is counted (`unknownChannel`) and dropped; one over the receiver's `max_len`, or on a FROM_HOST channel from anyone but the host, is counted as `refused` and dropped.
 
-## Not here
+## The service on top (plan PR 4b)
 
-Plan PR 4b: the UDP sockets (`socket_win.cpp` / `socket_posix.cpp`, the LAN-only bind scope), the network thread, the `sco_net_v1` table, `<plugin id>.` channel ownership, per-plugin quotas, the `sco.net` capability, events and the language layers. `Core` is single-threaded: 4b's network thread owns it and serializes `send_channel` calls into it.
+`Core` is single-threaded: the service's network thread owns it and its socket, and applies queued `register_channel`, `unregister_channel` and `send_channel` calls between `Pump`s. The socket sits behind a `ScopedTransport`, so datagrams from outside the LAN rule are dropped before `Parse` ever sees them. Channel ownership (`<plugin id>.`), quotas and the capability are the service's ([Multiplayer messages](net.md)); the wire doesn't change. Not yet: IPv6 sockets, and the C# and Lua layers.
 
 **Known limits, by design.** Traffic is authenticated but **plaintext** (players use a VPN for confidentiality). A passphrase-HMAC handshake lets someone who records a handshake, or poses as a host, test passphrases offline; PBKDF2's 200,000 iterations slow that down, and a long passphrase is the defence. A spoofed REFUSE (which needs J's nonce, so an on-path attacker) or spoofed handshake traffic can stop a join, not get one in.

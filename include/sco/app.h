@@ -26,7 +26,8 @@
 //   3. setCapabilities() (after the rows are resolved, so it can use caps::SetFromSignatures)
 //   4. host::BuildApi({ hostVersion }); with dataRoot set, storage::Start (sco.storage) and, with
 //      dataCore too, datacore::service::Start (sco.datacore); ui::Start (sco.ui) and ui::ReserveChord
-//      for each of reservedChords; ipc::Start (sco.ipc)
+//      for each of reservedChords; ipc::Start (sco.ipc); net::Start (sco.net and the capability
+//      "sco.net"; no socket until the product calls net::Host or net::Join, sco/net/session.h)
 //   5. the list: every built-in (FromBuiltin), then, with pluginsEnabled, Discover(pluginRoot)
 //   6. ContainCallouts(list)
 //   7. LoadBuiltin for each built-in; then, in list order, LoadNative / LoadScript (a lua plugin
@@ -35,8 +36,10 @@
 //   9. Dispatch "game.ready"
 // Startup problems are logged and reported, never fatal: a product with no image, no plugin
 // folder or a refused plugin still starts, and every plugin that can load does.
-// Tick also writes the owner heartbeat of every sco.ipc channel (ipc::Tick).
-// Stop: Dispatch "game.exit", UnloadAll (newest first, built-ins last), storage::Stop, ipc::Stop, ui::Stop,
+// Tick also writes the owner heartbeat of every sco.ipc channel (ipc::Tick) and delivers sco.net
+// messages and events (net::Tick).
+// Stop: Dispatch "game.exit", UnloadAll (newest first, built-ins last), storage::Stop, net::Stop (leaves
+// any session), ipc::Stop, ui::Stop,
 // datacore::service::Stop and host::WithdrawHostServices (host services outlive every plugin),
 // ContainCallouts(nullptr).
 #include "sco/plugins.h"

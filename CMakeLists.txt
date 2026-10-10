@@ -185,11 +185,23 @@ target_link_libraries(sco_ipc PUBLIC sco_host)
 sco_project_target(sco_ipc)
 
 # sco.net core (sco/net/*.h): SHA-256/HMAC/PBKDF2 (sha2.c, plain C), the wire framing, reliable
-# streams and the session over an abstract datagram transport. Platform-free; the sockets and the
-# sco_net_v1 service table come in plan PR 4b (docs/net-wire.md).
+# streams and the session over an abstract datagram transport. Platform-free (docs/net-wire.md).
 add_library(sco_net STATIC src/net/sha2.c src/net/wire.cpp src/net/reliable.cpp src/net/core.cpp)
 target_include_directories(sco_net PUBLIC "${SCO_INCLUDE_DIR}")
 sco_project_target(sco_net)
+
+# sco.net service (sco/net/session.h, include/sco_net.h): the network thread, channel ownership,
+# quotas, the LAN rule (scope.cpp) and UDP, a host-owned service. The platform half is udp_win.cpp
+# (Winsock, the real target) or udp_posix.cpp (the host tests).
+add_library(sco_net_service STATIC src/net/service.cpp src/net/scope.cpp)
+if(WIN32)
+  target_sources(sco_net_service PRIVATE src/net/udp_win.cpp)
+  target_link_libraries(sco_net_service PRIVATE ws2_32)
+else()
+  target_sources(sco_net_service PRIVATE src/net/udp_posix.cpp)
+endif()
+target_link_libraries(sco_net_service PUBLIC sco_net sco_host Threads::Threads)
+sco_project_target(sco_net_service)
 
 # sco.datacore (sco/datacore_service.h, include/sco_datacore.h): plugins queue DataCore overrides; the
 # DataCore load applies data packs, saved patches and queued patches in plugin order.
@@ -199,7 +211,8 @@ sco_project_target(sco_datacore_service)
 
 # The host kit (sco/app.h): Start / Tick / Stop over the host table, caps, signatures and loader.
 add_library(sco_app STATIC src/app/sco_app.cpp)
-target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui sco_ipc sco_datacore_service)
+target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui sco_ipc sco_net_service
+                      sco_datacore_service)
 sco_project_target(sco_app)
 
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
@@ -394,6 +407,28 @@ if(SCO_BUILD_TESTS)
   add_test(NAME abi_sc_net
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_sc_net_targets})
 
+  # The sco.net table pin (tests/abi_net.c), the same three ways.
+  set(_abi_net_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_net.cpp")
+  file(CONFIGURE OUTPUT "${_abi_net_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_net.c\"\n")
+  add_library(sco_abi_net_c OBJECT tests/abi_net.c)
+  add_library(sco_abi_net_cxx OBJECT "${_abi_net_cxx}")
+  set(_abi_net_targets sco_abi_net_c sco_abi_net_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_net_short_enums OBJECT tests/abi_net.c)
+    target_compile_options(sco_abi_net_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_net_targets sco_abi_net_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_net_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME abi_net
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_net_targets})
+
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
   sco_project_target(test_core)
@@ -434,6 +469,13 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_net PRIVATE sco_net)
   sco_project_target(test_net)
   add_test(NAME test_net COMMAND test_net)
+
+  # The sco.net service over the in-memory network (ownership, quotas, unload, delivery on the game
+  # thread), two Cores over UDP loopback, and the service's network thread over UDP loopback.
+  add_executable(test_net_service tests/test_net_service.cpp)
+  target_link_libraries(test_net_service PRIVATE sco_net_service)
+  sco_project_target(test_net_service)
+  add_test(NAME test_net_service COMMAND test_net_service)
 
   # sco.ui over the real host table, with built-in plugins under the loader's crash guard.
   add_executable(test_ui tests/test_ui.cpp)
