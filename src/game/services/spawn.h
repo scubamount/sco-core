@@ -10,4 +10,13 @@ namespace sco::game::services {
 Result StartSpawn();
 void   StopSpawn();
 
+// For game.actors (actors.cpp): spawns entityClass at pos in zone zoneId's local frame through
+// the spawner spawn.entities uses. nullptr with id set on success, else the reason ("unknown
+// entity class", "the spawner isn't available on this game build", ...). Game thread.
+const char* SpawnEntityInZone(const char* entityClass, uint64_t zoneId, const double pos[3], uint64_t& id);
+
+// True while spawn.cpp's release hook is added: it also releases game.actors' NPCs
+// (ReleaseActorsOwner), so game.actors spawns nothing without it.
+bool SpawnReleaseHooked();
+
 }  // namespace sco::game::services

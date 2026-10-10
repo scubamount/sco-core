@@ -6,6 +6,7 @@
 // loaded with sco::sdk::LoadPlugin (one binary can only export one SCO_PLUGIN).
 //   tools/test.sh   (ASan+UBSan and ThreadSanitizer)
 #include "scosdk/scosdk.hpp"
+#include "scosdk/game/actors.hpp"
 
 #include "sco/host.h"
 #include "sco/log.h"
@@ -163,6 +164,52 @@ static const sco_command* FindView(const sco_api* api, const char* name) {
 
 template <class T>
 static std::span<const std::byte> BytesOf(const T& v) { return std::as_bytes(std::span<const T, 1>(&v, 1)); }
+
+// ---- scosdk/game/actors.hpp over a stand-in game.actors, published as the game pack does ---------
+
+static sco_plugin* g_gaSelf = nullptr;
+static uint64_t g_gaDespawned = 0;
+static sco_result GaLocal(uint64_t* actor, uint64_t* entity) {
+    *actor = 5;
+    *entity = 6;
+    return SCO_OK;
+}
+static sco_result GaSpawn(sco_plugin* self, const char* cls, uint64_t zone, const double* pos, uint64_t* id) {
+    if (self != g_gaSelf || std::strcmp(cls, "Npc") != 0 || zone != 9 || pos[2] != 3.0) return SCO_BAD_ARG;
+    *id = 77;
+    return SCO_OK;
+}
+static sco_result GaDespawn(sco_plugin* self, uint64_t id) {
+    if (self != g_gaSelf || id != 77) return SCO_NOT_FOUND;
+    g_gaDespawned = id;
+    return SCO_OK;
+}
+static sco_result GaLastError(sco_plugin* self, char* out, uint32_t* io) {
+    const std::string why = self ? std::string(300, 'x') : "read";   // past the wrapper's first 256 bytes
+    const uint32_t cap = *io;
+    *io = static_cast<uint32_t>(why.size() + 1);
+    if (cap < why.size() + 1) return SCO_TOO_MANY;
+    std::memcpy(out, why.c_str(), why.size() + 1);
+    return SCO_OK;
+}
+
+static void TestGameActors(const sco_api* api) {
+    g_gaSelf = sco::host::NewPlugin("gatest");
+    sdk::game::Actors none;
+    CHECK(none.Open(api, g_gaSelf) == SCO_NOT_FOUND && !none);
+    uint64_t a = 1, e = 1, id = 1;
+    CHECK(none.LocalPlayer(a, e) == SCO_UNAVAILABLE && a == 0 && e == 0 && none.LastError().empty());
+    static const sc_actors_v1 kFake = { sizeof(sc_actors_v1), 0, GaLocal, GaSpawn, GaDespawn, GaLastError };
+    CHECK(sco::host::ProvideGameService(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, &kFake) == sco::Result::Ok);
+    sdk::game::Actors actors;
+    CHECK(actors.Open(api, g_gaSelf) == SCO_OK && actors && actors.Table() == &kFake);
+    CHECK(actors.LocalPlayer(a, e) == SCO_OK && a == 5 && e == 6);
+    const double pos[3] = { 1, 2, 3 };
+    CHECK(actors.SpawnNpc("Npc", 9, pos, id) == SCO_OK && id == 77);
+    CHECK(actors.Despawn(77) == SCO_OK && g_gaDespawned == 77);
+    CHECK(actors.LastError() == std::string(300, 'x') && actors.LastReadError() == "read");
+    CHECK(sco::host::WithdrawGameService(SC_ACTORS_NAME) == sco::Result::Ok);
+}
 
 int main() {
     sco::SetGameThread();
@@ -442,6 +489,8 @@ int main() {
     CHECK(!late);
     CHECK(cons.RunOnGameThread([] {}) == SCO_BAD_ARG && !cons.Subscribe("tick", [](const void*) {}));
     sdk::UnloadPlugin(cons);   // a second unload does nothing
+
+    TestGameActors(api);
 
     sco::SetLogSink(nullptr);
     std::printf("sco-core SDK tests: %d passed, %d failed\n", g_pass, g_fail);

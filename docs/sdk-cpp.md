@@ -31,6 +31,7 @@ The C++20 layer of the sco plugin SDK: header-only, over [`sco_api.h`](api-v1.md
 | [`scosdk/net.hpp`](../include/scosdk/net.hpp) | `Net`, `NetChannel`: typed message channels with the other players of a session the product opened, callbacks as lambdas on the game thread (the host service `sco.net`, [`sco_net.h`](../include/sco_net.h); [Multiplayer messages](net.md)) |
 | [`scosdk/ipc.hpp`](../include/scosdk/ipc.hpp) | `Ipc`, `IpcChannel`: shared-memory channels to another program on the same PC (the host service `sco.ipc`, [`sco_ipc.h`](../include/sco_ipc.h); [IPC](ipc.md)); `IpcChannel` closes its channel on destruction; not in `scosdk.hpp` |
 | [`scosdk/ui.hpp`](../include/scosdk/ui.hpp) | `Ui`: tabs, overlays, badges and hotkeys (the host service `sco.ui`, [`sco_ui.h`](../include/sco_ui.h)); not in `scosdk.hpp`, include it when you use UI |
+| [`scosdk/game/actors.hpp`](../include/scosdk/game/actors.hpp) | `sco::sdk::game::Actors`: `LocalPlayer`, `SpawnNpc`, `Despawn`, `LastError`, `LastReadError` (the game pack's service `game.actors`, [`sc_actors.h`](../include/sc_actors.h); [game services](game-services.md)); not in `scosdk.hpp` |
 | [`scosdk/scosdk.hpp`](../include/scosdk/scosdk.hpp) | All of the above |
 
 Put the SDK's `include/` folder on the include path; the headers find `sco_api.h` there.

@@ -13,6 +13,7 @@
 #include "lua.h"
 #include "lauxlib.h"
 #include "lualib.h"
+#include "sc_actors.h"
 #include "sco_datacore.h"
 #include "sco_storage.h"
 #include "sco_ui.h"
@@ -1224,6 +1225,35 @@ static void StoreTypes(lua_State* L) {
 
 /* ---- sco.ui hotkeys (tabs and overlays need draw callbacks from Lua: G018) ------------------ */
 
+/* ---- sco.game.actors (the game pack's game.actors, read-only: no function that takes self) ----- */
+
+static const sc_actors_v1* ActorsTable(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service) || !s->api->query_service) return NULL;
+    if (s->api->query_service(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, &t) != SCO_OK) return NULL;
+    return (const sc_actors_v1*)t;
+}
+
+/* local_player(): actor_id, entity_id (the game's 64-bit ids as Lua integers), or nil, err and
+ * the host's message. */
+static int L_actors_local_player(lua_State* L) {
+    const sc_actors_v1* a = ActorsTable(Of(L));
+    uint64_t actor = 0, entity = 0;
+    char msg[256];
+    uint32_t size = sizeof(msg);
+    const sco_result r = a ? a->local_player(&actor, &entity) : SCO_UNAVAILABLE;
+    CheckBudget(L);
+    if (r == SCO_OK) {
+        lua_pushinteger(L, (lua_Integer)(int64_t)actor);
+        lua_pushinteger(L, (lua_Integer)(int64_t)entity);
+        return 2;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(r));
+    if (a && a->last_error(NULL, msg, &size) == SCO_OK && msg[0]) { lua_pushstring(L, msg); return 3; }
+    return 2;
+}
+
 static const sco_ui_v1* UiTable(const Script* s) {
     const void* t = NULL;
     if (s->api->size <= offsetof(sco_api, query_service)) return NULL;
@@ -1395,6 +1425,13 @@ static int SetupBody(lua_State* L) {
         static const luaL_Reg dcfns[] = { { "begin", L_dc_begin }, { "state", L_dc_state }, { NULL, NULL } };
         luaL_newlib(L, dcfns);
         lua_setfield(L, -2, "datacore");
+    }
+    if (ActorsTable(s)) {                             /* sco.game.actors: only when the game pack publishes it */
+        static const luaL_Reg gafns[] = { { "local_player", L_actors_local_player }, { NULL, NULL } };
+        lua_newtable(L);
+        luaL_newlib(L, gafns);
+        lua_setfield(L, -2, "actors");
+        lua_setfield(L, -2, "game");
     }
     lua_setfield(L, g, "sco");
 

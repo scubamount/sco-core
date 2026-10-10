@@ -7,6 +7,7 @@
 // PoseToZone in services.h). The spawn.ship command, the menu and the spawner's tick stay in
 // the product.
 #include "spawn.h"
+#include "actors.h"
 #include "sco/game/actors.h"
 #include "sco/game/reads.h"
 #include "sco/game/services.h"
@@ -252,8 +253,12 @@ bool MayMove(const void* owner, uint64_t id) {
 }
 
 // A plugin unloaded or crashed (sco::AddReleaseHook): its spawns are nobody's now, so a later
-// plugin given the same handle can't move them.
-void OnRelease(const void* owner) { ForgetOwner(owner); }
+// plugin given the same handle can't move them. The NPCs it spawned through game.actors leave
+// the world (decision 6): one hook for both services.
+void OnRelease(const void* owner) {
+    ForgetOwner(owner);
+    ReleaseActorsOwner(owner);
+}
 
 // ---- spawn.entities (sc_spawn.h) ---------------------------------------------------------------
 
@@ -360,6 +365,14 @@ void StopSpawn() {
     g_sp = {};
     g_started = false;
 }
+
+const char* SpawnEntityInZone(const char* entityClass, uint64_t zoneId, const double pos[3], uint64_t& id) {
+    id = 0;
+    if (!Ready()) return "the spawner isn't available on this game build";
+    return SpawnInZone(entityClass, zoneId, pos, id);   // guards the game calls itself
+}
+
+bool SpawnReleaseHooked() { return g_releaseHook; }
 
 void RegisterPlayerVehicle(uint64_t entityId) {
     if (entityId && std::find(g_playerVehicles.begin(), g_playerVehicles.end(), entityId) == g_playerVehicles.end())
