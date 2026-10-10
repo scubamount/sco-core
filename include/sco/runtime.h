@@ -85,6 +85,9 @@ constexpr size_t kMaxServiceNameLen = 63;
 Result ProvideService(const void* owner, const char* prefix, const char* name, uint32_t version,
                       const void* table);
 
+// True when a service by that name is published, whatever its version. Hands nothing out.
+bool ServiceExists(const char* name);
+
 // Finds a published service. Ok: *out = its table. NotFound: no service by that name.
 // Unavailable: its major version differs from minVersion's, or it is older than minVersion.
 // BadArg: null name or out. TooMany: out of memory (nothing handed out). *out is null unless Ok.

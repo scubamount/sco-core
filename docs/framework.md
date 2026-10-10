@@ -8,7 +8,7 @@
 | [2. The host kit in sco-core](#phase-2-the-host-kit-in-sco-core) | Done | sco-core PR #8, merged as `94ba952` |
 | [3. sc-offline runs on the host kit](#phase-3-sc-offline-runs-on-the-host-kit) | Done, played in game 2026-10-09 | sc-offline PR #56, merged as `78756af` |
 | [4. Features become built-in plugins](#phase-4-sc-offlines-features-become-built-in-plugins) | In review: teleport and spawn merged; the other features, storage, the menu shell and the quantum drive on `sco::game::pak` in sc-offline PRs #63 to #66 | sc-offline PRs #57, #60 (merged), #63 to #66 (open) |
-| [5. Services and storage](#phase-5-services-and-storage) | Mostly landed: `sco_api` 1.1 services and raw handlers, host-owned services, `sco.storage` (C, C++, C#, Lua). Open: settings, `uses =` load order | sco-core PRs #14, #15, #24, #32 |
+| [5. Services and storage](#phase-5-services-and-storage) | Mostly landed: `sco_api` 1.1 services and raw handlers, host-owned services, `sco.storage` (C, C++, C#, Lua). Open: settings. Load order by `requires` landed (names a capability, a service or a plugin id) | sco-core PRs #14, #15, #24, #32 |
 | [6. The framework grows](#phase-6-the-framework-grows) | Partly landed: `sco.ui` (panels, hotkeys), game-file overrides and DataCore patches (`sco::vfs`, `sco::datacore`, `sco::game::pak`, data packs, `sco.datacore`), the C# layer. Open: lists, declarative widgets, more events, dependencies, developer reload, mod manager | sco-core PRs #21 to #31, #33, #34 |
 
 ## Goal
@@ -220,7 +220,7 @@ A `[settings]` section in `plugin.ini` declares typed keys with defaults (`fly_s
 
 ### Services between plugins
 
-`provide_service(self, name, version, table)` and `get_service(self, name, min_version)`, with `uses = <service> >= <version>` in `plugin.ini` for load order (providers load first and unload last) and a refusal reason when a provider is missing. Service tables start with `uint32_t size` like every ABI struct. The design review settles crash attribution: today a call from one plugin into another's table runs under the caller's guard, so a fault in the provider would disable the caller; the host can interpose a trampoline per service function, as it does for commands. A storage backend provided by a plugin builds on this, once the built-in backends have settled the interface.
+`provide_service(self, name, version, table)` and `get_service(self, name, min_version)`, with `requires = <plugin id>.<name>` in `plugin.ini` for load order (providers load first and unload last; no separate `uses` key was needed, since a service name starts with its provider's id) and a refusal reason when a provider is missing or in a cycle ([plugins](plugins.md#load-order-and-requires)). A version range is not part of it: the caller's `get_service` still checks the version. Service tables start with `uint32_t size` like every ABI struct. The design review settles crash attribution: today a call from one plugin into another's table runs under the caller's guard, so a fault in the provider would disable the caller; the host can interpose a trampoline per service function, as it does for commands. A storage backend provided by a plugin builds on this, once the built-in backends have settled the interface.
 
 ## Phase 6: the framework grows
 

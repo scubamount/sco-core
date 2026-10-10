@@ -79,6 +79,14 @@ Result QueryService(const char* name, uint32_t minVersion, const void** out) {
     return Result::NotFound;
 }
 
+bool ServiceExists(const char* name) {
+    if (!name) return false;
+    std::lock_guard<std::mutex> hold(g_lock);
+    for (const Service& s : g_services)
+        if (s.name == name) return true;
+    return false;
+}
+
 bool ServiceTableHandedOut(const void* owner) {
     std::lock_guard<std::mutex> hold(g_lock);
     return std::find(g_handedOut.begin(), g_handedOut.end(), owner) != g_handedOut.end();
