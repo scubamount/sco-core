@@ -2,6 +2,7 @@
 //   tools/test.sh
 #ifndef SCO_KERNEL_ONLY   // the Star Citizen rows (game pack, SCO_GAME_SC)
 #include "sco/game/asop.h"
+#include "sco/game/features.h"
 #include "sco/game/pak.h"
 #include "sco/game/signatures.h"
 #include "sco/game/system.h"
@@ -411,6 +412,34 @@ static void TestAsopRows() {
     }
     CHECK(feature == 62);
 }
+
+// sc-offline's own features (sco/game/features.h): every capability row is registered, and every
+// row of the table is in a capability, with the site counts the header promises.
+static void TestFeatureRows() {
+    CHECK(sco::game::RegisterGameSignatures());
+    size_t n = 0;
+    const sco::game::features::Capability* caps = sco::game::features::Capabilities(n);
+    CHECK(caps && n == 5);
+    for (size_t c = 0; c < n; ++c)
+        for (size_t j = 0; j < caps[c].count; ++j) CHECK(sco::SigLookup(caps[c].rows[j]) != nullptr);
+    size_t rows = 0, reputation = 0, orLoop = 0;
+    for (size_t i = 0; i < sco::SignatureCount(); ++i) {
+        const char* id = sco::SignatureDef(i)->id;
+        bool ours = false;
+        for (const char* p : { "spawn.", "npc.", "quantum.", "contracts.", "offline." }) ours |= strncmp(id, p, strlen(p)) == 0;
+        if (!ours) continue;
+        ++rows;
+        reputation += strncmp(id, "contracts.reputation_check.", 27) == 0;
+        orLoop += strncmp(id, "offline.or_loop_bound.", 22) == 0;
+        bool listed = false;
+        for (size_t c = 0; c < n && !listed; ++c)
+            for (size_t j = 0; j < caps[c].count && !listed; ++j) listed = strcmp(caps[c].rows[j], id) == 0;
+        CHECK(listed);
+    }
+    CHECK(rows == 18);
+    CHECK(reputation == static_cast<size_t>(sco::game::features::kReputationChecks));
+    CHECK(orLoop == static_cast<size_t>(sco::game::features::kOrLoopSites));
+}
 #endif   // SCO_KERNEL_ONLY
 
 static void TestStatus() {
@@ -434,6 +463,7 @@ int main() {
     TestSystemQuit();
     TestPakRows();
     TestAsopRows();
+    TestFeatureRows();
 #endif
     std::printf("sco-core tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
