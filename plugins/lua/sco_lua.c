@@ -583,6 +583,7 @@ static void DoneCb(sco_result r, const char* reply, void* ctx) {
 
 static int L_invoke(lua_State* L) {
     Script* s = Of(L);
+    if (!s->alive) return PushResult(L, SCO_UNAVAILABLE);   /* disabled, an outer frame still running */
     const char* name = luaL_checkstring(L, 1);
     const int nargs = lua_gettop(L) - 1;
     const sco_command* c = FindCommand(s->api, name);

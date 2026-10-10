@@ -455,38 +455,41 @@ static void TestLimits() {
 }
 
 // Memory, every script together: SCO_LUA_TOTAL_MEMORY_LIMIT (256 MiB) caps the sum, so scripts each
-// under their own 64 MiB can't take the game's memory between them. Each pool<n> keeps 30 MiB (its
-// string.rep may need twice that for a moment), so between 5 and 8 of the 10 fit, then every later
-// one fails with "not enough memory" while the ones holding memory carry on.
+// under their own 64 MiB can't take the game's memory between them. Each pool<n>.hold keeps one more
+// 8 MiB string (about 131k steps, well inside one call's budget; a single big string.rep would run
+// out of steps first), and catches a failed allocation with pcall so the script stays alive. 10
+// scripts x 4 calls ask for 320 MiB: between 24 and 32 calls fit (192 to 256 MiB, less while a copy
+// is in flight), and once one is refused every later one is too.
 static void TestTotalMemory() {
     std::vector<Loaded> pools;
     pools.reserve(10);
     for (int i = 1; i <= 10; ++i) {
         const std::string id = "pool" + std::to_string(i);
-        Write(id, "local kept\nsco.register_command{ name = \"" + id + ".hold\", title = \"Hold\",\n"
-                  "  fn = function() kept = string.rep(\"x\", 30 * 1024 * 1024) return \"held\" end }\n");
+        Write(id, "local kept = {}\nsco.register_command{ name = \"" + id + ".hold\", title = \"Hold\",\n"
+                  "  fn = function()\n"
+                  "    local ok = pcall(function() kept[#kept + 1] = string.rep(\"x\", 8 * 1024 * 1024) end)\n"
+                  "    return ok and \"held\" or \"refused\" end }\n");
         pools.push_back(Load(id));
         CHECK(pools.back().p && pools.back().p->state == State::Loaded);
     }
-    int held = 0, refused = 0;
-    for (int i = 1; i <= 10; ++i) {
-        const std::string cmd = "pool" + std::to_string(i) + ".hold";
-        const Reply r = Invoke(g_caller, cmd.c_str());
-        if (r.text == "held" && !refused) ++held;
-        else if (r.r == SCO_TOO_MANY && r.text.find("not enough memory") != std::string::npos) ++refused;
-        else {
-            const bool heldOrRefusedForMemory = false;
-            CHECK(heldOrRefusedForMemory);
-            std::printf("  %s -> %s\n", cmd.c_str(), r.text.c_str());
+    int held = 0, refused = 0, other = 0;
+    bool heldAfterRefused = false;
+    for (int i = 1; i <= 10; ++i)
+        for (int k = 0; k < 4; ++k) {
+            const std::string cmd = "pool" + std::to_string(i) + ".hold";
+            const Reply r = Invoke(g_caller, cmd.c_str());
+            if (r.text == "held") { ++held; if (refused) heldAfterRefused = true; }
+            else if (r.text == "refused") ++refused;
+            else { ++other; std::printf("  %s -> %s\n", cmd.c_str(), r.text.c_str()); }
         }
-    }
-    CHECK(held >= 5 && held <= 8 && held + refused == 10);
-    if (!(held >= 5 && held <= 8)) std::printf("  pools held: %d, refused: %d\n", held, refused);
-    CHECK(sco_lua_alive(pools[0].p->self) && !sco_lua_alive(pools[9].p->self));
+    CHECK(other == 0 && held + refused == 40 && !heldAfterRefused);
+    CHECK(held >= 24 && held <= 32);
+    if (!(held >= 24 && held <= 32)) std::printf("  pools: %d held, %d refused\n", held, refused);
+    for (const auto& l : pools) CHECK(l.p && sco_lua_alive(l.p->self));
     for (auto& l : pools) Unload(l);
     // Unloading gives the memory back.
     Write("pool11", "local kept\nsco.register_command{ name = \"pool11.hold\", title = \"Hold\",\n"
-                    "  fn = function() kept = string.rep(\"x\", 30 * 1024 * 1024) return \"held\" end }\n");
+                    "  fn = function() kept = string.rep(\"x\", 8 * 1024 * 1024) return \"held\" end }\n");
     Loaded l = Load("pool11");
     CHECK(Invoke(g_caller, "pool11.hold").text == "held");
     Unload(l);
