@@ -54,6 +54,8 @@ extern const size_t k<Feature>SignatureCount = sizeof(k<Feature>Signatures) / si
 }  // namespace sco::game
 ```
 
+For many rows of the same shape (a unique pattern plus byte checks at offsets, or a RIP target inside another row), use the private helpers in [`src/game/sig_rows.h`](../src/game/sig_rows.h): declare a `constexpr rows::FnSpec` / `rows::RipSpec` and use `rows::ResolveFn<spec>` / `rows::ResolveRip<spec>` as the row's resolver. Each check carries its own static reason (`layout changed at +0x616`), and `FnSpec::extra` takes one more check (a jmp target, the row's position inside another row). The ASOP, hangar and ATC tables ([rows and capabilities](game/asop.md)) are written this way.
+
 A pattern row can also take a RIP target directly: `{ "<feature>.global", "48 8B 05 ?? ?? ?? ?? 48 85 C0", 3, 7, nullptr, {} }` returns the address `mov rax, [rip+X]` reads, not the instruction.
 
 ### 2. Add a typed accessor
