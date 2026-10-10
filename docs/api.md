@@ -208,6 +208,24 @@ The host side of [`sco.ipc`](ipc.md) (library `sco_ipc`; the platform half is `s
 | `void ipc::Tick()` | Writes the owner heartbeat (`GetTickCount64`) of every open channel |
 | `bool ipc::Started()`, `const sco_ipc_v1* ipc::Table()`, `std::string ipc::MappingName(id, channel)` | State, the table `query_service` hands out, and a channel's mapping name (empty unless started and both parts valid) |
 
+## `sco/net/session.h`: the `sco.net` service and sessions
+
+The host side of [`sco.net`](net.md) (library `sco_net_service` over `sco_net`; the platform half is `src/net/udp_win.cpp`, or `udp_posix.cpp` for the host tests). `sco::app::Start` starts it, `sco::app::Tick` calls `net::Tick` and `sco::app::Stop` stops it after `UnloadAll`; other hosts call them themselves. Session control is the product's only: none of it is in the plugin table.
+
+| Function | Does |
+|---|---|
+| `Result net::Start(const ServiceOptions& o = {})` | Publishes `sco.net` 1.0, sets the capability `sco.net` and installs a release hook (a plugin's channels and queued messages go with it). No socket, no thread. `ServiceOptions`: the per-plugin quotas (`quotaMsgs`, `quotaBytes`), `pollMs`, `thread` (false: tests step the network side with `PumpNetwork`), `clock`, `pbkdf2Iters` (tests). `BadArg`: bad options, already started |
+| `void net::Stop()` | Leaves any session, withdraws the service, sets the capability not ready, drops every channel; the table then answers `SCO_UNAVAILABLE` |
+| `void net::Tick()` | Game thread: delivers queued messages (as guarded callouts of the channel's plugin) and the `net.state` / `net.peer` events |
+| `Result net::Host(const HostOptions&)` | Binds UDP (`port`, default 64091; `loopbackOnly`) and starts the network thread, which hosts the session. `scope` is the LAN rule plus an allow-list of CIDRs; `admit` the product's admission check. `BadArg`: bad options or a session already running. `Failed`: the port couldn't be bound |
+| `Result net::Join(const JoinOptions&)` | Joins a numeric IPv4 `address`:`port`; the outcome comes as `net.state`. `BadArg` also for an address outside the scope (refused before any socket opens) |
+| `void net::Leave(const char* reason)` | Ends the session (a BYE to each link) and waits for the network thread |
+| `State net::GetState()`, `std::string net::LastReason()`, `uint16_t net::BoundPort()`, `ServiceStats net::GetServiceStats()` | The session as the network thread last saw it, why the last one ended, its UDP port, and counters (the session's, out-of-scope drops, quota refusals, dropped sends and deliveries) |
+| `Result net::SetPeerEntity(PeerId, uint64_t)` | The ghost the product spawned for a peer: shown in `get_peers` and as a `net.peer` ENTITY event |
+| `bool net::WaitForDelivery(uint32_t ms)` | Blocks until something waits for `Tick`, at most `ms` (tools and tests; never a fixed sleep) |
+
+`sco/net/scope.h` has the LAN rule (`IsLan`, `ParseCidr`, `InScope`, `ScopedTransport`); `sco/net/udp.h` the UDP `Transport`.
+
 ## `sco/ui.h`: the `sco.ui` service
 
 The host side of [`sco.ui`](ui.md) (library `sco_ui`): the registry of plugin tabs, overlays and badges and the hotkey table. No renderer: the product draws what is registered. `sco::app::Start` calls `ui::Start` and reserves `Platform::reservedChords`; other hosts call them themselves.

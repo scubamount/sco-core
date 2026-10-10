@@ -287,6 +287,7 @@ Some services are published by the host itself rather than by a plugin. They liv
 | `sco.storage` | 1.0 | [`sco_storage.h`](../include/sco_storage.h) | Per-plugin persistent storage: key-value and SQL over SQLite, in the plugin's own database. [Storage](storage.md) |
 | `sco.datacore` | 1.0 | [`sco_datacore.h`](../include/sco_datacore.h) | DataCore overrides from code: the operations of a data pack's `.toml` files, queued call by call; after the game's DataCore load they are saved and apply from the next launch. Published only when the product enables it (`sco::app::Platform::dataCore`; sc-offline will in design plan PR 8). [The sco.datacore service](datacore.md#the-scodatacore-service) |
 | `sco.ipc` | 1.0 | [`sco_ipc.h`](../include/sco_ipc.h) | Local shared-memory channels to another program on the same PC (a bridge): `Local\SCO_<plugin id>.<name>`, the current user only, rings and seqlock blocks laid out with the MIT wire [`sc_ipc.h`](../include/sc_ipc.h), which the other program includes alone. [IPC](ipc.md) |
+| `sco.net` | 1.0 | [`sco_net.h`](../include/sco_net.h) | Typed message channels between the players of a private session the product opened (`<plugin id>.<name>`, unreliable or reliable, per-plugin send quotas); callbacks on the game thread, `net.state` / `net.peer` events. Published with the capability `sco.net` (`requires = sco.net`); plugins can't open or join sessions. [Multiplayer messages](net.md) |
 | `sco.ui` | 1.0 | [`sco_ui.h`](../include/sco_ui.h) | Tabs, overlays and badges in the product's menu, drawn by the product through the plugin's draw function, and hotkeys: key chords bound to commands. [UI](ui.md) |
 
 The host side is `sco::host::ProvideHostService` ([API: sco/host.h](api.md#scohosth-the-hosts-sco_api-table)).
@@ -341,7 +342,7 @@ To also run on an older sc-offline, ask for `0x00010000` and check `sp->size > o
 | `set_entity_transform(self, id, zone_id, pos[3], rot[4])` | 1.2 | Moves and turns an entity to `pos` / `rot` (unit quaternion, x y z w) in zone `zone_id`'s frame, 0 = the world; the entity stays in its zone. 1 on success, 0 on failure |
 | `spawn_as(self, class, offset[3], &id)` | 1.2 | `spawn_near_player`, recorded as the calling plugin's (`self` as `sco_plugin_load` received it) |
 
-`set_entity_transform` moves only an entity spawned through `spawn_as` with the same `self` while that plugin is loaded (unloading forgets them; `spawn_near_player` and the `spawn.ship` command count for nobody), or the player's own vehicle once sc-offline has registered it as retrieved or delivered by ATC (no build does yet). Anything else answers 0.
+`set_entity_transform` moves only an entity spawned through `spawn_as` with the same `self` while that plugin is loaded (unloading forgets them; `spawn_near_player` and the `spawn.ship` command count for nobody), or the player's own vehicle once sc-offline has registered it as retrieved or delivered by ATC (no build does yet). Anything else answers 0. A spawn's id is final at once, but the entity streams in seconds later (up to a minute for a big ship), and until then `set_entity_transform` answers 0: check `entity_alive(id)` first, and try again on a later tick. sc-offline logs why a call answered 0 to `mod.log`, once per id and reason.
 
 ## Raw handlers (1.1)
 
