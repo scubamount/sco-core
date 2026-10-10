@@ -4,13 +4,18 @@
  *   sco-plugin-check <plugin folder> [--cap NAME]... [--invoke NAME [ARG]...]
  *
  * For every kind it reads plugin.ini with the same rules as the host (id, name, version, api,
- * kind, entry, requires) and checks the folder name matches the id.
+ * kind, entry, requires) and checks the folder name matches the id. A requires name is a
+ * capability, a service ("<plugin id>.<name>", "sco.storage", "game.vehicles") or a plugin id: the
+ * host loads the plugin after the plugins those name and refuses cycles and missing providers; this
+ * tool only checks the syntax and that the plugin doesn't require itself.
  *   data:   lists the files the host would index (missions/, rules/, scripts/, lists/).
  *   lua:    checks the entry script exists (syntax is checked separately with luac -p).
  *   native: loads the plugin, runs sco_plugin_query and sco_plugin_load against a stand-in
  *           sco_api, fires game.ready and a few ticks, runs every command that takes no
  *           arguments (and the one given with --invoke), then sco_plugin_unload.
- * --cap NAME makes has(NAME) answer 1 (default: every capability is missing).
+ * --cap NAME makes has(NAME) answer 1 (default: every capability is missing). Give a --cap for a
+ * capability or a host or game service the plugin requires; a plugin id or another plugin's
+ * service is only found by the real host, which sees the other plugins.
  *
  * Exit 0 = every check passed. 1 = a check failed (the reason is printed). 2 = bad usage.
  *
@@ -260,6 +265,14 @@ static int read_manifest(const char* path, manifest* m) {
     }
     if (!strcmp(m->kind, "data") && seen[K_ENTRY]) { fail("plugin.ini: a data pack has no entry"); return 0; }
     if (strcmp(m->kind, "data") && !seen[K_ENTRY]) { fail("plugin.ini: missing key 'entry'"); return 0; }
+    /* A plugin that requires itself or one of its own services is a requires cycle (discover.cpp). */
+    for (i = 0; i < m->nrequires; ++i) {
+        const size_t n = strlen(m->id);
+        if (!strncmp(m->requires_[i], m->id, n) && (m->requires_[i][n] == 0 || m->requires_[i][n] == '.')) {
+            fail("plugin.ini: requires '%s' names the plugin itself (a requires cycle)", m->requires_[i]);
+            return 0;
+        }
+    }
     /* What discovery checks next (src/plugins/discover.cpp). */
     if (m->api_major != SCO_API_MAJOR || m->api_minor > SCO_API_MINOR) {
         fail("plugin.ini: api %s, but this SDK is %d.%d", m->api, SCO_API_MAJOR, SCO_API_MINOR);
@@ -781,7 +794,7 @@ int main(int argc, char** argv) {
         printf("  ini     id=%s kind=%s api=%s%s%s\n", m.id, m.kind, m.api, m.entry[0] ? " entry=" : "", m.entry);
         if (strcmp(folder, m.id)) fail("id '%s' does not match folder '%s'", m.id, folder);
         for (i = 0; i < m.nrequires; ++i)
-            printf("  needs   %s%s\n", m.requires_[i], has(m.requires_[i]) ? "" : " (missing: the host won't load it)");
+            printf("  needs   %s%s\n", m.requires_[i], has(m.requires_[i]) ? "" : " (no --cap: the host checks it, loading this plugin after the plugin that provides it)");
         if (m.entry[0]) {
             snprintf(path, sizeof path, "%s/%s", dir, m.entry);
             if (!file_exists(path)) fail("entry '%s' not found", m.entry);

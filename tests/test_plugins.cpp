@@ -168,7 +168,7 @@ static void TestDiscover() {
     CHECK(reason("mismatch") == "id 'other' does not match folder 'mismatch'");
     CHECK(reason("broken") == "plugin.ini: line 3: expected key = value");
     CHECK(!Find(list, "broken")->manifestOk);
-    CHECK(reason("needcap") == "missing capability 'spawn.ship'");
+    CHECK(reason("needcap") == "requires service spawn.ship: no plugin provides it");   // dotted: a capability or a service
     CHECK(reason("noentry") == "entry 'gone.dll' not found");
     for (const char* f : { "badapi", "newminor", "mismatch", "broken", "needcap", "noentry" }) CHECK(state(f) == State::Refused);
 
@@ -258,6 +258,164 @@ static void TestDiscoverLimits() {
           Find(list, "sco")->reason == "the folder name 'sco' is reserved for the host");
     CHECK(Find(list, "game") && Find(list, "game")->reason == "the folder name 'game' is reserved for the host");
     CHECK(Find(P::Discover(root, P::Options{}), "sco")->state == State::Off);
+    fs::remove_all(root);
+}
+
+// ---- requires: services, plugin ids, load order -----------------------------------------------
+
+// A data pack (Ready without an entry file) with the given extra plugin.ini lines.
+static void MakePack(const fs::path& root, const char* id, const std::string& extra = "") {
+    WriteFile(root / id / "plugin.ini",
+              std::string("id=") + id + "\nname=N\nversion=1\napi=1.0\nkind=data\n" + extra);
+}
+
+static std::vector<std::string> Folders(const std::vector<P::Plugin>& list, const std::vector<size_t>& order) {
+    std::vector<std::string> out;
+    for (size_t i : order) out.push_back(list[i].folder);
+    return out;
+}
+
+static int HasHostServices(const char* name) {
+    return std::strcmp(name, "sco.storage") == 0 || std::strcmp(name, "game.vehicles") == 0 ||
+           std::strcmp(name, "teleport.spatial") == 0;
+}
+
+static void TestRequiresOrder() {
+    const fs::path root = g_out / "requires";
+    fs::remove_all(root);
+    P::Options on;
+    on.enabled = true;
+    using Names = std::vector<std::string>;
+
+    // A requires B's service and sorts before it: B loads first. A plugin id works the same; the
+    // plugins nothing links keep folder order, and spaces and a repeated provider are fine.
+    MakePack(root, "a", "requires =  b.svc ,  c ,b\n");
+    MakePack(root, "b");
+    MakePack(root, "c", "requires = d.x\n");
+    MakePack(root, "d");
+    MakePack(root, "e");
+    auto list = P::Discover(root, on);
+    CHECK(list.size() == 5);
+    for (const auto& p : list) CHECK(p.state == State::Ready);
+    CHECK(Find(list, "a")->after == (Names{ "b", "c" }));       // one entry per provider
+    CHECK(Find(list, "b")->after.empty() && Find(list, "e")->after.empty());
+    CHECK((Folders(list, P::LoadOrder(list)) == Names{ "b", "d", "c", "a", "e" }));
+    CHECK((Folders(list, { 0, 1, 2, 3, 4 }) == Names{ "a", "b", "c", "d", "e" }));   // the list itself stays in folder order
+
+    // No requires anywhere: LoadOrder is the list order.
+    fs::remove_all(root);
+    MakePack(root, "p1");
+    MakePack(root, "p2");
+    list = P::Discover(root, on);
+    CHECK((Folders(list, P::LoadOrder(list)) == Names{ "p1", "p2" }));
+
+    // A cycle: every member is refused with the path, and so is whatever waits on one. Nothing hangs.
+    fs::remove_all(root);
+    MakePack(root, "x", "requires = y.svc\n");
+    MakePack(root, "y", "requires = x.svc\n");
+    MakePack(root, "z", "requires = x.svc\n");
+    MakePack(root, "w");
+    list = P::Discover(root, on);
+    CHECK(Find(list, "x")->state == State::Refused && Find(list, "x")->reason == "requires cycle: x -> y -> x");
+    CHECK(Find(list, "y")->state == State::Refused && Find(list, "y")->reason == "requires cycle: x -> y -> x");
+    CHECK(Find(list, "z")->state == State::Refused &&
+          Find(list, "z")->reason == "requires x: plugin 'x' is refused (requires cycle: x -> y -> x)");
+    CHECK(Find(list, "w")->state == State::Ready);
+    CHECK(P::LoadOrder(list).size() == 4);
+    // Three in a ring, entered from a plugin outside it; a self-require is a cycle of one.
+    fs::remove_all(root);
+    MakePack(root, "r1", "requires = r2\n");
+    MakePack(root, "r2", "requires = r3.svc\n");
+    MakePack(root, "r3", "requires = r1.svc\n");
+    MakePack(root, "r0", "requires = r2\n");
+    MakePack(root, "self", "requires = self.svc\n");
+    list = P::Discover(root, on);
+    CHECK(Find(list, "r1")->reason == "requires cycle: r1 -> r2 -> r3 -> r1");
+    CHECK(Find(list, "r3")->reason == "requires cycle: r1 -> r2 -> r3 -> r1");
+    CHECK(Find(list, "r0")->state == State::Refused && Find(list, "r0")->reason.rfind("requires r2: plugin 'r2' is refused", 0) == 0);
+    CHECK(Find(list, "self")->reason == "requires cycle: self -> self");
+
+    // A missing provider: a dotted name no plugin, built-in, host or game service provides; an
+    // undotted one keeps the capability wording. Reserved ids never match a folder.
+    fs::remove_all(root);
+    MakePack(root, "m1", "requires = ghost.svc\n");
+    MakePack(root, "m2", "requires = ghost\n");
+    MakePack(root, "m3", "requires = sco.storage\n");
+    MakePack(root, "m4", "requires = game.vehicles\n");
+    MakePack(root, "m5", "requires = host.thing\n");
+    list = P::Discover(root, on);
+    CHECK(Find(list, "m1")->state == State::Refused && Find(list, "m1")->reason == "requires service ghost.svc: no plugin provides it");
+    CHECK(Find(list, "m2")->reason == "missing capability 'ghost'");
+    CHECK(Find(list, "m3")->reason == "requires service sco.storage: no plugin provides it");   // not published here
+    CHECK(Find(list, "m4")->state == State::Refused);
+    CHECK(Find(list, "m5")->reason == "requires service host.thing: no plugin provides it");
+    // Published by the host and the game pack (opts.has answers for them): provided, no ordering.
+    on.has = HasHostServices;
+    list = P::Discover(root, on);
+    CHECK(Find(list, "m3")->state == State::Ready && Find(list, "m3")->after.empty());
+    CHECK(Find(list, "m4")->state == State::Ready && Find(list, "m4")->after.empty());
+    CHECK(Find(list, "m1")->state == State::Refused && Find(list, "m5")->state == State::Refused);
+    MakePack(root, "m6", "requires = teleport.spatial, sco.storage\n");   // a game compat name
+    CHECK(Find(P::Discover(root, on), "m6")->state == State::Ready);
+    on.has = nullptr;
+
+    // A built-in provides by its id or "<id>.<name>"; it loads first, so it is only ordered for.
+    fs::remove_all(root);
+    MakePack(root, "u1", "requires = core1.count\n");
+    MakePack(root, "u2", "requires = core1, core2\n");
+    const P::Builtin builtins[] = { { "core1", nullptr, nullptr, nullptr } };
+    P::Options withBuiltin = on;
+    withBuiltin.builtins = builtins;
+    withBuiltin.nBuiltins = 1;
+    list = P::Discover(root, withBuiltin);
+    CHECK(Find(list, "u1")->state == State::Ready && Find(list, "u1")->after == (Names{ "core1" }));
+    CHECK(Find(list, "u2")->reason == "missing capability 'core2'");
+
+    // A provider that is refused, disabled or stuck on its own requirement takes its dependents
+    // with it, down the chain; a provider that is Ready keeps them.
+    fs::remove_all(root);
+    MakePack(root, "d1", "requires = d2\n");
+    MakePack(root, "d2", "requires = d3\n");
+    WriteFile(root / "d3" / "plugin.ini", "id=d3\nname=N\nversion=1\napi=9.0\nkind=data\n");
+    MakePack(root, "e1", "requires = e2\n");
+    MakePack(root, "e2");
+    WriteFile(root / "e2" / "disabled", "");
+    MakePack(root, "f1", "requires = f2.svc\n");
+    WriteFile(root / "f2" / "plugin.ini", "this is not a manifest\n");
+    MakePack(root, "g1", "requires = g2\n");
+    MakePack(root, "g2");
+    list = P::Discover(root, on);
+    CHECK(Find(list, "d3")->reason == "built for api 9.0");
+    CHECK(Find(list, "d2")->reason == "requires d3: plugin 'd3' is refused (built for api 9.0)");
+    CHECK(Find(list, "d1")->reason == "requires d2: plugin 'd2' is refused (requires d3: plugin 'd3' is refused (built for api 9.0))");
+    CHECK(Find(list, "e1")->reason == "requires e2: plugin 'e2' is disabled (disabled file)");
+    CHECK(Find(list, "f1")->state == State::Refused && Find(list, "f1")->reason.rfind("requires f2: plugin 'f2' is refused", 0) == 0);
+    CHECK(Find(list, "g1")->state == State::Ready);
+
+    // UnmetRequires, at load time: the provider must be Loaded (a data pack: Ready or Loaded).
+    P::Plugin& g1 = list[static_cast<size_t>(Find(list, "g1") - list.data())];
+    P::Plugin& g2 = list[static_cast<size_t>(Find(list, "g2") - list.data())];
+    CHECK(P::UnmetRequires(g1, list).empty());                 // g2 is a data pack, indexed after the loads
+    g2.manifest.kind = P::Kind::Lua;                           // a script that hasn't loaded yet
+    CHECK(P::UnmetRequires(g1, list) == "requires g2: plugin 'g2' is ready");
+    g2.state = State::Loaded;
+    CHECK(P::UnmetRequires(g1, list).empty());
+    g2.state = State::Crashed;
+    g2.reason = "crashed in sco_plugin_load (0xC0000005)";
+    CHECK(P::UnmetRequires(g1, list) == "requires g2: plugin 'g2' is crashed (crashed in sco_plugin_load (0xC0000005))");
+    g1.after.push_back("nobody");
+    g2.state = State::Loaded;
+    CHECK(P::UnmetRequires(g1, list) == "requires nobody: plugin 'nobody' is not in the plugin list");
+    CHECK(P::UnmetRequires(*Find(list, "g2"), list).empty());  // no requirements
+
+    // A cycle Discover did not refuse (a hand-built list) still gets an order, and ends.
+    std::vector<P::Plugin> loop(2);
+    for (size_t i = 0; i < 2; ++i) {
+        loop[i].folder = loop[i].manifest.id = i ? "q2" : "q1";
+        loop[i].state = State::Ready;
+        loop[i].after = { i ? "q1" : "q2" };
+    }
+    CHECK((Folders(loop, P::LoadOrder(loop)) == Names{ "q1", "q2" }));
     fs::remove_all(root);
 }
 
@@ -814,6 +972,7 @@ int main(int argc, char** argv) {
     TestManifest();
     TestDiscover();
     TestDiscoverLimits();
+    TestRequiresOrder();
     TestContentIndex();
     TestNative();
     TestServices();

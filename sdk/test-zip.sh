@@ -108,6 +108,8 @@ refused() {    # refused <what> [key=value]...: the checker must fail on that pl
 }
 refused "requires = a..b" "requires=a..b"
 refused "a capability listed twice" "requires=teleport, teleport"
+refused "a plugin requiring itself" "requires=teleport, bad"
+refused "a plugin requiring its own service" "requires=bad.svc"
 refused "'*' in entry" "entry=main*.lua"
 refused "a control character in entry" "entry=main$(printf '\001').lua"
 refused "an empty author" "author="
@@ -120,7 +122,12 @@ good=$(case_ini id=good "extra=homepage = a
 homepage = b
 notes = $(head -c 3000 /dev/zero | tr '\0' x)")
 "$CHECK" "$good" > "$WORK/case.txt" || { cat "$WORK/case.txt"; echo "sco-plugin-check refused unknown keys or a long line"; exit 1; }
-echo "sco-plugin-check: 10 bad plugin.ini refused, unknown keys and a 3000-byte line accepted"
+# requires names capabilities, services (<plugin id>.<name>, sco.storage, game.vehicles) and plugin ids.
+svc=$(case_ini id=svcuser "requires=otherplug.svc, otherplug, sco.storage ,  game.vehicles, teleport.spatial")
+"$CHECK" "$svc" > "$WORK/case.txt" || { cat "$WORK/case.txt"; echo "sco-plugin-check refused requires naming services and plugin ids"; exit 1; }
+grep -q 'needs   otherplug.svc' "$WORK/case.txt"
+grep -q 'needs   sco.storage' "$WORK/case.txt"
+echo "sco-plugin-check: 12 bad plugin.ini refused, requires naming services and plugin ids, unknown keys and a 3000-byte line accepted"
 
 if [ "${SCO_SDK_NO_LUA:-0}" = 1 ]; then
   echo "lua-check: skipped (SCO_SDK_NO_LUA=1)"

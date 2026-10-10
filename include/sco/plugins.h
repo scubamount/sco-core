@@ -11,7 +11,7 @@
 //   api = 1.0               ; sco_api major.minor it needs
 //   kind = native           ; native | lua | data
 //   entry = hello.dll       ; native: the DLL; lua: the main script; data: absent
-//   requires = teleport, spawn.ship   ; optional capabilities
+//   requires = teleport, spawn.ship   ; optional: capabilities, services, plugin ids (load order below)
 //
 // Flow on the game thread, after game.ready:
 //   auto list = sco::plugins::Discover(root, opts);       // parse + check every folder
@@ -102,6 +102,10 @@ struct Plugin {
     sco_plugin*   self = nullptr;                 // the owner handle the host passed to load
     NativeExports exports;
     uint32_t      loadOrder = 0;                  // 1-based among loaded natives, builtins and scripts; 0 = never
+    // Ids of the plugins this one must load after: the built-ins and discovered plugins its `requires`
+    // name, directly or through one of their services ("<id>.<name>"). Set by Discover (Ready
+    // plugins only); LoadOrder and UnmetRequires read it.
+    std::vector<std::string> after;
 };
 
 using CapabilityCheck = int (*)(const char* capability);
@@ -127,9 +131,26 @@ constexpr size_t kMaxPlugins = 128;               // folders beyond this are lis
 // "plugin.ini: unreadable",
 // "plugin.ini: <parse error>" (incl. "plugin.ini: too big"), "id 'x' does not match folder 'y'"
 // (so ids are unique), "the id belongs to a built-in plugin" (opts.builtins), "built for api M.m" (major differs or minor newer than the host),
-// "entry 'x' not found", "missing capability 'x'".
+// "entry 'x' not found", then the `requires` checks, once every folder is listed. Each name is,
+// in this order: the plugin itself (a cycle), a capability or a service the host or the game pack
+// published (opts.has: counted as provided), a built-in's id or "<id>.<name>" (provided: built-ins
+// load first), a discovered plugin's folder or "<folder>.<name>" (the plugin must load first; it is
+// added to Plugin::after), else missing. Reasons: "missing capability 'x'" (no dot),
+// "requires service x.y: no plugin provides it" (a dot), "requires cycle: a -> b -> a" (every
+// plugin on the cycle; a self-require is "a -> a"), "requires b: plugin 'b' is refused (<reason>)"
+// (the provider is refused, disabled or itself refused for one of these reasons). The reserved ids
+// (sco, host, menu, game) never match a folder. Folder order stays the list order.
 // Discover never runs plugin code and never opens the entry file.
 std::vector<Plugin> Discover(const fs::path& root, const Options& opts);
+
+// The order to load the plugins of `list` in, as indices into it: list order, except a Ready
+// plugin comes after every Ready plugin in its `after`. Ties keep list order. Never loops: a
+// cycle that Discover didn't refuse is broken by taking the rest in list order.
+std::vector<size_t> LoadOrder(const std::vector<Plugin>& list);
+
+// "" when every plugin in p.after is in `list` and Loaded (a data pack: Ready or Loaded); else why
+// not, "requires b: plugin 'b' is refused (<reason>)": call it just before loading p.
+std::string UnmetRequires(const Plugin& p, const std::vector<Plugin>& list);
 
 // ---- native loader --------------------------------------------------------------------------
 

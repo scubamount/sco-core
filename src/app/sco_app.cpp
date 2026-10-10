@@ -27,7 +27,10 @@ Platform                     g_platform;
 std::vector<plugins::Plugin> g_list;     // never resized while ContainCallouts points at it
 plugins::ContentIndex        g_index;
 
-int HasCap(const char* name) { return caps::Has(name) ? 1 : 0; }
+// What a plugin's `requires` may name that is already there at discovery: a capability, or a
+// service the host or the game pack published (sco.storage, game.vehicles). Plugin services are
+// not: no plugin has loaded yet, so those are ordered instead (plugins::Discover).
+int HasCap(const char* name) { return caps::Has(name) || ServiceExists(name) ? 1 : 0; }
 
 }  // namespace
 
@@ -110,8 +113,16 @@ bool Start(const Platform& platform) {
     for (auto& p : g_list)
         if (p.state == plugins::State::Ready && p.manifest.kind == plugins::Kind::Builtin)
             plugins::LoadBuiltin(p, api, host::NewPlugin(p.manifest.id.c_str()), opts);
-    for (auto& p : g_list) {
-        if (p.state != plugins::State::Ready) continue;
+    // Then the discovered plugins, after the plugins their `requires` name (ties: folder order).
+    for (const size_t i : plugins::LoadOrder(g_list)) {
+        plugins::Plugin& p = g_list[i];
+        if (p.state != plugins::State::Ready || p.manifest.kind == plugins::Kind::Builtin) continue;
+        if (const std::string why = plugins::UnmetRequires(p, g_list); !why.empty()) {
+            p.state = plugins::State::Refused;   // a provider that didn't load: refused, never started
+            p.reason = why;
+            Log("[plugin] refused %s: %s", p.manifest.id.c_str(), p.reason.c_str());
+            continue;
+        }
         if (p.manifest.kind == plugins::Kind::Native) {
             plugins::LoadNative(p, api, host::NewPlugin(p.manifest.id.c_str()), opts, pf.moduleOps);
         } else if (p.manifest.kind == plugins::Kind::Lua) {

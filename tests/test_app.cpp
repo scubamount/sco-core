@@ -457,12 +457,79 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     CHECK(!sco::caps::Has("sco.net") && !sco::net::Started());
     CHECK(api->query_service(SCO_NET_NAME, SCO_NET_VERSION_1_0, &table) == SCO_NOT_FOUND);
 
+    // requires names services and plugins, not only capabilities: a plugin loads after the plugins
+    // it requires, whatever the folder order (aaa_user sorts before m11, whose service it needs).
+    // Host services (sco.storage, sco.ui) count as provided; a cycle, a missing provider and a
+    // game service the host doesn't publish are refused with a reason, and nothing else is affected.
+    auto makeLua = [&](const char* id, const char* needs, const char* script = "-- nothing to do\n") {
+        fs::create_directories(root / id);
+        std::FILE* f = std::fopen((root / id / "plugin.ini").string().c_str(), "wb");
+        std::fprintf(f, "id = %s\nname = %s\nversion = 1.0.0\napi = 1.0\nkind = lua\nentry = main.lua\n", id, id);
+        if (*needs) std::fprintf(f, "requires = %s\n", needs);
+        std::fclose(f);
+        f = std::fopen((root / id / "main.lua").string().c_str(), "wb");
+        std::fputs(script, f);
+        std::fclose(f);
+    };
+    makeLua("aaa_user", "m11.svc");
+    makeLua("hosted", "sco.storage, sco.ui");
+    makeLua("cyc_a", "cyc_b.svc");
+    makeLua("cyc_b", "cyc_a.svc");
+    makeLua("orphan", "nowhere.svc");
+    makeLua("needsgame", "game.vehicles");
+    makeLua("bad_lua", "", "this is not lua (\n");          // refused when its script runs
+    makeLua("a_needs_bad", "bad_lua");                      // sorts first; loads after bad_lua, which fails
+    g_log.clear();
+    CHECK(sco::app::Start(pf));
+    CHECK(StateOf("m11") == State::Loaded && StateOf("aaa_user") == State::Loaded);
+    CHECK(Find("m11")->loadOrder < Find("aaa_user")->loadOrder);
+    CHECK(StateOf("hosted") == State::Loaded);
+    CHECK(StateOf("cyc_a") == State::Refused && Find("cyc_a")->reason == "requires cycle: cyc_a -> cyc_b -> cyc_a");
+    CHECK(StateOf("cyc_b") == State::Refused && Find("cyc_b")->reason == "requires cycle: cyc_a -> cyc_b -> cyc_a");
+    CHECK(StateOf("orphan") == State::Refused && Find("orphan")->reason == "requires service nowhere.svc: no plugin provides it");
+    CHECK(Logged("[plugin] orphan 1.0.0 lua refused: requires service nowhere.svc: no plugin provides it"));
+    CHECK(StateOf("bad_lua") == State::Refused);
+    CHECK(StateOf("a_needs_bad") == State::Refused && !Find("a_needs_bad")->self);
+    CHECK(Find("a_needs_bad")->reason.rfind("requires bad_lua: plugin 'bad_lua' is refused (", 0) == 0);
+    CHECK(Logged("[plugin] refused a_needs_bad: requires bad_lua"));
+    CHECK(StateOf("needsgame") == State::Refused);          // gameServices is off here: nothing publishes game.vehicles
+    CHECK(Find("needsgame")->reason == "requires service game.vehicles: no plugin provides it");
+    CHECK(StateOf("greeter") == State::Loaded && StateOf("needsnet") == State::Loaded);
+    g_log.clear();
+    sco::app::Stop();
+    {
+        const auto gone = Unloaded();   // newest first: the plugin that needed m11 unloads before it
+        const auto at = [&](const char* id) { for (size_t i = 0; i < gone.size(); ++i) if (gone[i] == id) return static_cast<long>(i); return -1L; };
+        CHECK(at("aaa_user") >= 0 && at("m11") >= 0 && at("aaa_user") < at("m11"));
+    }
+
+    // A provider that is there but doesn't load takes its dependents with it: m11 is switched off
+    // by a disabled marker, so aaa_user is refused and never started.
+    {
+        std::FILE* f = std::fopen((root / "m11" / "disabled").string().c_str(), "wb");
+        std::fclose(f);
+    }
+    CHECK(sco::app::Start(pf));
+    CHECK(StateOf("m11") == State::Disabled && StateOf("aaa_user") == State::Refused);
+    CHECK(Find("aaa_user")->reason == "requires m11: plugin 'm11' is disabled (disabled file)" && !Find("aaa_user")->self);
+    CHECK(StateOf("hosted") == State::Loaded);
+    sco::app::Stop();
+    fs::remove(root / "m11" / "disabled", ec);
+    fs::remove_all(root / "aaa_user", ec);
+    fs::remove_all(root / "hosted", ec);
+    fs::remove_all(root / "cyc_a", ec);
+    fs::remove_all(root / "cyc_b", ec);
+    fs::remove_all(root / "orphan", ec);
+    fs::remove_all(root / "bad_lua", ec);
+    fs::remove_all(root / "a_needs_bad", ec);
+
 #ifdef SCO_GAME_SERVICES
     // gameServices: the game pack publishes teleport.spatial, spawn.entities and game.vehicles under "game" before
     // plugins load and withdraws them after. With no game image the teleport.* and spawn.* rows
     // aren't OK, so teleport.spatial answers 0 and spawn.entities says the spawner isn't available.
     pf.gameServices = true;
     CHECK(sco::app::Start(pf));
+    CHECK(StateOf("needsgame") == State::Loaded);   // requires game.vehicles, which the game pack published
     CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_OK && table);
     if (table) {
         struct Spatial { uint32_t size; int (*player_pose)(double*, double*, uint64_t*); };
