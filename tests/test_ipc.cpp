@@ -285,7 +285,9 @@ static void TestWireRing() {
     // Full and empty: 24-byte records until full, then all back in order.
     uint32_t pushed = 0;
     for (uint32_t i = 0; i < 100; ++i) {
-        const int rc = sc_ipc_ring_push(&pv, 1, &i, 16);
+        uint8_t rec16[16] = {};
+        std::memcpy(rec16, &i, sizeof i);
+        const int rc = sc_ipc_ring_push(&pv, 1, rec16, sizeof rec16);
         if (rc == SC_IPC_FULL) break;
         CHECK(rc == SC_IPC_OK);
         ++pushed;

@@ -46,8 +46,8 @@ echo "abi_datacore: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-
 "$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_ipc.c"
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ipc.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ipc.c"
-"$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -x c   "$ROOT/include/sc_ipc.h"
-"$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -x c++ "$ROOT/include/sc_ipc.h"
+printf '#include "sc_ipc.h"\n' | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
+printf '#include "sc_ipc.h"\n' | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
 echo "abi_ipc: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_ipc.h stands alone"
 
 # SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
