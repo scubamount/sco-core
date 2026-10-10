@@ -171,6 +171,8 @@ if (sco::ui::Dispatch(chord.c_str(), &reply) == sco::Result::Ok && !reply.empty(
 
 The draw context is the product's choice: sco-core passes `frame` through as `void*`. ImGui never crosses the ABI as a type; a plugin that draws with ImGui links the same ImGui version as the product, which is the product's contract to publish.
 
+sc-offline hosts Dear ImGui **1.92.8 WIP**. Its public headers ship in the SDK at [`sdk/third_party/imgui/`](../sdk/third_party/imgui/README.md) (`imconfig.h`, `imgui.h`, `LICENSE.txt`), byte for byte the product's, and sc-offline's CI fails if they drift. Compile against them unmodified, `imconfig.h` included (`IMGUI_DEFINE_MATH_OPERATORS` is not defined); `imgui_internal.h` is not part of the contract.
+
 ## Lua
 
 Scripts bind hotkeys; tabs and overlays need draw callbacks from Lua, which wait for the Lua UI bindings (G018).
