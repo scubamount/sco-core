@@ -175,7 +175,7 @@ typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
 | `release_service(self, name)` | Any | 1.1. Withdraws one of this plugin's services |
 | `register_raw(self, name, capability, fn, ctx)` | Any | 1.1. Registers a raw handler: bytes in, bytes out; see [Raw handlers](#raw-handlers-11) |
 | `invoke_raw(self, name, in, in_size, out, inout_out_size)` | Game | 1.1. Calls a raw handler now; see [Raw handlers](#raw-handlers-11) |
-| `list_commands(out, max)` | Any | Writes up to `max` command pointers to `out` and returns the number of live commands. Call with `max = 0` to get the count. The pointers stay valid until their owner unloads |
+| `list_commands(out, max)` | Any | Writes up to `max` command pointers to `out` and returns the number of live commands. Call with `max = 0` to get the count. The pointers stay valid until their owner unloads (the host then reuses the slot, so keep the command name, not the pointer) |
 
 ## Commands
 
@@ -221,7 +221,7 @@ typedef struct sco_command {
 
 Behavior:
 
-- `register_command` copies `name` (63 bytes at most), `title` (63), `help` (255), `capability` (63) and the arg defs with their `name` (31) and `help` (127). Only `fn` and `ctx` must stay valid until the plugin unloads. `SCO_BAD_ARG` for a longer string, a duplicate name, a name outside the plugin's prefix, a reserved prefix (`sco`, `host`, `menu`, `game`) or a prefix another plugin or a host feature already uses. The prefix is the plugin's `name`, which may not contain a dot.
+- `register_command` copies `name` (63 bytes at most), `title` (63), `help` (255), `capability` (63) and the arg defs with their `name` (31) and `help` (127). Only `fn` and `ctx` must stay valid until the plugin unloads. `SCO_BAD_ARG` for a longer string, a duplicate name, a name outside the plugin's prefix, a reserved prefix (`sco`, `host`, `menu`, `game`) or a prefix another plugin or a host feature already uses. `SCO_TOO_MANY` when 512 commands are live (all plugins and host features together) or the host is out of memory; unloading a plugin frees its commands' slots, so any number of loads and unloads never runs out. The prefix is the plugin's `name`, which may not contain a dot.
 - Commands run on the game thread. `invoke` from the game thread runs the command at once, calls `done` once before returning and returns the same result.
 - From any other thread `invoke` copies the name and arguments, queues the call and returns `SCO_OK`; `done` then runs exactly once, on the game thread. Any other return (`SCO_BAD_ARG`, or `SCO_TOO_MANY` when the queue is full or memory runs out) means nothing was queued and `done` is never called. A call still queued when the calling plugin unloads is dropped, and `done` isn't called.
 - Before calling `fn` the host checks the argument count and types (`SCO_BAD_ARG`) and the capability (`SCO_UNAVAILABLE`); `done` receives that result and `fn` isn't called.

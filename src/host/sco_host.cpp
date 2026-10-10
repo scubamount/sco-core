@@ -52,11 +52,26 @@ bool ValidId(const char* id) {
 // ---- commands -------------------------------------------------------------------------------
 
 // What a plugin's command runs through: the runtime calls Trampoline with the record as ctx.
-struct CmdRecord { sco_command_fn fn; void* ctx; };
+// `owner` is the plugin that registered it; null while the record is unused.
+struct CmdRecord { sco_command_fn fn; void* ctx; const void* owner; };
 
 std::mutex g_cmdLock;                      // serializes register_command and the view table
-CmdRecord  g_records[kMaxCommands];        // one per successful plugin registration, kept forever
-size_t     g_recordCount = 0;
+CmdRecord  g_records[kMaxCommands];        // one per live plugin registration; storage is never freed
+size_t     g_recordCount = 0;              // records in use or reclaimable: g_records[0..count)
+
+// A record for a new registration (g_cmdLock held), or nullptr when kMaxCommands plugin commands
+// are live. Reuses, in order: a record nothing was registered with (an earlier registration
+// failed), a fresh one, one whose plugin was released. Release(owner) removes all of an owner's
+// commands and the runtime never calls a released owner again, so a released owner's records
+// are unreachable: the one pointer to a record is the ctx of its command's registry slot.
+CmdRecord* ClaimRecord() {
+    for (size_t i = 0; i < g_recordCount; ++i)
+        if (!g_records[i].owner) return &g_records[i];
+    if (g_recordCount < kMaxCommands) return &g_records[g_recordCount++];
+    for (size_t i = 0; i < g_recordCount; ++i)
+        if (detail::Released(g_records[i].owner)) return &g_records[i];
+    return nullptr;
+}
 
 Result Trampoline(const Arg* args, uint32_t nargs, void* ctx, char* reply, uint32_t replySize) {
     const CmdRecord* rec = static_cast<const CmdRecord*>(ctx);
@@ -65,17 +80,18 @@ Result Trampoline(const Arg* args, uint32_t nargs, void* ctx, char* reply, uint3
     return static_cast<Result>(static_cast<uint32_t>(r));
 }
 
-// list_commands views, one per runtime Command, built on first listing and kept forever.
-struct View { const Command* cmd; sco_command view; };
-View   g_views[kMaxCommands];
-size_t g_viewCount = 0;
+// list_commands views, one per registry slot (the runtime reuses a slot after its command is
+// released). A view is built when its slot is first listed with a new registration (`gen`) and
+// not touched again until the slot holds another one, so a plugin reading the view of a live
+// command never races a rewrite. Storage is never freed: a view kept past its command's
+// unload (the contract says don't) reads as whatever command holds the slot then.
+struct View { uint64_t gen; sco_command view; };
+View g_views[kMaxCommands];   // gen 0: never built
 
-const sco_command* ViewFor(const Command* c) {   // g_cmdLock held
-    for (size_t i = 0; i < g_viewCount; ++i)
-        if (g_views[i].cmd == c) return &g_views[i].view;
-    if (g_viewCount == kMaxCommands) return nullptr;   // can't happen: one view per registration
-    View& v = g_views[g_viewCount++];
-    v.cmd = c;
+const sco_command* ViewFor(size_t slot, uint64_t gen, const Command* c) {   // g_cmdLock held
+    View& v = g_views[slot];
+    if (v.gen == gen) return &v.view;
+    v.gen = gen;
     v.view = {};
     v.view.size = sizeof(sco_command);
     v.view.name = c->name;
@@ -160,13 +176,13 @@ sco_result RegisterCommandC(sco_plugin* self, const sco_command* cmd) {
         defs[i] = { d->name, static_cast<ArgType>(d->type), d->help };
     }
     std::lock_guard<std::mutex> hold(g_cmdLock);
-    if (g_recordCount == kMaxCommands) return SCO_TOO_MANY;
-    CmdRecord& rec = g_records[g_recordCount];
-    rec = { cmd->fn, cmd->ctx };
+    CmdRecord* rec = ClaimRecord();
+    if (!rec) return SCO_TOO_MANY;
+    *rec = { cmd->fn, cmd->ctx, nullptr };
     const Command c{ cmd->name, cmd->title, cmd->help, cmd->capability,
-                     cmd->nargs ? defs : nullptr, cmd->nargs, Trampoline, &rec };
+                     cmd->nargs ? defs : nullptr, cmd->nargs, Trampoline, rec };
     const Result r = RegisterCommand(self, self->id, c);
-    if (r == Result::Ok) ++g_recordCount;   // a failed registration leaves the record free
+    if (r == Result::Ok) rec->owner = self;   // a failed registration leaves the record unused
     return C(r);
 }
 
@@ -186,13 +202,18 @@ sco_result InvokeC(sco_plugin* self, const char* name, const sco_arg* args, uint
     return C(r);
 }
 
+struct ListFill { const sco_command** out; uint32_t max; };
+
 uint32_t ListCommandsC(const sco_command** out, uint32_t max) {
-    const Command* live[kMaxCommands];
-    const size_t n = ListCommands(live, kMaxCommands);
-    if (out && max) {
-        std::lock_guard<std::mutex> hold(g_cmdLock);
-        for (size_t i = 0; i < n && i < max; ++i) out[i] = ViewFor(live[i]);
-    }
+    if (!out || !max) return static_cast<uint32_t>(ListCommands(nullptr, 0));
+    ListFill fill{ out, max };
+    std::lock_guard<std::mutex> hold(g_cmdLock);   // before the registry's lock, as register_command
+    const size_t n = detail::VisitCommands(
+        [](size_t position, size_t slot, uint64_t gen, const Command& cmd, void* p) {
+            ListFill* f = static_cast<ListFill*>(p);
+            if (position < f->max) f->out[position] = ViewFor(slot, gen, &cmd);
+        },
+        &fill);
     return static_cast<uint32_t>(n);
 }
 

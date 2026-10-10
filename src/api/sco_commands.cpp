@@ -1,8 +1,12 @@
 // Command registry and Invoke().
-// Each registration gets a slot that is allocated once and never moves or frees: the slot is
-// fully written before the count that publishes it, so readers (ListCommands, lookup) need no
-// lock and pointers stay readable for the life of the process. Release marks a slot dead; dead
-// slots are skipped and their fn/ctx are never called again.
+// Slots are pooled. A registration takes a free slot, or allocates one when none is free; a slot
+// is never moved or freed, so a `const Command*` from ListCommands is always readable memory, but
+// Release hands the owner's slots back to the pool and the next registration rewrites one: a
+// pointer is a valid description of its command only while the owning plugin is loaded. Live
+// registrations are capped at kMaxCommands, which also bounds the pool. Everything that reads or
+// writes a slot's contents (lookup, list, invoke, register, release) holds g_regLock; Invoke copies
+// what it needs out of the slot before it calls the command, so a command that releases its own
+// owner leaves nothing dangling.
 #include "sco/runtime.h"
 #include "sco_api.h"
 #include "internal.h"
@@ -24,7 +28,8 @@ static_assert(static_cast<uint32_t>(Result::TooMany) == SCO_TOO_MANY && static_c
 struct Slot {
     Command view{};                 // what ListCommands hands out; points into the buffers below
     const void* owner = nullptr;
-    std::atomic<bool> live{ true };
+    size_t index = 0;               // fixed for the slot's life, < kMaxCommands
+    uint64_t gen = 0;               // which registration the slot holds now; never repeats
     char name[kMaxNameLen + 1];
     char title[kMaxTitleLen + 1];
     char help[kMaxHelpLen + 1];
@@ -34,9 +39,13 @@ struct Slot {
     char argHelp[kMaxCommandArgs][kMaxArgHelpLen + 1];
 };
 
-static std::mutex          g_regLock;      // serializes writers only
-static Slot*               g_slots[kMaxCommands];
-static std::atomic<size_t> g_slotCount{ 0 };
+static std::mutex          g_regLock;      // guards everything below and every slot's contents
+static Slot*               g_live[kMaxCommands];   // live commands, in registration order
+static size_t              g_liveCount = 0;
+static Slot*               g_free[kMaxCommands];   // released slots, ready for reuse
+static size_t              g_freeCount = 0;
+static size_t              g_created = 0;          // slots allocated so far: g_liveCount + g_freeCount
+static uint64_t            g_nextGen = 1;
 static std::atomic<CapabilityCheck> g_capCheck{ nullptr };
 
 void SetCapabilityCheck(CapabilityCheck check) { g_capCheck.store(check); }
@@ -93,19 +102,17 @@ static bool HasPrefix(const char* name, const char* prefix, size_t len) {
     return strncmp(name, prefix, len) == 0 && name[len] == '.';
 }
 
-static Slot* FindLive(const char* name) {
-    const size_t n = g_slotCount.load(std::memory_order_acquire);
-    for (size_t i = 0; i < n; ++i)
-        if (g_slots[i]->live.load() && strcmp(g_slots[i]->name, name) == 0) return g_slots[i];
+static Slot* FindLive(const char* name) {   // g_regLock held
+    for (size_t i = 0; i < g_liveCount; ++i)
+        if (strcmp(g_live[i]->name, name) == 0) return g_live[i];
     return nullptr;
 }
 
 // Another owner holds a live command under "<prefix>.".
-static bool PrefixTaken(const void* owner, const char* prefix, size_t len) {
-    const size_t n = g_slotCount.load(std::memory_order_relaxed);
-    for (size_t i = 0; i < n; ++i) {
-        const Slot* s = g_slots[i];
-        if (s->live.load() && s->owner != owner && HasPrefix(s->name, prefix, len)) return true;
+static bool PrefixTaken(const void* owner, const char* prefix, size_t len) {   // g_regLock held
+    for (size_t i = 0; i < g_liveCount; ++i) {
+        const Slot* s = g_live[i];
+        if (s->owner != owner && HasPrefix(s->name, prefix, len)) return true;
     }
     return false;
 }
@@ -133,11 +140,14 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
     std::lock_guard<std::mutex> hold(g_regLock);
     if (detail::Released(owner) || FindLive(cmd.name)) return Result::BadArg;
     if (prefix && PrefixTaken(owner, prefix, prefixLen)) return Result::BadArg;
-    const size_t n = g_slotCount.load(std::memory_order_relaxed);
-    if (n == kMaxCommands) return Result::TooMany;
-    Slot* s = new (std::nothrow) Slot;
+    if (g_liveCount == kMaxCommands) return Result::TooMany;
+    Slot* s = g_freeCount ? g_free[g_freeCount - 1] : new (std::nothrow) Slot;
     if (!s) return Result::TooMany;
+    if (g_freeCount) --g_freeCount;
+    else s->index = g_created++;
+    s->view = Command{};
     s->owner = owner;
+    s->gen = g_nextGen++;
     s->view.name = Copy(s->name, cmd.name);
     s->view.title = Copy(s->title, cmd.title);
     s->view.help = Copy(s->help, cmd.help);
@@ -151,58 +161,77 @@ Result RegisterCommand(const void* owner, const char* prefix, const Command& cmd
     s->view.nargs = cmd.nargs;
     s->view.fn = cmd.fn;
     s->view.ctx = cmd.ctx;
-    g_slots[n] = s;
-    g_slotCount.store(n + 1, std::memory_order_release);
+    g_live[g_liveCount++] = s;
     return Result::Ok;
 }
 
 long detail::ReleaseCommands(const void* owner) {
     std::lock_guard<std::mutex> hold(g_regLock);
     long removed = 0;
-    const size_t n = g_slotCount.load(std::memory_order_relaxed);
-    for (size_t i = 0; i < n; ++i) {
-        Slot* s = g_slots[i];
-        if (s->owner == owner && s->live.load()) { s->live.store(false); ++removed; }
+    size_t keep = 0;   // closes the gaps, so the live list stays in registration order
+    for (size_t i = 0; i < g_liveCount; ++i) {
+        Slot* s = g_live[i];
+        if (s->owner == owner) { g_free[g_freeCount++] = s; ++removed; }
+        else g_live[keep++] = s;
     }
+    g_liveCount = keep;
     return removed;
 }
 
 size_t ListCommands(const Command** out, size_t max) {
-    const size_t n = g_slotCount.load(std::memory_order_acquire);
-    size_t live = 0;
-    for (size_t i = 0; i < n; ++i) {
-        const Slot* s = g_slots[i];
-        if (!s->live.load()) continue;
-        if (out && live < max) out[live] = &s->view;
-        ++live;
-    }
-    return live;
+    std::lock_guard<std::mutex> hold(g_regLock);
+    if (out)
+        for (size_t i = 0; i < g_liveCount && i < max; ++i) out[i] = &g_live[i]->view;
+    return g_liveCount;
 }
 
-struct CommandCall { const Command* cmd; const Arg* args; uint32_t nargs; char* reply; uint32_t replySize; Result r; };
+size_t detail::VisitCommands(CommandVisitor visit, void* ctx) {
+    std::lock_guard<std::mutex> hold(g_regLock);
+    for (size_t i = 0; i < g_liveCount; ++i) visit(i, g_live[i]->index, g_live[i]->gen, g_live[i]->view, ctx);
+    return g_liveCount;
+}
+
+struct CommandCall { CommandFn fn; void* ctx; const Arg* args; uint32_t nargs; char* reply; uint32_t replySize; Result r; };
 static void CommandThunk(void* p) {
     CommandCall* k = static_cast<CommandCall*>(p);
-    k->r = k->cmd->fn(k->args, k->nargs, k->cmd->ctx, k->reply, k->replySize);
+    k->r = k->fn(k->args, k->nargs, k->ctx, k->reply, k->replySize);
 }
 
 // Runs on the game thread. reply is NUL-terminated whatever fn writes; empty when fn faulted.
 static Result RunNow(const char* name, const Arg* args, uint32_t nargs, char* reply, uint32_t replySize) {
     reply[0] = 0;
-    const Slot* s = FindLive(name);
-    if (!s) return Result::NotFound;
-    const Command& c = s->view;
-    if (nargs != c.nargs) return Result::BadArg;
-    for (uint32_t i = 0; i < nargs; ++i) {
-        if (args[i].type != c.args[i].type) return Result::BadArg;
-        if (args[i].type == ArgType::String && !args[i].v.s) return Result::BadArg;
-        if (args[i].type == ArgType::Bool && args[i].v.i != 0 && args[i].v.i != 1) return Result::BadArg;
+    // What the call needs, copied out under the lock: once it is released the slot may be rewritten
+    // (and the command itself may release its owner while it runs).
+    CommandFn fn;
+    void* fnCtx;
+    const void* owner;
+    char cmdName[kMaxNameLen + 1];
+    char capability[kMaxCapabilityLen + 1];
+    bool gated;
+    {
+        std::lock_guard<std::mutex> hold(g_regLock);
+        const Slot* s = FindLive(name);
+        if (!s) return Result::NotFound;
+        const Command& c = s->view;
+        if (nargs != c.nargs) return Result::BadArg;
+        for (uint32_t i = 0; i < nargs; ++i) {
+            if (args[i].type != c.args[i].type) return Result::BadArg;
+            if (args[i].type == ArgType::String && !args[i].v.s) return Result::BadArg;
+            if (args[i].type == ArgType::Bool && args[i].v.i != 0 && args[i].v.i != 1) return Result::BadArg;
+        }
+        fn = c.fn;
+        fnCtx = c.ctx;
+        owner = s->owner;
+        Copy(cmdName, c.name);
+        gated = c.capability != nullptr;
+        if (gated) Copy(capability, c.capability);
     }
-    if (c.capability) {
+    if (gated) {
         const CapabilityCheck check = g_capCheck.load();
-        if (!check || !check(c.capability)) return Result::Unavailable;
+        if (!check || !check(capability)) return Result::Unavailable;
     }
-    CommandCall call{ &c, args, nargs, reply, replySize, Result::Ok };
-    if (!detail::Callout(s->owner, c.name, CommandThunk, &call)) {
+    CommandCall call{ fn, fnCtx, args, nargs, reply, replySize, Result::Ok };
+    if (!detail::Callout(owner, cmdName, CommandThunk, &call)) {
         reply[0] = 0;
         return Result::Crashed;
     }
