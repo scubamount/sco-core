@@ -319,6 +319,30 @@ Every function returns 1 when it answered and 0 when it can't (wrong thread, not
 
 Zone ids are volatile streaming handles: to save or send a place, keep the zone name and the double coordinates, never the id ([C++ SDK § Services](sdk-cpp.md#services)).
 
+### `spawn.entities` 1.2 (sc-offline)
+
+[`sc_spawn.h`](../include/sc_spawn.h), pinned by [`tests/abi_spawn.c`](../tests/abi_spawn.c): spawn entities near you, look up your entity and ship ids, and move the entities you spawned. sc-offline's `spawn` built-in publishes it at load; whether it can answer is the capability `"spawn.ship"`. Frames, units and ids are `teleport.spatial`'s.
+
+```c
+const sc_spawn_service_v1* sp = NULL;
+if (api->size > offsetof(sco_api, query_service) &&
+    api->query_service(SC_SPAWN_SERVICE_NAME, SC_SPAWN_SERVICE_VERSION, (const void**)&sp) == SCO_OK &&
+    api->has("spawn.ship")) { ... }
+```
+
+To also run on an older sc-offline, ask for `0x00010000` and check `sp->size > offsetof(sc_spawn_service_v1, <function>)` before calling a function a later minor added (a 1.0 table is 40 bytes, 1.1 is 48, 1.2 is 64). Game thread only.
+
+| Function | Since | What |
+|---|---|---|
+| `spawn_near_player(class, offset[3], &id)` | 1.0 | Spawns an entity class at `offset` metres from you in your zone's frame; `NULL` and the id, or the reason. The entity belongs to no plugin |
+| `class_exists(class)` | 1.0 | 1 if the class is spawnable on this game build |
+| `local_player_id()`, `player_ship_id()` | 1.0 | Your entity id, the ship you're aboard; 0 when there is none |
+| `entity_alive(id)` | 1.1 | 1 while the id resolves in the game |
+| `set_entity_transform(self, id, zone_id, pos[3], rot[4])` | 1.2 | Moves and turns an entity to `pos` / `rot` (unit quaternion, x y z w) in zone `zone_id`'s frame, 0 = the world; the entity stays in its zone. 1 on success, 0 on failure |
+| `spawn_as(self, class, offset[3], &id)` | 1.2 | `spawn_near_player`, recorded as the calling plugin's (`self` as `sco_plugin_load` received it) |
+
+`set_entity_transform` moves only an entity spawned through `spawn_as` with the same `self` while that plugin is loaded (unloading forgets them; `spawn_near_player` and the `spawn.ship` command count for nobody), or the player's own vehicle once sc-offline has registered it as retrieved or delivered by ATC (no build does yet). Anything else answers 0.
+
 ## Raw handlers (1.1)
 
 A raw handler is a call that takes and returns bytes: for data that doesn't fit a command's typed arguments and 256-byte reply (a list of entities, a transform, a buffer). The bytes' layout is the handler's contract, as a service table's is; put a size or version field first.
