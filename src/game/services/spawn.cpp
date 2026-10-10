@@ -374,6 +374,17 @@ const char* SpawnEntityInZone(const char* entityClass, uint64_t zoneId, const do
 
 bool SpawnReleaseHooked() { return g_releaseHook; }
 
+bool SpawnedBy(const void* owner, uint64_t id) {
+    if (!g_releaseHook || !owner || !id) return false;
+    for (const Owned& o : g_owned)
+        if (o.owner == owner && o.id == id) return true;
+    return false;
+}
+
+bool IsPlayerVehicle(uint64_t id) {
+    return id && std::find(g_playerVehicles.begin(), g_playerVehicles.end(), id) != g_playerVehicles.end();
+}
+
 void RegisterPlayerVehicle(uint64_t entityId) {
     if (entityId && std::find(g_playerVehicles.begin(), g_playerVehicles.end(), entityId) == g_playerVehicles.end())
         g_playerVehicles.push_back(entityId);

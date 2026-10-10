@@ -464,6 +464,13 @@ void StopActors() {
     g_started = false;
 }
 
+bool NpcOwnedBy(const void* owner, uint64_t id) {
+    if (!owner || !id) return false;
+    for (const Npc& n : g_npcs)
+        if (n.owner == owner && n.id == id) return true;
+    return false;
+}
+
 void ReleaseActorsOwner(const void* owner) {
     size_t n = 0;
     for (size_t i = 0; i < g_npcs.size();) {

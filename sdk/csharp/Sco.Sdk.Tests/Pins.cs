@@ -1,5 +1,5 @@
 // Pins.cs: the SIZE / AT / PIN lines of tests/abi_v1.c, tests/abi_storage.c, tests/abi_ui.c,
-// tests/abi_datacore.c and tests/abi_game_actors.c, copied so the test runs from the SDK zip, where tests/ isn't shipped. Given
+// tests/abi_datacore.c, tests/abi_game_actors.c and tests/abi_game_vehicles.c, copied so the test runs from the SDK zip, where tests/ isn't shipped. Given
 // those files on the command line, the test also fails unless this copy equals them line for line.
 //
 // Part of the sco SDK. GPL-3.0, like sco-core.
@@ -211,6 +211,34 @@ namespace Sco.Sdk.Tests
             ("tests/abi_game_actors.c", "AT(sc_actors_v1, spawn_npc, 16);"),
             ("tests/abi_game_actors.c", "AT(sc_actors_v1, despawn, 24);"),
             ("tests/abi_game_actors.c", "AT(sc_actors_v1, last_error, 32);"),
+            ("tests/abi_game_vehicles.c", "PIN(sizeof(void*) == 8);"),
+            ("tests/abi_game_vehicles.c", "PIN(SC_VEHICLES_SERVICE_VERSION == 0x00010000u);"),
+            ("tests/abi_game_vehicles.c", "PIN(sizeof(SC_VEHICLES_SERVICE_NAME) == 14); /* \"game.vehicles\" */"),
+            ("tests/abi_game_vehicles.c", "PIN(SC_VEHICLE_SEAT_NAME_MAX == 64);"),
+            ("tests/abi_game_vehicles.c", "SIZE(sc_vehicle_seat_flag, 4);"),
+            ("tests/abi_game_vehicles.c", "PIN(SC_SEAT_USABLE == 0x1);"),
+            ("tests/abi_game_vehicles.c", "PIN(SC_SEAT_USABLE_KNOWN == 0x2);"),
+            ("tests/abi_game_vehicles.c", "PIN(SC_SEAT_OCCUPIED == 0x4);"),
+            ("tests/abi_game_vehicles.c", "PIN(SC_SEAT_PILOT == 0x8);"),
+            ("tests/abi_game_vehicles.c", "PIN(SC_SEAT_FLAG_FORCE32 == 0x7fffffff);"),
+            ("tests/abi_game_vehicles.c", "SIZE(sc_vehicle_seat, 96);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicle_seat, index, 0);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicle_seat, flags, 4);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicle_seat, seat_id, 8);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicle_seat, occupant_id, 16);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicle_seat, priority, 24);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicle_seat, _pad, 28);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicle_seat, name, 32);"),
+            ("tests/abi_game_vehicles.c", "SIZE(sc_vehicles_v1, 64);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, size, 0);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, _pad, 4);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, player_ship, 8);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, seats, 16);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, seat_occupant, 24);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, seat, 32);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, eject, 40);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, power_on, 48);"),
+            ("tests/abi_game_vehicles.c", "AT(sc_vehicles_v1, last_error, 56);"),
         };
     }
 }

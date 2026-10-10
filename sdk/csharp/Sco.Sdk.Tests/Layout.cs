@@ -39,6 +39,9 @@ namespace Sco.Sdk.Tests
             ["sco_dc_applied"] = typeof(ScoDcApplied),
             ["sco_datacore_v1"] = typeof(ScoDatacoreV1),
             ["sc_actors_v1"] = typeof(ScActorsV1),
+            ["sc_vehicle_seat_flag"] = typeof(ScVehicleSeatFlag),
+            ["sc_vehicle_seat"] = typeof(ScVehicleSeat),
+            ["sc_vehicles_v1"] = typeof(ScVehiclesV1),
         };
 
         private static readonly Dictionary<string, long> Constants = new()
@@ -105,6 +108,13 @@ namespace Sco.Sdk.Tests
             ["SCO_DC_TYPE_FORCE32"] = (long)ScoDcType.Force32,
             ["SC_ACTORS_VERSION_1_0"] = GameAbi.ActorsVersion1_0,
             ["SC_ACTORS_MAX_NPCS"] = GameAbi.ActorsMaxNpcs,
+            ["SC_VEHICLES_SERVICE_VERSION"] = GameAbi.VehiclesVersion1_0,
+            ["SC_VEHICLE_SEAT_NAME_MAX"] = GameAbi.VehicleSeatNameMax,
+            ["SC_SEAT_USABLE"] = (long)ScVehicleSeatFlag.Usable,
+            ["SC_SEAT_USABLE_KNOWN"] = (long)ScVehicleSeatFlag.UsableKnown,
+            ["SC_SEAT_OCCUPIED"] = (long)ScVehicleSeatFlag.Occupied,
+            ["SC_SEAT_PILOT"] = (long)ScVehicleSeatFlag.Pilot,
+            ["SC_SEAT_FLAG_FORCE32"] = (long)ScVehicleSeatFlag.Force32,
         };
 
         private static readonly Dictionary<string, string> Strings = new()
@@ -114,6 +124,7 @@ namespace Sco.Sdk.Tests
             ["SCO_DATACORE_NAME"] = Abi.DataCoreName,
             ["SCO_DC_APPLIED_EVENT"] = Abi.DataCoreAppliedEvent,
             ["SC_ACTORS_NAME"] = GameAbi.ActorsName,
+            ["SC_VEHICLES_SERVICE_NAME"] = GameAbi.VehiclesName,
         };
 
         private static readonly Regex Size = new(@"^SIZE\((\w+),\s*(\d+)\);");
@@ -193,6 +204,8 @@ namespace Sco.Sdk.Tests
             if (t == typeof(ScoDcApplied)) return Unsafe.SizeOf<ScoDcApplied>();
             if (t == typeof(ScoDatacoreV1)) return Unsafe.SizeOf<ScoDatacoreV1>();
             if (t == typeof(ScActorsV1)) return Unsafe.SizeOf<ScActorsV1>();
+            if (t == typeof(ScVehicleSeat)) return Unsafe.SizeOf<ScVehicleSeat>();
+            if (t == typeof(ScVehiclesV1)) return Unsafe.SizeOf<ScVehiclesV1>();
             return -1;
         }
     }

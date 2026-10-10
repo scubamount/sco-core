@@ -155,6 +155,41 @@ SigResult ResolveSeatCallback(const Image& img) {
     return SigOk(cb);
 }
 
+// The seat callback's first test, before the occupant test: the seat picker skips a seat whose owner
+// (seat+8) has no live IInteractableComponent. lea rdx, [rsp+X]; mov rcx, rdi; call getter;
+// mov rcx, rax; call alive; test al, al; je.
+constexpr Check kSeatGateCheck{
+    0x01A, "48 8D 54 24 ?? 48 8B CF E8 ?? ?? ?? ?? 48 8B C8 E8 ?? ?? ?? ?? 84 C0 0F 84",
+    "seat callback's interactable test changed (+0x01a)" };
+// The getter it calls: the seat's owner handle, the entity's component slot, the components
+// global (checked to be teleport.entity_system+8, the one EntityComponent reads), the component
+// name (checked below) and the registry's name-to-type-id slot.
+constexpr Check kSeatInteractableChecks[] = {
+    { 0x006, "48 8B 41 08",          "interactable getter changed at +0x006" },   // mov rax, [rcx+8]
+    { 0x048, "48 8B B0 90 03 00 00", "entity slot 0x390 changed (+0x048)" },     // mov rsi, [rax+0x390]
+    { 0x05B, "48 8B 0D",             "interactable getter changed at +0x05b" },   // mov rcx, [components]
+    { 0x062, "4C 8D 05",             "interactable getter changed at +0x062" },   // lea r8, "IInteractableComponent"
+    { 0x06E, "48 8B 01 FF 50 10",    "components slot 0x10 changed (+0x06e)" },   // call [rax+0x10]
+};
+
+SigResult ResolveSeatInteractable(const Image& img) {
+    const uint8_t* cb = Sig("spawn.seat_callback");
+    const uint8_t* es = Sig("teleport.entity_system");
+    if (!cb || !es) return SigFail("source row missing");
+    const Check& g = kSeatGateCheck;
+    if (!rows::InText(img, cb + g.off, rows::PatternBytes(g.bytes)) || !BytesMatch(cb + g.off, g.bytes)) return SigFail(g.why);
+    const uint8_t* f = RipTarget(cb + 0x22, 1, 5);
+    if (!rows::InText(img, f, 0x74)) return SigFail("interactable getter outside .text");
+    for (const Check& c : kSeatInteractableChecks)
+        if (!BytesMatch(f + c.off, c.bytes)) return SigFail(c.why);
+    if (RipTarget(f + 0x5B, 3, 7) != es + 8) return SigFail("the getter's components global isn't teleport.entity_system+8");
+    const uint8_t* name = RipTarget(f + 0x62, 3, 7);
+    const size_t n = strlen(kSeatInteractable) + 1;
+    if (!img.rdata.base || name < img.rdata.base || name + n > img.rdata.base + img.rdata.size || memcmp(name, kSeatInteractable, n) != 0)
+        return SigFail("the getter doesn't name IInteractableComponent (+0x062)");
+    return SigOk(f);
+}
+
 constexpr CallSpec kIsLinked{     "spawn.find_seat", 0x0B2, "seat picker changed at +0x0b2" };
 constexpr CallSpec kForceDelink{  "spawn.find_seat", 0x19C, "seat picker changed at +0x19c" };
 constexpr CallSpec kForEachSeat{  "spawn.find_seat", 0x242, "seat picker changed at +0x242" };
@@ -381,6 +416,7 @@ constexpr const char* kSeatPicker[] = {
     "spawn.find_seat", "spawn.seat_callback", "spawn.is_linked", "spawn.force_delink", "spawn.for_each_seat",
     "spawn.actor_of_user", "spawn.handle_to_id", "spawn.actor_link", "spawn.force_link", "spawn.seat_priority",
 };
+constexpr const char* kSeatGate[] = { "spawn.seat_callback", "spawn.seat_interactable" };
 constexpr const char* kFindByName[] = { "spawn.find_entity_by_name" };
 constexpr const char* kFlightReady[] = { "spawn.toggle_flight_ready" };
 constexpr const char* kFlySpeed[] = { "spawn.game_cvars", "spawn.fly_speed_scaler" };
@@ -397,6 +433,7 @@ constexpr const char* kLoadout[] = { "loadout.load_player_loadout", "loadout.gam
 constexpr Capability kCaps[] = {
     { "spawn.helpers",       kHelpers,          std::size(kHelpers) },
     { "spawn.seat_picker",   kSeatPicker,       std::size(kSeatPicker) },
+    { "spawn.seat_gate",     kSeatGate,         std::size(kSeatGate) },
     { "spawn.find_by_name",  kFindByName,       std::size(kFindByName) },
     { "spawn.flight_ready",  kFlightReady,      std::size(kFlightReady) },
     { "spawn.fly_speed",     kFlySpeed,         std::size(kFlySpeed) },
@@ -438,6 +475,7 @@ extern const SigDef kActorsSignatures[] = {
     { "spawn.actor_link",           nullptr, 0, 0, ResolveCall<kActorLink>,          { "spawn.find_seat" } },
     { "spawn.force_link",           nullptr, 0, 0, ResolveCall<kForceLink>,          { "spawn.find_seat" } },
     { "spawn.seat_priority",        nullptr, 0, 0, ResolveCall<kSeatPriority>,       { "spawn.seat_callback" } },
+    { "spawn.seat_interactable",    nullptr, 0, 0, ResolveSeatInteractable,          { "spawn.seat_callback", "teleport.entity_system" } },
     // Daymar, Flight Ready, fly speed, god mode
     { "spawn.find_entity_by_name",  nullptr, 0, 0, ResolveFindEntityByName,          {} },
     { "spawn.toggle_flight_ready",  nullptr, 0, 0, ResolveFlightReady,               {} },

@@ -9,7 +9,7 @@ using Sco.Sdk.Interop;
 namespace Sco.Sdk.Game
 {
     /// <summary>The names, versions and limits of the game pack's C headers.</summary>
-    public static class GameAbi
+    public static partial class GameAbi
     {
         public const string ActorsName = "game.actors";      // SC_ACTORS_NAME
         public const uint ActorsVersion1_0 = 0x00010000u;   // SC_ACTORS_VERSION_1_0

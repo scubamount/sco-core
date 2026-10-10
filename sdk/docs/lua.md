@@ -143,6 +143,18 @@ Present only when the Star Citizen game pack publishes [`game.actors`](../../doc
 
 Ids are session handles: use them on the same tick, never store them.
 
+## `sco.game.vehicles`
+
+Present only when the Star Citizen game pack publishes [`game.vehicles`](../../docs/api-v1.md#gamevehicles-10-game-pack) (check `if sco.game and sco.game.vehicles then`); `lua-check.lua` has no stand-in for it. Read-only: scripts can list seats but can't seat, eject or power on (those take `self` and change the game; use C, C++ or C#). Ids are the game's 64-bit entity ids, carried in Lua integers bit for bit: pass them back unchanged and never store one.
+
+| Function | Returns |
+|---|---|
+| `sco.game.vehicles.player_ship()` | The id of the ship you're aboard |
+| `sco.game.vehicles.seats(ship)` | A list of seats, each `{ index, seat_id, occupant_id, priority, name, usable, usable_known, occupied, pilot }` (`index` counts from 0, as the game pack's), and `true` when the ship has more than were listed (256 at most) |
+| `sco.game.vehicles.seat_occupant(ship, index)` | The id of the actor in the seat, 0 when it's empty |
+
+On failure each returns `nil, err, message` (`err` as for `sco.store`: `"unavailable"`, `"not_found"`, ...; `message` from the game pack's `last_error`).
+
 ## Check a script
 
 Without the game, with a stock Lua 5.4:

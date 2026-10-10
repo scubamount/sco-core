@@ -22,6 +22,7 @@
 #ifdef SCO_GAME_SERVICES
 #include "sc_actors.h"
 #include "sc_spawn.h"
+#include "sc_vehicles.h"
 #include <thread>
 #endif
 #include <csetjmp>
@@ -457,7 +458,7 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     CHECK(api->query_service(SCO_NET_NAME, SCO_NET_VERSION_1_0, &table) == SCO_NOT_FOUND);
 
 #ifdef SCO_GAME_SERVICES
-    // gameServices: the game pack publishes teleport.spatial and spawn.entities under "game" before
+    // gameServices: the game pack publishes teleport.spatial, spawn.entities and game.vehicles under "game" before
     // plugins load and withdraws them after. With no game image the teleport.* and spawn.* rows
     // aren't OK, so teleport.spatial answers 0 and spawn.entities says the spawner isn't available.
     pf.gameServices = true;
@@ -484,6 +485,39 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
         CHECK(sp->class_exists("DRAK_Cutlass_Black") == 0);
         CHECK(sp->local_player_id() == 0 && sp->player_ship_id() == 0 && sp->entity_alive(1) == 0);
         CHECK(sp->set_entity_transform(reinterpret_cast<sco_plugin*>(&table), 1, 0, offset, rot) == 0);
+    }
+    // game.vehicles: without the spawn.* rows every function answers SCO_UNAVAILABLE with a
+    // reason, its capabilities aren't ready, and off the game thread it refuses before anything.
+    CHECK(api->query_service(SC_VEHICLES_SERVICE_NAME, SC_VEHICLES_SERVICE_VERSION, &table) == SCO_OK && table);
+    if (table) {
+        const auto* v = static_cast<const sc_vehicles_v1*>(table);
+        sco_plugin* self = reinterpret_cast<sco_plugin*>(&table);
+        uint64_t ship = 7;
+        uint32_t count = 9, more = 9;
+        CHECK(v->size == sizeof(sc_vehicles_v1));
+        CHECK(v->player_ship(&ship) == SCO_UNAVAILABLE && ship == 0);
+        CHECK(v->seats(1, nullptr, 0, &count, &more) == SCO_UNAVAILABLE && count == 0 && more == 0);
+        CHECK(v->seat_occupant(1, 0, &ship) == SCO_UNAVAILABLE && ship == 0);
+        CHECK(v->seat(self, 1, 2, 0) == SCO_UNAVAILABLE && v->eject(self, 1) == SCO_UNAVAILABLE);
+        CHECK(v->power_on(self, 2) == SCO_UNAVAILABLE);
+        char msg[128] = {};
+        uint32_t n = sizeof(msg);
+        CHECK(v->last_error(self, msg, &n) == SCO_OK && std::strstr(msg, "game.vehicles.flight_ready") && n == std::strlen(msg) + 1);
+        n = 0;
+        CHECK(v->last_error(self, nullptr, &n) == SCO_TOO_MANY && n == std::strlen(msg) + 1);
+        n = sizeof(msg);
+        CHECK(v->last_error(nullptr, msg, &n) == SCO_OK && std::strstr(msg, "game.vehicles.seats"));
+        CHECK(!sco::caps::Has("game.vehicles.seats") && !sco::caps::Has("game.vehicles.seat") &&
+              !sco::caps::Has("game.vehicles.flight_ready"));
+        sco_result off = SCO_OK, offErr = SCO_OK;
+        char offMsg[64] = {};
+        std::thread([&] {
+            uint64_t id = 7;
+            off = v->player_ship(&id);
+            uint32_t size = sizeof(offMsg);
+            offErr = v->last_error(self, offMsg, &size);
+        }).join();
+        CHECK(off == SCO_WRONG_THREAD && offErr == SCO_OK && std::strcmp(offMsg, "game thread only") == 0);
     }
     // game.actors: published with them. No game image, so none of its capabilities is ready:
     // every function answers SCO_UNAVAILABLE and last_error says why; off the game thread
@@ -520,6 +554,7 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
         CHECK(ga->last_error(me, buf, &n) == SCO_BAD_ARG);   // released
     }
     sco::app::Stop();
+    CHECK(api->query_service(SC_VEHICLES_SERVICE_NAME, SC_VEHICLES_SERVICE_VERSION, &table) == SCO_NOT_FOUND);
     CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_NOT_FOUND);
     CHECK(api->query_service(SC_SPAWN_SERVICE_NAME, SC_SPAWN_SERVICE_VERSION, &table) == SCO_NOT_FOUND);
     CHECK(api->query_service(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, &table) == SCO_NOT_FOUND);

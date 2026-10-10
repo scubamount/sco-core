@@ -7,6 +7,7 @@ The Star Citizen game pack publishes its services under the reserved owner `game
 | `teleport.spatial` | 1.0 | [`sc_spatial.h`](../include/sc_spatial.h) | 0.1.0 | Where you are, and positions between the game's zones |
 | `spawn.entities` | 1.2 | [`sc_spawn.h`](../include/sc_spawn.h) | unreleased (after 0.1.0) | Spawn entities near you, your entity and ship ids, and move what you spawned |
 | `game.actors` | 1.0 | [`sc_actors.h`](../include/sc_actors.h) | unreleased (after 0.1.0) | Your player (`local_player`), NPCs you spawn (`spawn_npc(self, ...)`) and despawn (`despawn(self, id)`); the host removes a plugin's NPCs when it unloads or crashes. Capabilities `game.actors.local_player`, `.spawn_npc`, `.despawn`. Wrappers: `scosdk/game/actors.hpp`, C# `Sco.Sdk.Game.Actors`, Lua `sco.game.actors.local_player` (read-only) |
+| `game.vehicles` | 1.0 | [`sc_vehicles.h`](../include/sc_vehicles.h) | unreleased (after 0.1.0) | The ship you're aboard, its seats and occupants, seating and unseating your own actors, Flight Ready. Capabilities `game.vehicles.seats`, `.seat`, `.flight_ready` ([API](api-v1.md#gamevehicles-10-game-pack)) |
 
 `teleport.spatial` and `spawn.entities` keep their names and tables for all of 1.x: sc-offline's `teleport` and `spawn` built-ins published them before the game pack did, and a plugin can't tell the difference. New game services are named `game.<name>`.
 

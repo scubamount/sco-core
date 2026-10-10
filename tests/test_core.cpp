@@ -432,7 +432,7 @@ static void TestActorsRows() {
     CHECK(sco::game::RegisterGameSignatures());
     size_t n = 0;
     const sco::game::actors::Capability* caps = sco::game::actors::Capabilities(n);
-    CHECK(caps && n == 10);
+    CHECK(caps && n == 11);
     for (size_t c = 0; c < n; ++c)
         for (size_t j = 0; j < caps[c].count; ++j) CHECK(sco::SigLookup(caps[c].rows[j]) != nullptr);
     size_t rows = 0;
@@ -444,7 +444,7 @@ static void TestActorsRows() {
         ++rows;
         CHECK(ActorsRow(id));
     }
-    CHECK(rows == 33);
+    CHECK(rows == 34);
 }
 
 static bool WorldRow(const char* id) {

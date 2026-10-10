@@ -2,6 +2,7 @@
 // spawn.entities inside the game pack: started and stopped by services::Start / Stop (spatial.cpp),
 // after teleport.spatial, whose zone tree its mover converts through. Game thread.
 #include "sco/runtime.h"
+#include <cstdint>
 
 namespace sco::game::services {
 
@@ -18,5 +19,11 @@ const char* SpawnEntityInZone(const char* entityClass, uint64_t zoneId, const do
 // True while spawn.cpp's release hook is added: it also releases game.actors' NPCs
 // (ReleaseActorsOwner), so game.actors spawns nothing without it.
 bool SpawnReleaseHooked();
+
+// For game.vehicles' ownership rules. Game thread. SpawnedBy: owner spawned id through spawn_as
+// and is still loaded (false without the release hook, as the mover). IsPlayerVehicle: the product
+// registered id (RegisterPlayerVehicle).
+bool SpawnedBy(const void* owner, uint64_t id);
+bool IsPlayerVehicle(uint64_t id);
 
 }  // namespace sco::game::services

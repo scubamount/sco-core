@@ -1,5 +1,5 @@
 // teleport.spatial 1.0 (sc_spatial.h) from the game pack, and the game services' start and stop
-// (spawn.entities 1.2 is in spawn.cpp, game.actors 1.0 in actors.cpp).
+// (spawn.entities 1.2 is in spawn.cpp, game.actors 1.0 in actors.cpp, game.vehicles 1.0 in vehicles.cpp).
 // Moved from sc-offline's teleport built-in (src/builtins/teleport_plugin.cpp): a tick
 // subscription feeds a sco::engine::ZoneTree with your zone chain, and the conversions read
 // through that tree. The tree holds ids and transforms only, never a game pointer, and is rebuilt
@@ -7,6 +7,7 @@
 #include "sco/game/services.h"
 #include "spawn.h"
 #include "actors.h"
+#include "vehicles.h"
 #include "sco/engine/zone.h"
 #include "sco/game/reads.h"
 #include "sco/host.h"
@@ -14,6 +15,7 @@
 #include <sc_actors.h>
 #include <sc_spatial.h>
 #include <sc_spawn.h>
+#include <sc_vehicles.h>
 #include <cmath>
 #include <cstring>
 #include <windows.h>
@@ -242,22 +244,31 @@ Result Start() {
         host::WithdrawGameService(SC_SPATIAL_SERVICE_NAME);
         return r;
     }
-    r = Subscribe(host::GameOwner(), "tick", OnTick, nullptr);
+    r = StartVehicles();
     if (r != Result::Ok) {
         StopActors();
         StopSpawn();
         host::WithdrawGameService(SC_SPATIAL_SERVICE_NAME);
         return r;
     }
+    r = Subscribe(host::GameOwner(), "tick", OnTick, nullptr);
+    if (r != Result::Ok) {
+        StopVehicles();
+        StopActors();
+        StopSpawn();
+        host::WithdrawGameService(SC_SPATIAL_SERVICE_NAME);
+        return r;
+    }
     g_started = true;
-    Log("[game] game services published: %s 1.0, %s 1.2, %s 1.0", SC_SPATIAL_SERVICE_NAME, SC_SPAWN_SERVICE_NAME,
-        SC_ACTORS_NAME);
+    Log("[game] game services published: %s 1.0, %s 1.2, %s 1.0, %s 1.0", SC_SPATIAL_SERVICE_NAME, SC_SPAWN_SERVICE_NAME,
+        SC_ACTORS_NAME, SC_VEHICLES_SERVICE_NAME);
     return Result::Ok;
 }
 
 void Stop() {
     if (!g_started) return;
     Unsubscribe(host::GameOwner(), "tick", OnTick);
+    StopVehicles();
     StopActors();
     StopSpawn();
     host::WithdrawGameService(SC_SPATIAL_SERVICE_NAME);
