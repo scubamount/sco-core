@@ -291,10 +291,11 @@ SigResult ResolveCVar(const Image& img) {
     const uint8_t* name = FindCString(img.rdata, c.name);
     if (!name) return SigFail("the cvar name isn't in .rdata");
     uint8_t* sites[4] = {};
-    // The slot is read into a local: clang folds c.registerSlot out of a constexpr table and
-    // then rejects the capture as unused, while MSVC treats it as an odr-use of c. Both agree
-    // on a capture of the local, so the filter reads `slot`.
-    const uint8_t slot = c.registerSlot;
+    // The slot goes into a non-const local deliberately: a `const uint8_t` initialized from a
+    // constant expression is usable in constant expressions, so clang folds the read, decides the
+    // capture is unused and fails at -Werror, while MSVC still demands it. A non-const local is a
+    // real odr-use for both, so the capture is required and neither compiler complains.
+    uint8_t slot = c.registerSlot;
     const int n = RipRefs(img, 0x8D, 0x15, name, 0x20, 0x30, sites, 4, [slot](const uint8_t* p) {
         for (int f = 7; f <= 0x20; ++f)
             if ((BytesMatch(p + f, "FF 50") && p[f + 2] == slot) || (BytesMatch(p + f, "4C 8B 50") && p[f + 3] == slot))

@@ -18,6 +18,8 @@ extern const SigDef kHangarSignatures[];
 extern const size_t kHangarSignatureCount;
 extern const SigDef kFeatureSignatures[];
 extern const size_t kFeatureSignatureCount;
+extern const SigDef kOfflineSignatures[];
+extern const size_t kOfflineSignatureCount;
 extern const SigDef kContractsSignatures[];
 extern const size_t kContractsSignatureCount;
 extern const SigDef kActorsSignatures[];
@@ -35,6 +37,7 @@ bool RegisterGameSignatures() {
                  && RegisterSignatures(kAtcSignatures, kAtcSignatureCount)
                  && RegisterSignatures(kHangarSignatures, kHangarSignatureCount)
                  && RegisterSignatures(kFeatureSignatures, kFeatureSignatureCount)
+                 && RegisterSignatures(kOfflineSignatures, kOfflineSignatureCount)
                  && RegisterSignatures(kContractsSignatures, kContractsSignatureCount)
                  && RegisterSignatures(kActorsSignatures, kActorsSignatureCount)
                  && RegisterSignatures(kWorldSignatures, kWorldSignatureCount);

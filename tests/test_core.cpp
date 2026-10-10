@@ -501,6 +501,41 @@ static void TestFeatureRows() {
     CHECK(orLoop == static_cast<size_t>(sco::game::features::kOrLoopSites));
 }
 
+// sc-offline's boot / offline patches and startup hooks (sco/game/offline.h): every capability row
+// is registered, every row of the table is in a capability, and the numbered rows match the header.
+#include "sco/game/offline.h"
+namespace sco::game { extern const SigDef kOfflineSignatures[]; extern const size_t kOfflineSignatureCount; }
+static void TestOfflineRows() {
+    CHECK(sco::game::RegisterGameSignatures());
+    size_t n = 0;
+    const sco::game::offline::Capability* caps = sco::game::offline::Capabilities(n);
+    CHECK(caps && n == 19);
+    for (size_t c = 0; c < n; ++c) {
+        CHECK(caps[c].count > 0);
+        for (size_t j = 0; j < caps[c].count; ++j) CHECK(sco::SigLookup(caps[c].rows[j]) != nullptr);
+        for (size_t j = 0; j < c; ++j) CHECK(strcmp(caps[c].name, caps[j].name) != 0);
+    }
+    CHECK(sco::game::kOfflineSignatureCount == 60);
+    size_t handshake = 0, db = 0, social = 0, echo = 0;
+    for (size_t i = 0; i < sco::game::kOfflineSignatureCount; ++i) {
+        const char* id = sco::game::kOfflineSignatures[i].id;
+        CHECK(sco::SigLookup(id) != nullptr);
+        handshake += strncmp(id, "offline.handshake_gate.", 23) == 0;
+        db += strncmp(id, "offline.offline_db_path.", 24) == 0;
+        social += strncmp(id, "offline.social_group.", 21) == 0;
+        echo += strncmp(id, "offline.service_stream.echo.", 28) == 0;
+        bool listed = false;
+        for (size_t c = 0; c < n && !listed; ++c)
+            for (size_t j = 0; j < caps[c].count && !listed; ++j)
+                if (strcmp(caps[c].rows[j], id) == 0) listed = true;
+        CHECK(listed);
+    }
+    CHECK(handshake == static_cast<size_t>(sco::game::offline::kHandshakeSites));
+    CHECK(db == static_cast<size_t>(sco::game::offline::kOfflineDbSites));
+    CHECK(social == static_cast<size_t>(sco::game::offline::kSocialGroupSites));
+    CHECK(echo == static_cast<size_t>(sco::game::offline::kEchoStreams));
+}
+
 // sc-offline's contracts (sco/game/contracts.h): every capability row is registered, and every
 // contracts.* row of that table is in a capability (the reputation rows are features.h's).
 static void TestContractsRows() {
@@ -548,6 +583,7 @@ int main() {
     TestPakRows();
     TestAsopRows();
     TestFeatureRows();
+    TestOfflineRows();
     TestContractsRows();
     TestActorsRows();
     TestWorldRows();
