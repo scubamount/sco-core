@@ -168,6 +168,22 @@ add_library(sco_ui STATIC src/ui/ui.cpp)
 target_link_libraries(sco_ui PUBLIC sco_host)
 sco_project_target(sco_ui)
 
+# sco.ipc (sco/ipc.h, include/sco_ipc.h over the MIT wire include/sc_ipc.h): named shared-memory
+# channels to another program on the same PC, a host-owned service. The platform half is
+# shm_win.cpp (the real target) or shm_posix.cpp (the host tests); the ring logic is platform-free.
+add_library(sco_ipc STATIC src/ipc/ipc.cpp)
+if(WIN32)
+  target_sources(sco_ipc PRIVATE src/ipc/shm_win.cpp)
+  target_link_libraries(sco_ipc PRIVATE advapi32)
+else()
+  target_sources(sco_ipc PRIVATE src/ipc/shm_posix.cpp)
+  if(NOT APPLE)
+    target_link_libraries(sco_ipc PRIVATE rt)
+  endif()
+endif()
+target_link_libraries(sco_ipc PUBLIC sco_host)
+sco_project_target(sco_ipc)
+
 # sco.datacore (sco/datacore_service.h, include/sco_datacore.h): plugins queue DataCore overrides; the
 # DataCore load applies data packs, saved patches and queued patches in plugin order.
 add_library(sco_datacore_service STATIC src/datacore/service.cpp)
@@ -176,7 +192,7 @@ sco_project_target(sco_datacore_service)
 
 # The host kit (sco/app.h): Start / Tick / Stop over the host table, caps, signatures and loader.
 add_library(sco_app STATIC src/app/sco_app.cpp)
-target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui sco_datacore_service)
+target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui sco_ipc sco_datacore_service)
 sco_project_target(sco_app)
 
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
@@ -325,6 +341,29 @@ if(SCO_BUILD_TESTS)
   add_test(NAME abi_datacore
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_datacore_targets})
 
+  # The sco.ipc table pin (tests/abi_ipc.c, which also compiles the static_asserts of sc_ipc.h), the
+  # same three ways.
+  set(_abi_ipc_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_ipc.cpp")
+  file(CONFIGURE OUTPUT "${_abi_ipc_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_ipc.c\"\n")
+  add_library(sco_abi_ipc_c OBJECT tests/abi_ipc.c)
+  add_library(sco_abi_ipc_cxx OBJECT "${_abi_ipc_cxx}")
+  set(_abi_ipc_targets sco_abi_ipc_c sco_abi_ipc_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_ipc_short_enums OBJECT tests/abi_ipc.c)
+    target_compile_options(sco_abi_ipc_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_ipc_targets sco_abi_ipc_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_ipc_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME abi_ipc
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_ipc_targets})
+
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
   sco_project_target(test_core)
@@ -351,6 +390,13 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_storage PRIVATE sco_storage)
   sco_project_target(test_storage)
   add_test(NAME test_storage COMMAND test_storage "${SCO_TEST_OUT}")
+
+  # sc_ipc.h over plain memory (wrap, rollover, hostile peers) and sco.ipc over real shared memory,
+  # with a second mapping and a second process (it spawns itself) as the peer.
+  add_executable(test_ipc tests/test_ipc.cpp)
+  target_link_libraries(test_ipc PRIVATE sco_ipc)
+  sco_project_target(test_ipc)
+  add_test(NAME test_ipc COMMAND test_ipc)
 
   # sco.ui over the real host table, with built-in plugins under the loader's crash guard.
   add_executable(test_ui tests/test_ui.cpp)

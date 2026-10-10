@@ -5,6 +5,7 @@
 #include "sco/datacore_service.h"
 #include "sco/game/signatures.h"
 #include "sco/host.h"
+#include "sco/ipc.h"
 #include "sco/log.h"
 #include "sco/runtime.h"
 #include "sco/signatures.h"
@@ -56,6 +57,8 @@ bool Start(const Platform& platform) {
     }
     const Result ur = ui::Start();
     if (ur != Result::Ok) Log("[app] ui not started: %s", ResultName(ur));
+    const Result ir = ipc::Start();
+    if (ir != Result::Ok) Log("[app] sco.ipc not started: %s", ResultName(ir));
     for (size_t i = 0; pf.reservedChords && i < pf.nReservedChords; ++i) {
         const char* chord = pf.reservedChords[i];
         const Result rr = ui::ReserveChord(chord);
@@ -116,6 +119,7 @@ void Tick(uint32_t nowMs) {
     if (!g_started) return;
     const Result r = GameThreadTick(nowMs);
     if (r != Result::Ok) Log("[app] tick: %s", ResultName(r));
+    ipc::Tick();   // the owner heartbeat of every sco.ipc channel
 }
 
 void Stop() {
@@ -124,6 +128,7 @@ void Stop() {
     if (r != Result::Ok) Log("[app] game.exit: %s", ResultName(r));
     plugins::UnloadAll(g_list, g_platform.moduleOps, g_platform.scripts);
     storage::Stop();
+    ipc::Stop();
     ui::Stop();
     datacore::service::Stop();
     host::WithdrawHostServices();

@@ -672,3 +672,16 @@ may consider it more useful to permit linking proprietary applications with
 the library.  If this is what you want to do, use the GNU Lesser General
 Public License instead of this License.  But first, please read
 <https://www.gnu.org/licenses/why-not-lgpl.html>.
+
+------------------------------------------------------------------------------
+
+Interface exception: include/sc_ipc.h
+
+Everything in sco-core is licensed under the GNU General Public License
+version 3 above, except the single file include/sc_ipc.h, the shared-memory
+wire format of sco.ipc bridges. That file carries the per-file tag
+"SPDX-License-Identifier: MIT" and the MIT license text in its header, so a
+program that isn't GPL (the other side of a bridge, such as a plugin for
+another game) may include it and speak the protocol. The exception covers
+that one file only: include/sco_ipc.h, the sco.ipc service and the rest of
+sco-core remain GPL-3.0.

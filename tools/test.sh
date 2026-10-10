@@ -39,6 +39,16 @@ echo "abi_ui: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_datacore.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_datacore.c"
 echo "abi_datacore: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The sco.ipc table (tests/abi_ipc.c), the same five ways; and the MIT wire include/sc_ipc.h on its
+# own, as the other side of a bridge includes it (no sco-core header), as C11 and C++20.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ipc.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ipc.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_ipc.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_ipc.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_ipc.c"
+printf '#include "sc_ipc.h"\n' | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
+printf '#include "sc_ipc.h"\n' | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
+echo "abi_ipc: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_ipc.h stands alone"
 # The teleport.spatial table sc-offline provides (tests/abi_spatial.c), the same five ways.
 "$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spatial.c"
 "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spatial.c"
@@ -137,6 +147,13 @@ STORAGE=("$ROOT/tests/test_storage.cpp" "$ROOT/src/storage/storage.cpp" "${HOST[
 "$OUT/test_storage" "$OUT"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${STORAGE[@]}" "$SQLITE_TSAN" -lm -o "$OUT/test_storage_tsan"
 "$OUT/test_storage_tsan" "$OUT"
+# sc_ipc.h and sco.ipc (sco/ipc.h): the wire over plain memory, the service over shm_open, a peer on
+# threads and in a second process (test_ipc spawns itself), so both sanitizer sets.
+IPC=("$ROOT/tests/test_ipc.cpp" "$ROOT/src/ipc/ipc.cpp" "$ROOT/src/ipc/shm_posix.cpp" "${HOST[@]:1}")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${IPC[@]}" -o "$OUT/test_ipc"
+"$OUT/test_ipc"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${IPC[@]}" -o "$OUT/test_ipc_tsan"
+"$OUT/test_ipc_tsan"
 
 # The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
 # corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb
@@ -242,6 +259,7 @@ done
 # hello built here as a shared library (CMake: CTest host_sim_examples).
 APP=("$ROOT/src/app/sco_app.cpp" "${PLUGINS[@]}" "${RUNTIME[@]}" "$ROOT/src/api/sco_caps.cpp" "$ROOT/src/host/sco_host.cpp"
      "$ROOT/src/sco_signatures.cpp" "$ROOT/src/sco_scan.cpp" "${GAME[@]}" "$ROOT/src/storage/storage.cpp" "$ROOT/src/ui/ui.cpp" "$SQLITE_ASAN"
+     "$ROOT/src/ipc/ipc.cpp" "$ROOT/src/ipc/shm_posix.cpp"
      "$ROOT/src/datacore/service.cpp" "${DATACORE[@]}")
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined -I "$ROOT/plugins/lua" "$ROOT/tests/test_app.cpp" "${APP[@]}" \
   "${LUA_OBJS[@]}" -ldl -o "$OUT/test_app"
