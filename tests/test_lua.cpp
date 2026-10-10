@@ -456,8 +456,8 @@ static void TestLimits() {
 
 // Memory, every script together: SCO_LUA_TOTAL_MEMORY_LIMIT (256 MiB) caps the sum, so scripts each
 // under their own 64 MiB can't take the game's memory between them. Each pool<n>.hold keeps one more
-// 8 MiB string (about 131k steps, well inside one call's budget; a single big string.rep would run
-// out of steps first), and catches a failed allocation with pcall so the script stays alive. 10
+// 8 MiB string, a 1 KiB chunk repeated 8192 times (string.rep costs a step per copy, so about 9k
+// steps; string.rep("x", 8 MiB) would be 8M steps and run out of budget first), and catches a failed allocation with pcall so the script stays alive. 10
 // scripts x 4 calls ask for 320 MiB: between 24 and 32 calls fit (192 to 256 MiB, less while a copy
 // is in flight), and once one is refused every later one is too.
 static void TestTotalMemory() {
@@ -465,9 +465,9 @@ static void TestTotalMemory() {
     pools.reserve(10);
     for (int i = 1; i <= 10; ++i) {
         const std::string id = "pool" + std::to_string(i);
-        Write(id, "local kept = {}\nsco.register_command{ name = \"" + id + ".hold\", title = \"Hold\",\n"
+        Write(id, "local kept, chunk = {}, string.rep(\"x\", 1024)\nsco.register_command{ name = \"" + id + ".hold\", title = \"Hold\",\n"
                   "  fn = function()\n"
-                  "    local ok = pcall(function() kept[#kept + 1] = string.rep(\"x\", 8 * 1024 * 1024) end)\n"
+                  "    local ok = pcall(function() kept[#kept + 1] = string.rep(chunk, 8192) end)\n"
                   "    return ok and \"held\" or \"refused\" end }\n");
         pools.push_back(Load(id));
         CHECK(pools.back().p && pools.back().p->state == State::Loaded);
@@ -488,8 +488,8 @@ static void TestTotalMemory() {
     for (const auto& l : pools) CHECK(l.p && sco_lua_alive(l.p->self));
     for (auto& l : pools) Unload(l);
     // Unloading gives the memory back.
-    Write("pool11", "local kept\nsco.register_command{ name = \"pool11.hold\", title = \"Hold\",\n"
-                    "  fn = function() kept = string.rep(\"x\", 8 * 1024 * 1024) return \"held\" end }\n");
+    Write("pool11", "local kept, chunk = nil, string.rep(\"x\", 1024)\nsco.register_command{ name = \"pool11.hold\", title = \"Hold\",\n"
+                    "  fn = function() kept = string.rep(chunk, 8192) return \"held\" end }\n");
     Loaded l = Load("pool11");
     CHECK(Invoke(g_caller, "pool11.hold").text == "held");
     Unload(l);
