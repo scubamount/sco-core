@@ -246,8 +246,9 @@ endif()
 if(SCO_GAME_SC AND WIN32)
   add_library(sco_game_services STATIC src/game/services/reads.cpp src/game/services/spatial.cpp
                                        src/game/services/spawn.cpp src/game/services/missions.cpp
-                                       src/game/services/actors.cpp src/game/services/vehicles.cpp)
-  target_link_libraries(sco_game_services PUBLIC sco_game_sc sco_host sco_engine)
+                                       src/game/services/actors.cpp src/game/services/vehicles.cpp
+                                       src/game/services/world.cpp src/game/services/events.cpp)
+  target_link_libraries(sco_game_services PUBLIC sco_game_sc sco_host sco_engine sco_hook)
   target_compile_definitions(sco_game_services PUBLIC SCO_GAME_SERVICES=1)
   sco_project_target(sco_game_services)
   target_link_libraries(sco_app PUBLIC sco_game_services)
@@ -498,8 +499,9 @@ if(SCO_BUILD_TESTS)
   add_test(NAME abi_net
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_net_targets})
   # The MIT bridge layouts (tests/abi_titanlink.c, tests/abi_voxel_bridge.c: sc_titanlink.h and
-  # sc_voxel_bridge.h, every size, offset and constant), the same three ways.
-  foreach(_b IN ITEMS titanlink voxel_bridge)
+  # sc_voxel_bridge.h, every size, offset and constant), and the game pack's game.world table and
+  # game.* event payloads (tests/abi_game_world.c, tests/abi_game_events.c), the same three ways.
+  foreach(_b IN ITEMS titanlink voxel_bridge game_world game_events)
     set(_abi_b_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_${_b}.cpp")
     file(CONFIGURE OUTPUT "${_abi_b_cxx}"
          CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_${_b}.c\"\n")

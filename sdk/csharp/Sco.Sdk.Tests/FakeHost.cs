@@ -56,6 +56,7 @@ namespace Sco.Sdk.Tests
         private static readonly nint Version = Marshal.StringToCoTaskMemUTF8("fake-host 1.0");   // static, never freed
         private static uint* _smallTable;   // a service table whose size covers only itself
         private static ScActorsV1* _actors;  // a stand-in game.actors
+        private static ScWorldV1* _world;    // a stand-in game.world
         private static void* _self;
         private static int _failures;
 
@@ -139,6 +140,7 @@ namespace Sco.Sdk.Tests
         {
             *o = null;
             if (S(name) == GameAbi.ActorsName) { *o = _actors; return ScoResult.Ok; }
+            if (S(name) == GameAbi.WorldName) { *o = _world; return ScoResult.Ok; }
             if (S(name) != "other.small") return ScoResult.NotFound;
             *o = _smallTable;
             return ScoResult.Ok;
@@ -167,6 +169,55 @@ namespace Sco.Sdk.Tests
         private static ScoResult ActLastError(void* self, byte* o, uint* io)
         {
             byte[] why = System.Text.Encoding.UTF8.GetBytes((self == null ? "read" : "not yours") + "\0");
+            uint cap = *io;
+            *io = (uint)why.Length;
+            if (cap < why.Length) return ScoResult.TooMany;
+            for (int i = 0; i < why.Length; ++i) o[i] = why[i];
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult ActHealth(ulong id, float* cur, float* max)
+        {
+            *cur = 0;
+            *max = 0;
+            if (id != 6) return ScoResult.NotFound;
+            *cur = 87.5f;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult ActState(ulong id, uint* state)
+        {
+            *state = 0;
+            return ScoResult.Unavailable;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult WorldRaycast(ulong zone, double* from, double* dir, double max, ScWorldHit* hit)
+        {
+            if (hit == null || hit->size < (uint)sizeof(ScWorldHit) || zone == 0) return ScoResult.BadArg;
+            if (zone != 9) return ScoResult.NotFound;
+            hit->pos[0] = from[0] + dir[0] * max;
+            hit->pos[1] = from[1] + dir[1] * max;
+            hit->pos[2] = from[2] + dir[2] * max;
+            hit->distance = max;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult WorldCamera(double* pos, double* rot, ulong* zone)
+        {
+            pos[0] = 1; pos[1] = 2; pos[2] = 3;
+            rot[0] = 0; rot[1] = 0; rot[2] = 0; rot[3] = 1;
+            *zone = 9;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult WorldLastError(void* self, byte* o, uint* io)
+        {
+            byte[] why = System.Text.Encoding.UTF8.GetBytes("no hit\0");
             uint cap = *io;
             *io = (uint)why.Length;
             if (cap < why.Length) return ScoResult.TooMany;
@@ -223,6 +274,15 @@ namespace Sco.Sdk.Tests
             foreach (Sub s in Subs.ToArray())
                 if (s.Event == ev)
                     fixed (byte* p = e) s.Fn(p, &ms, s.Ctx);
+        }
+
+        // An event whose data is a payload struct, as the game pack dispatches the game.* events.
+        private static void DispatchPayload(string ev, void* data)
+        {
+            byte[] e = System.Text.Encoding.UTF8.GetBytes(ev + "\0");
+            foreach (Sub s in Subs.ToArray())
+                if (s.Event == ev)
+                    fixed (byte* p = e) s.Fn(p, data, s.Ctx);
         }
 
         private static void RunTasks()
@@ -288,6 +348,13 @@ namespace Sco.Sdk.Tests
             _actors->spawn_npc = &ActSpawn;
             _actors->despawn = &ActDespawn;
             _actors->last_error = &ActLastError;
+            _actors->health = &ActHealth;
+            _actors->state = &ActState;
+            _world = (ScWorldV1*)NativeMemory.AllocZeroed((nuint)sizeof(ScWorldV1));
+            _world->size = (uint)sizeof(ScWorldV1);
+            _world->raycast = &WorldRaycast;
+            _world->camera = &WorldCamera;
+            _world->last_error = &WorldLastError;
 
             var p = new TestPlugin();
             Expect(PluginExports.LoadPlugin(p, api, self, "test") == ScoResult.Ok, "load");
@@ -331,6 +398,37 @@ namespace Sco.Sdk.Tests
             Expect(actors.SpawnNpc("Npc", 9, new double[] { 1, 2 }, out npc) == ScoResult.BadArg && npc == 0, "SpawnNpc wants 3 coordinates");
             Expect(actors.Despawn(77) == ScoResult.Ok && actors.Despawn(78) == ScoResult.NotFound, "Actors.Despawn");
             Expect(actors.LastError() == "not yours" && actors.LastReadError() == "read", "Actors.LastError, LastReadError");
+            Expect(actors.Health(6, out float hp, out float hpMax) == ScoResult.Ok && hp == 87.5f && hpMax == 0f, "Actors.Health (1.1)");
+            Expect(actors.Health(7, out hp, out _) == ScoResult.NotFound && hp == 0f, "Health of an unknown id");
+            Expect(actors.State(6, out ScActorState st) == ScoResult.Unavailable && st == ScActorState.Alive, "Actors.State is unavailable");
+            uint savedSize = _actors->size;
+            _actors->size = 40;   // a 1.0 table: the 1.1 functions are past its end
+            Expect(actors.Health(6, out _, out _) == ScoResult.Unavailable && actors.State(6, out _) == ScoResult.Unavailable,
+                   "a 1.0 table answers Unavailable for the 1.1 functions");
+            _actors->size = savedSize;
+
+            var world = new World();
+            Expect(world.Open(p) == ScoResult.Ok && world.IsOpen, "game.world opens");
+            Expect(world.Raycast(9, new double[] { 0, 0, 1 }, new double[] { 0, 0, -1 }, 10, out WorldHit hit) == ScoResult.Ok
+                   && hit.Z == -9 && hit.Distance == 10 && hit.EntityId == 0 && hit.Flags == 0, "World.Raycast");
+            Expect(world.Raycast(8, new double[] { 0, 0, 1 }, new double[] { 0, 0, -1 }, 10, out hit) == ScoResult.NotFound && hit == default,
+                   "Raycast of an unknown zone");
+            Expect(world.Raycast(0, new double[] { 0, 0, 1 }, new double[] { 0, 0, -1 }, 10, out _) == ScoResult.BadArg, "Raycast zone 0");
+            Expect(world.Raycast(9, new double[] { 0, 0 }, new double[] { 0, 0, -1 }, 10, out _) == ScoResult.BadArg, "Raycast wants 3 coordinates");
+            Expect(world.Camera(out WorldCamera cam) == ScoResult.Ok && cam.X == 1 && cam.Z == 3 && cam.Qw == 1 && cam.ZoneId == 9, "World.Camera");
+            Expect(world.LastError() == "no hit", "World.LastError");
+
+            ScGamePlayerDied died = default;
+            int diedCount = 0;
+            Subscription ds = p.OnPlayerDied(e => { died = e; ++diedCount; });
+            Expect(ds.Result == ScoResult.Ok, "OnPlayerDied subscribes");
+            var payload = new ScGamePlayerDied { size = (uint)sizeof(ScGamePlayerDied), entity_id = 0x8000000000000016ul };
+            DispatchPayload(GameAbi.EventPlayerDied, &payload);
+            Expect(diedCount == 1 && died.entity_id == 0x8000000000000016ul && died.killer_id == 0, "game.player.died reaches OnPlayerDied");
+            var shortPayload = new ScGamePlayerDied { size = 8, entity_id = 5 };   // shorter than this SDK's struct: dropped
+            DispatchPayload(GameAbi.EventPlayerDied, &shortPayload);
+            Expect(diedCount == 1, "a payload shorter than the struct is dropped");
+            ds.Dispose();
 
             Cmd echo = Cmds[0];
             p.RunOnGameThread(() => ++ran);   // still queued at unload: must never run

@@ -362,7 +362,11 @@ Every function answers `sco_result` and is game thread only: from another thread
 | `local_player(&actor_id, &entity_id)` | Your actor id (as the game's client player record names it) and entity id (as `spawn.entities`' `local_player_id`); `SCO_NOT_FOUND` before you've spawned. Read-only: no `self`; its reason is `last_error(NULL, ...)` |
 | `spawn_npc(self, archetype_class, zone_id, pos[3], &id)` | Spawns an NPC (an entity class name, as in sc-offline's `npcs.txt`) at `pos` in zone `zone_id`'s frame; the NPC is yours. `SCO_NOT_FOUND`: the zone isn't streamed in or the class doesn't exist; `SCO_TOO_MANY`: `SC_ACTORS_MAX_NPCS` (1024) are alive or being removed |
 | `despawn(self, id)` | Removes an NPC you spawned; it leaves the world within a few seconds (once it has streamed in). `SCO_NOT_FOUND`: not yours, or despawned already |
+| `health(id, &cur, &max)` (1.1) | The HealthPool stat of the actor whose entity id is `id` (yours, or an NPC's once streamed in); `*max` is 0: the maximum isn't read yet. Read-only: no `self`, reason in `last_error(NULL, ...)`. `SCO_NOT_FOUND`: not streamed in, or not an actor. Capability `game.actors.health` |
+| `state(id, &state)` (1.1) | alive, incapacitated or dead (`sc_actor_state`). `SCO_UNAVAILABLE` until `game.actors.state` is ready, which needs an in-game run (the game's two "not fully alive" checks are found, but which is dead and which incapacitated is not pinned; the game pack logs both, see [game services](game-services.md)) |
 | `last_error(self, out, &size)` | The reason for `self`'s last failure, with the size handshake |
+
+**1.1** (`SC_ACTORS_VERSION_1_1`, `0x00010001`) appends `health` and `state` at the end of the table (56 bytes; `tests/abi_game_actors.c` pins both sizes' offsets): a 1.0 caller asked for 1.0, still gets the table, and never reads past `last_error`. Check `actors->size > offsetof(sc_actors_v1, health)` before calling a 1.1 function against a host that may only have 1.0.
 
 Ownership: only the plugin that spawned an NPC may despawn it, and the host removes every NPC a plugin still owns when it unloads or crashes (design decision 6). A `self` that isn't a loaded plugin's handle is `SCO_BAD_ARG`. Removal is sc-offline's Clear NPCs: the entity system's RemoveEntity, checked 1.5 s later; if the NPC is still there, the internal remove it ends in (`npc.direct_remove`), then a move about 17,000 km away, far out of streaming range.
 
@@ -398,6 +402,40 @@ Every function returns `sco_result` and is game thread only: from another thread
 Seat flags: `SC_SEAT_USABLE` (the game's own seat picker takes the seat: its owner has a live `IInteractableComponent`), `SC_SEAT_USABLE_KNOWN` (the game pack could check that on this build; without it usability is unknown, not "no"), `SC_SEAT_OCCUPIED` (the occupant field isn't 0), `SC_SEAT_PILOT` (the highest-priority seat). Ships list turret items and remote-operated parts as seats too; the game never puts anyone in them, and `seat` refuses any seat without `SC_SEAT_USABLE` (`SCO_FAILED`, "isn't interactable"). It never evicts: a seat someone else is in is `SCO_FAILED`.
 
 Whose actors and ships: `seat` and `eject` take your player's own actor, or an actor your plugin spawned through `spawn.entities`' `spawn_as` or `game.actors`' `spawn_npc` while your plugin is loaded. `power_on` takes the ship you're aboard, the player's registered vehicles (`RegisterPlayerVehicle`) and ships your plugin spawned through `spawn_as`. Anything else is `SCO_BAD_ARG`. Seat indexes are positions in the list `seats` returns; they hold while the ship stays streamed in, and `seat` / `seat_occupant` read the list afresh each call. Ids are session handles: never store one.
+
+### `game.world` 1.0 (game pack)
+
+[`sc_world.h`](../include/sc_world.h), pinned by [`tests/abi_game_world.c`](../tests/abi_game_world.c): ray casts into the game's physics and the camera you see through. Published by the game pack under the owner `game` (when the product sets `Platform::gameServices`; [game services](game-services.md)). Both functions are read-only queries: no `self`, no change to the game. Game thread only (`SCO_WRONG_THREAD` elsewhere, without touching the game; `last_error` works from any thread), every failure leaves a reason for `last_error`. Capabilities `game.world.raycast` (`build.ground_ray` rows plus the `teleport.*` reads) and `game.world.camera` (`build.camera` rows plus the reads); a function whose capability isn't ready answers `SCO_UNAVAILABLE`.
+
+```c
+const sc_world_v1* world = NULL;
+if (api->size > offsetof(sco_api, query_service) &&
+    api->query_service(SC_WORLD_NAME, SC_WORLD_VERSION_1_0, (const void**)&world) == SCO_OK &&
+    api->has("game.world.raycast")) {
+    sc_world_hit hit = { sizeof(hit) };
+    if (world->raycast(zone_id, from, dir, 100.0, &hit) == SCO_OK) { /* hit.pos, hit.distance */ }
+}
+```
+
+| Function | What |
+|---|---|
+| `raycast(zone_id, from[3], dir[3], max_dist, &hit)` | A ray from `from` (metres, in zone `zone_id`'s local frame) along `dir` (normalised) for at most `max_dist` metres, clamped to `SC_WORLD_RAY_MAX_DISTANCE` (20,000). The cast is sc-offline's build-mode ground ray moved over: the zone and up to two parents (never the world's root zone), nothing skipped. `hit` (`sc_world_hit`, 72 bytes; set `hit.size`) gets `pos` in `zone_id`'s frame and `distance`; `entity_id` and `normal` stay 0 (`hit.flags` says which fields are filled: neither bit is set in 1.0, because the game's hit record doesn't pin them). `SCO_NOT_FOUND`: no hit within `max_dist` (`last_error`: "no hit"), zone not streamed in, or you haven't spawned; `SCO_BAD_ARG`: NULL, zone 0, a non-finite or zero direction, a bad `max_dist` or a too-small `hit.size` |
+| `camera(&pos, &rot_xyzw, &zone_id)` | The camera you see through: `pos` (metres) and `rot_xyzw` in the **world** frame, and the zone your player is in (hand `pos` and `zone_id` to `teleport.spatial`'s `world_to_local` for a local position). **No field of view**: the game computes one per view and nothing pins which is on screen, so there is no `fov` field, not even a guess. `SCO_NOT_FOUND` before you've spawned |
+| `last_error(self, out, &size)` | The reason for the last failed call of any plugin ("" if none), with the size handshake. The queries keep no per-plugin state, so `self` is only checked (NULL or a loaded plugin's handle) |
+
+On the first cast the game pack compares a live entity's vtable slots `0x208` and `0x430` with the `build.entity_ray_proxy` and `build.entity_skip_add` rows (sc-offline's `RaySlotsOk`): a patched game that moved them answers `SCO_UNAVAILABLE` rather than casting through the wrong functions.
+
+### `game.*` events (game pack)
+
+[`sc_game_events.h`](../include/sc_game_events.h), pinned by [`tests/abi_game_events.c`](../tests/abi_game_events.c): payload structs for the events the game pack puts on the kernel event bus. No service table: subscribe by name. Each payload starts with `uint32_t size` (check it before reading a field past the struct you were built against); the pointer is valid during the callback only; handlers run on the game thread from the host's tick, never from a game hook. Capabilities: `game.events.player_spawned`, `game.events.player_died`, `game.events.zone_changed`, `game.events.vehicle_seat` (off: reserved). The table of events, hooks and the vehicle-seat probe is in [game services](game-services.md#events).
+
+```c
+static void on_died(const char* event, const void* data, void* ctx) {
+    const sc_game_player_died* d = (const sc_game_player_died*)data;
+    if (d->size >= sizeof(*d)) { /* d->entity_id */ }
+}
+api->subscribe(self, SC_GAME_EVENT_PLAYER_DIED, on_died, NULL);
+```
 
 ## Raw handlers (1.1)
 

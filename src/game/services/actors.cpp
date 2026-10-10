@@ -1,4 +1,4 @@
-// game.actors 1.0 (sc_actors.h) from the game pack. Moved from sc-offline's npc built-in
+// game.actors 1.1 (sc_actors.h) from the game pack. 1.0 moved from sc-offline's npc built-in
 // (src/npc.cpp: SpawnNpcs, RemoveEntityById and HandleOf, the 1.5 s removal check, the direct
 // removal fallback and Banish), same offsets and slots. The addresses come from the npc.* rows
 // (npc.clear in sco/game/features.h, npc.direct_remove in sco/game/actors.h), the spawn.* rows
@@ -9,11 +9,17 @@
 // release hook (one sco::AddReleaseHook for both services) calls ReleaseActorsOwner when the
 // plugin unloads or crashes, and those NPCs are removed like a despawn. The npc built-in's menu,
 // npcs.txt list and Clear NPCs stay in the product.
+//
+// 1.1 appends health and state (spike B4). health reads the HealthPool stat through the
+// actor.* rows (sco/game/events.h). state stays off (SCO_UNAVAILABLE): the rows are found, but
+// which of the game's two checks means dead and which incapacitated needs an in-game run, so until
+// then the tick and the death/spawn hooks only log what both checks answer (ProbeActorState).
 #include "actors.h"
 #include "spawn.h"
 #include "../../api/internal.h"   // detail::Released
 #include "sco/caps.h"
 #include "sco/game/actors.h"
+#include "sco/game/events.h"
 #include "sco/game/features.h"
 #include "sco/game/reads.h"
 #include "sco/host.h"
@@ -38,6 +44,10 @@ namespace {
 using HandleFromIdFn = void(__fastcall*)(uint64_t* handle, uint64_t id);
 using HandleToIdFn   = uint64_t*(__fastcall*)(const void* handleField, uint64_t* entityId);
 using DirectRemoveFn = bool(__fastcall*)(uintptr_t entitySystem, uint64_t handle);
+using ActorOfUserFn  = uint64_t*(__fastcall*)(uintptr_t itemUser, uint64_t* actorHandle);
+using StatusFn       = uintptr_t(__fastcall*)(uintptr_t actor);
+using GetStatFn      = float(__fastcall*)(uintptr_t status, int stat);
+using PredicateFn    = bool(__fastcall*)(uintptr_t status);
 
 constexpr uint64_t kPtrMask    = 0xFFFFFFFFFFFFull;
 constexpr uint64_t kVerifyMs   = 1500;    // npc.cpp: a removal is checked 1.5 s after it was asked for
@@ -46,6 +56,9 @@ constexpr uint64_t kStreamInMs = 60000;   // a despawned NPC that hasn't streame
 constexpr const char* kCapLocal   = "game.actors.local_player";
 constexpr const char* kCapSpawn   = "game.actors.spawn_npc";
 constexpr const char* kCapDespawn = "game.actors.despawn";
+constexpr const char* kCapHealth  = "game.actors.health";
+constexpr const char* kCapState   = "game.actors.state";
+constexpr uint64_t kProbeEveryMs  = 250;   // the state probe's poll of your player
 constexpr const char* kTeleportRows[] = {   // the reads (sco/game/teleport.h)
     "teleport.to_camera", "teleport.client_mgr", "teleport.handle_from_id", "teleport.entity_system",
 };
@@ -59,12 +72,18 @@ struct Game {
     bool           directRows = false;       // every npc.direct_remove row is OK
     DirectRemoveFn directRemove = nullptr;   // checked against the slot on first use
     int            directState = 0;          // 0 not tried, 1 found, -1 not usable
+    uintptr_t*     components = nullptr;     // the global 8 bytes past teleport.entity_system
+    ActorOfUserFn  actorOfUser = nullptr;    // spawn.actor_of_user
+    StatusFn       statusOf = nullptr;       // actor.status_accessor
+    GetStatFn      getStat = nullptr;        // actor.get_stat
+    PredicateFn    isDeadConfirmed = nullptr;   // actor.is_dead_confirmed (P2)
 };
 
 Game g_game;
 bool g_started = false;
-bool g_canLocal = false, g_canSpawn = false, g_canDespawn = false;
-char g_whyLocal[128] = "", g_whySpawn[128] = "", g_whyDespawn[128] = "";
+bool g_canLocal = false, g_canSpawn = false, g_canDespawn = false, g_canHealth = false;
+bool g_stateProbe = false;   // the actor.state_* rows are OK: the probe logs (the capability stays off)
+char g_whyLocal[128] = "", g_whySpawn[128] = "", g_whyDespawn[128] = "", g_whyHealth[128] = "", g_whyState[128] = "";
 
 // Game thread only. Reserved at start (SC_ACTORS_MAX_NPCS each): an NPC moves from g_npcs to
 // g_removals and spawning counts both, so neither ever grows past its reservation.
@@ -157,6 +176,26 @@ void Resolve() {
     g_canLocal   = SetCap(kCapLocal, local, g_whyLocal, sizeof(g_whyLocal)) && g_game.handleToId;
     g_canSpawn   = SetCap(kCapSpawn, spawn, g_whySpawn, sizeof(g_whySpawn)) && g_game.removeSlot;
     g_canDespawn = SetCap(kCapDespawn, despawn, g_whyDespawn, sizeof(g_whyDespawn)) && g_game.removeSlot;
+
+    // 1.1: health reads an actor's status through the actor.* rows; the actor of an entity id comes
+    // from its ISCItemUser component, as game.vehicles finds it (spawn.actor_of_user).
+    size_t ne = 0;
+    const events::Capability* ec = events::Capabilities(ne);
+    std::vector<const char*> health = teleport, state = teleport;
+    for (const char* id : { "spawn.landing_helper", "spawn.find_seat", "spawn.actor_of_user" }) health.push_back(id);
+    AddRows(ec, ne, "game.actors.health", health);
+    AddRows(ec, ne, "game.actors.state", state);
+    if (RowOk("teleport.entity_system")) g_game.components = g_game.entitySystem + 1;
+    if (RowOk("spawn.actor_of_user")) g_game.actorOfUser = reinterpret_cast<ActorOfUserFn>(Sig("spawn.actor_of_user"));
+    if (RowOk("actor.status_accessor")) g_game.statusOf = reinterpret_cast<StatusFn>(Sig("actor.status_accessor"));
+    if (RowOk("actor.get_stat")) g_game.getStat = reinterpret_cast<GetStatFn>(Sig("actor.get_stat"));
+    if (RowOk("actor.is_dead_confirmed")) g_game.isDeadConfirmed = reinterpret_cast<PredicateFn>(Sig("actor.is_dead_confirmed"));
+    g_canHealth = SetCap(kCapHealth, health, g_whyHealth, sizeof(g_whyHealth)) && g_game.components && g_game.actorOfUser &&
+                  g_game.statusOf && g_game.getStat;
+    // The state rows decide the probe, never the capability: which predicate is dead isn't pinned.
+    g_stateProbe = SetCap(kCapState, state, g_whyState, sizeof(g_whyState)) && g_game.statusOf && g_game.isDeadConfirmed;
+    caps::Set(kCapState, false, "which check is dead and which incapacitated needs an in-game run");
+    if (g_stateProbe) snprintf(g_whyState, sizeof(g_whyState), "%s", "which check is dead and which incapacitated needs an in-game run");
 }
 
 // ---- game reads and calls, under SEH -----------------------------------------------------------
@@ -267,6 +306,73 @@ void Banish(uint64_t id) {
     if (!MoveAway(id)) Log("[game] warning: game.actors: couldn't remove or move NPC %llu", static_cast<unsigned long long>(id));
 }
 
+// ---- health, and the state probe (B4) ----------------------------------------------------------
+
+const char* const kNotStreamed = "the entity isn't streamed in";
+const char* const kNotActor = "the entity isn't an actor";
+
+uintptr_t EntityComponent(uintptr_t entity, const char* type) {
+    uint8_t tmp[16] = {};
+    const uint16_t* id = VCall<const uint16_t*>(*g_game.components, actors::kComponentsTypeId, tmp, type);
+    if (!id) return 0;
+    uint16_t typeId = *id;
+    uint8_t out[16] = {};
+    const uint64_t* h = VCall<const uint64_t*>(entity, actors::kEntityComponent, out, &typeId);
+    return h ? (*h & kPtrMask) : 0;
+}
+
+// The actor of an entity id: your own, or the one behind the entity's ISCItemUser component.
+uintptr_t ActorOfEntityId(uint64_t id, const char*& why) {
+    const uintptr_t entity = reads::EntityFromId(id);
+    if (!entity) { why = kNotStreamed; return 0; }
+    uintptr_t me, myEntity;
+    if (reads::LocalPlayer(me, myEntity) && myEntity == entity) return me;
+    const uintptr_t user = EntityComponent(entity, "ISCItemUser");
+    uint64_t handle = 0;
+    if (user) g_game.actorOfUser(user, &handle);
+    if (!(handle & kPtrMask)) { why = kNotActor; return 0; }
+    return handle & kPtrMask;
+}
+
+// nullptr, or why the health couldn't be read.
+const char* ReadHealth(uint64_t id, float& cur) {
+    __try {
+        const char* why = nullptr;
+        const uintptr_t actor = ActorOfEntityId(id, why);
+        if (!actor) return why;
+        const uintptr_t status = g_game.statusOf(actor);
+        if (!status) return "the actor has no status object";
+        cur = g_game.getStat(status, events::kStatHealthPool);
+        return std::isfinite(cur) ? nullptr : "the health stat isn't finite";
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return "fault while reading the health";
+    }
+}
+
+struct Probe { int p1; int p2; float health; };
+
+bool ReadProbe(uintptr_t actor, Probe& out) {
+    __try {
+        const uintptr_t status = g_game.statusOf(actor);
+        if (!status) return false;
+        out.p1 = VCall<bool>(status, events::kStatusPredicateSlot) ? 1 : 0;
+        out.p2 = g_game.isDeadConfirmed(status) ? 1 : 0;
+        out.health = g_game.getStat ? g_game.getStat(status, events::kStatHealthPool) : -1.0f;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool LocalActor(uintptr_t& actor) {
+    __try {
+        uintptr_t entity;
+        return reads::LocalPlayer(actor, entity);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // ---- removals ----------------------------------------------------------------------------------
 
 uint64_t Now() { return GetTickCount64(); }
@@ -319,7 +425,27 @@ void ProcessRemovals() {
     }
 }
 
-void OnTick(const char*, const void*, void*) { ProcessRemovals(); }
+// The state probe's poll: your own actor's two checks, logged when either changes (and when you
+// first appear). One line per change, so a downed-then-dead run is a handful of lines.
+void PollStateProbe(uint64_t now) {
+    static uint64_t last = 0;
+    static int p1 = -1, p2 = -1;
+    if (!g_stateProbe || now - last < kProbeEveryMs) return;
+    last = now;
+    uintptr_t actor = 0;
+    Probe p = {};
+    if (!LocalActor(actor) || !ReadProbe(actor, p)) { p1 = p2 = -1; return; }
+    if (p.p1 == p1 && p.p2 == p2) return;
+    p1 = p.p1;
+    p2 = p.p2;
+    Log("[game] game.actors state probe (your player): P1 (status vtable slot 0x60) = %d, P2 (CSCActorStatus::IsDeadConfirmed) = %d, HealthPool = %.2f",
+        p.p1, p.p2, static_cast<double>(p.health));
+}
+
+void OnTick(const char*, const void*, void*) {
+    ProcessRemovals();
+    PollStateProbe(Now());
+}
 
 // ---- game.actors (sc_actors.h) -----------------------------------------------------------------
 
@@ -404,8 +530,30 @@ sco_result SvcLastError(sco_plugin* self, char* out, uint32_t* inoutSize) {
     return SCO_OK;
 }
 
+sco_result SvcHealth(uint64_t id, float* outCur, float* outMax) {
+    if (outCur) *outCur = 0;
+    if (outMax) *outMax = 0;
+    if (!OnGameThread()) return Fail(nullptr, Result::WrongThread, "health: game thread only");
+    if (!outCur && !outMax) return Fail(nullptr, Result::BadArg, "health: both out pointers are NULL");
+    if (!g_started || !g_canHealth) return Unavailable(nullptr, "health", kCapHealth, g_whyHealth);
+    if (!id) return Fail(nullptr, Result::BadArg, "health: id 0");
+    float cur = 0;
+    if (const char* err = ReadHealth(id, cur))
+        return Fail(nullptr, err == kNotStreamed || err == kNotActor ? Result::NotFound : Result::Failed, "health(%llu): %s",
+                    static_cast<unsigned long long>(id), err);
+    if (outCur) *outCur = cur;   // *outMax stays 0: the maximum isn't read yet
+    return SCO_OK;
+}
+
+sco_result SvcState(uint64_t, uint32_t* outState) {
+    if (outState) *outState = 0;
+    if (!OnGameThread()) return Fail(nullptr, Result::WrongThread, "state: game thread only");
+    if (!outState) return Fail(nullptr, Result::BadArg, "state: out_state is NULL");
+    return Unavailable(nullptr, "state", kCapState, g_whyState);
+}
+
 const sc_actors_v1 kActors = {
-    sizeof(sc_actors_v1), 0, SvcLocalPlayer, SvcSpawnNpc, SvcDespawn, SvcLastError,
+    sizeof(sc_actors_v1), 0, SvcLocalPlayer, SvcSpawnNpc, SvcDespawn, SvcLastError, SvcHealth, SvcState,
 };
 
 void LogCap(const char* cap, bool ready, const char* why) {
@@ -423,20 +571,23 @@ Result StartActors() {
         std::lock_guard<std::mutex> hold(g_errLock);
         g_errors.reserve(host::kMaxPlugins + 1);
     }
-    Result r = host::ProvideGameService(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, &kActors);
+    Result r = host::ProvideGameService(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_1, &kActors);
     if (r == Result::Ok) {
         r = Subscribe(host::GameOwner(), "tick", OnTick, nullptr);
         if (r != Result::Ok) host::WithdrawGameService(SC_ACTORS_NAME);
     }
     if (r != Result::Ok) {
-        for (const char* cap : { kCapLocal, kCapSpawn, kCapDespawn }) caps::Set(cap, false, "game.actors not published");
+        for (const char* cap : { kCapLocal, kCapSpawn, kCapDespawn, kCapHealth, kCapState })
+            caps::Set(cap, false, "game.actors not published");
         g_game = {};
-        g_canLocal = g_canSpawn = g_canDespawn = false;
+        g_canLocal = g_canSpawn = g_canDespawn = g_canHealth = g_stateProbe = false;
         return r;
     }
     LogCap(kCapLocal, g_canLocal, g_whyLocal);
     LogCap(kCapSpawn, g_canSpawn, g_whySpawn);
     LogCap(kCapDespawn, g_canDespawn, g_whyDespawn);
+    LogCap(kCapHealth, g_canHealth, g_whyHealth);
+    Log("[game] game.actors.state is off: %s%s", g_whyState, g_stateProbe ? "; the state probe logs P1 and P2 for your player" : "");
     g_started = true;
     return Result::Ok;
 }
@@ -452,7 +603,7 @@ void StopActors() {
     }
     Unsubscribe(host::GameOwner(), "tick", OnTick);
     host::WithdrawGameService(SC_ACTORS_NAME);
-    for (const char* cap : { kCapLocal, kCapSpawn, kCapDespawn }) caps::Set(cap, false, "stopped");
+    for (const char* cap : { kCapLocal, kCapSpawn, kCapDespawn, kCapHealth, kCapState }) caps::Set(cap, false, "stopped");
     g_npcs.clear();
     g_removals.clear();
     {
@@ -460,8 +611,19 @@ void StopActors() {
         g_errors.clear();
     }
     g_game = {};
-    g_canLocal = g_canSpawn = g_canDespawn = false;
+    g_canLocal = g_canSpawn = g_canDespawn = g_canHealth = g_stateProbe = false;
     g_started = false;
+}
+
+void ProbeActorState(uintptr_t actor, const char* why) {
+    if (!g_started || !g_stateProbe || !actor) return;
+    Probe p = {};
+    if (!ReadProbe(actor, p)) {
+        Log("[game] game.actors state probe (%s): the actor's status couldn't be read", why);
+        return;
+    }
+    Log("[game] game.actors state probe (%s): P1 (status vtable slot 0x60) = %d, P2 (CSCActorStatus::IsDeadConfirmed) = %d, HealthPool = %.2f",
+        why, p.p1, p.p2, static_cast<double>(p.health));
 }
 
 bool NpcOwnedBy(const void* owner, uint64_t id) {

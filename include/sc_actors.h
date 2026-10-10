@@ -12,6 +12,10 @@
  * when the published table is older than the version asked for. A later 1.x minor only appends
  * functions; check size before calling one: actors->size > offsetof(sc_actors_v1, <function>).
  *
+ * 1.1 appends health and state (the table is 56 bytes; a 1.0 caller still works: it asked for
+ * 1.0 and never reads past last_error). Check actors->size > offsetof(sc_actors_v1, health)
+ * before calling health, and > offsetof(sc_actors_v1, state) before state.
+ *
  * Rules (docs/design/game-services.md):
  *  - Game thread only (a command, a tick or a run_on_game_thread task). From another thread every
  *    function except last_error answers SCO_WRONG_THREAD without touching the game.
@@ -24,9 +28,12 @@
  *    streamed in, never keys to store. Store the archetype's class name instead.
  *  - Nothing is allocated across the boundary; text comes back through caller buffers.
  *  - Every failure leaves a reason for last_error.
- *  - Capabilities (sco_api has()): "game.actors.local_player", "game.actors.spawn_npc" and
- *    "game.actors.despawn", each ready when its signature rows are OK on this game build. A
- *    function whose capability isn't ready answers SCO_UNAVAILABLE.
+ *  - Capabilities (sco_api has()): "game.actors.local_player", "game.actors.spawn_npc",
+ *    "game.actors.despawn" and (1.1) "game.actors.health" and "game.actors.state", each ready when
+ *    its signature rows are OK on this game build. A function whose capability isn't ready
+ *    answers SCO_UNAVAILABLE. game.actors.state is never ready yet: its rows are found, but which
+ *    of the game's two "not fully alive" checks means dead and which incapacitated needs an
+ *    in-game run (docs/design/game-world-spikes.md B4), so state answers SCO_UNAVAILABLE.
  *
  * Positions are teleport.spatial's (sc_spatial.h): metres as doubles in a zone's local frame;
  * zone ids are volatile streaming handles (player_pose, zone_of_entity): never keep one past the
@@ -42,9 +49,18 @@ extern "C" {
 
 #define SC_ACTORS_NAME        "game.actors"
 #define SC_ACTORS_VERSION_1_0 0x00010000u
+#define SC_ACTORS_VERSION_1_1 0x00010001u /* + health, state */
 
 /* NPCs spawned through game.actors and not yet despawned, all plugins together. */
 #define SC_ACTORS_MAX_NPCS 1024u
+
+/* state's answers (1.1). 4 bytes. Reserved: nothing answers them until game.actors.state is ready. */
+typedef enum sc_actor_state {
+    SC_ACTOR_ALIVE = 0,
+    SC_ACTOR_INCAPACITATED = 1,
+    SC_ACTOR_DEAD = 2,
+    SC_ACTOR_STATE_FORCE32 = 0x7fffffff
+} sc_actor_state;
 
 typedef struct sc_actors_v1 {
     uint32_t size; /* sizeof(sc_actors_v1) as the game pack built it */
@@ -73,6 +89,17 @@ typedef struct sc_actors_v1 {
      * self NULL: the last failure of a call made without a plugin handle (local_player). Any
      * thread. */
     sco_result (*last_error)(sco_plugin* self, char* out, uint32_t* inout_size);
+    /* 1.1. The health pool of the actor whose entity id is id: your player's (local_player's
+     * entity id) or an NPC's (spawn_npc's id), once it has streamed in. *out_cur = the game's
+     * HealthPool stat in its own units. *out_max = 0: the maximum isn't read yet, 0 means unknown
+     * (the field is here so a later game pack can fill it without a new table). Either pointer may
+     * be NULL to skip it, not both. Read-only: no self; a failure's reason is last_error(NULL, ...).
+     * SCO_NOT_FOUND: id isn't streamed in or isn't an actor. SCO_UNAVAILABLE: game.actors.health
+     * isn't ready. SCO_BAD_ARG: both pointers NULL. SCO_FAILED: the game faulted. */
+    sco_result (*health)(uint64_t id, float* out_cur, float* out_max);
+    /* 1.1. *out_state = an sc_actor_state. Not published yet: SCO_UNAVAILABLE until
+     * game.actors.state is ready. */
+    sco_result (*state)(uint64_t id, uint32_t* out_state);
 } sc_actors_v1;
 
 #ifdef __cplusplus
