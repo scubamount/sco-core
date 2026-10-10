@@ -39,6 +39,9 @@ That is build 4.10.193.11644 (CL 12660092). The rows, by table:
 | teleport | `teleport.to_camera`, `teleport.client_mgr`, `teleport.handle_from_id`, `teleport.entity_system` | sc-offline's teleport |
 | system | `system.quit` | the host kit's shutdown hook |
 | pak | `pak.datacore_loader` (the DataCore loader), `pak.crypak` (the `ICryPak*` global), `pak.slots` (the loader's read/seek/close calls) | `sco::game::pak`, the CryPak adapter for game-file overrides ([API](api.md#scogamepakh-the-crypak-adapter)) |
+| asop, atc, hangar | 62 rows: `asop.*`, `insurance.*`, `atc.*`, `hangar.*`, `lift.*`, `landing.*`, `respawn.*` | sc-offline's ship terminal, hangar and ATC module, grouped into 11 capabilities ([rows](game/asop.md)) |
+
+On 4.10.196.36804 (timestamp `0x6ac64e6f`) the report is `[core] signatures: 70/70 OK`.
 
 The `pak.*` rows need the exe's `.pdata` (the loader's start comes from its unwind data), which `sco-sigcheck` reads from the file.
 
@@ -78,6 +81,6 @@ Scripts can gate on the exit code. CI checks that the tool builds and exits 2 on
 ## What it can't tell you
 
 - Whether the feature works. A row being found means the bytes match; only playing proves the game still behaves the same.
-- Anything about addresses sc-offline still scans for itself (everything except teleport, the CSystem::Quit hook and, once sc-offline enables `sco::game::pak`, the DataCore loader and CryPak).
+- Anything about addresses sc-offline still scans for itself (everything except teleport, the CSystem::Quit hook, the ASOP/hangar/ATC rows once sc-offline's module reads them and, once sc-offline enables `sco::game::pak`, the DataCore loader and CryPak).
 - Whether the DataCore loader still reads its file only through open/read/seek/close. `pak.slots` proves those calls exist; the in-game load line (`[pak] ... served from its mount`) proves the file was served.
 - Anything about patches applied by other means (the launcher, data files).

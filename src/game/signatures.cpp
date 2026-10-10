@@ -10,13 +10,22 @@ extern const SigDef kSystemSignatures[];
 extern const size_t kSystemSignatureCount;
 extern const SigDef kPakSignatures[];
 extern const size_t kPakSignatureCount;
+extern const SigDef kAsopSignatures[];
+extern const size_t kAsopSignatureCount;
+extern const SigDef kAtcSignatures[];
+extern const size_t kAtcSignatureCount;
+extern const SigDef kHangarSignatures[];
+extern const size_t kHangarSignatureCount;
 
 bool RegisterGameSignatures() {
     static int done = 0;   // 1 = registered, -1 = failed
     if (done) return done > 0;
     const bool ok = RegisterSignatures(kTeleportSignatures, kTeleportSignatureCount)
                  && RegisterSignatures(kSystemSignatures, kSystemSignatureCount)
-                 && RegisterSignatures(kPakSignatures, kPakSignatureCount);
+                 && RegisterSignatures(kPakSignatures, kPakSignatureCount)
+                 && RegisterSignatures(kAsopSignatures, kAsopSignatureCount)
+                 && RegisterSignatures(kAtcSignatures, kAtcSignatureCount)
+                 && RegisterSignatures(kHangarSignatures, kHangarSignatureCount);
     done = ok ? 1 : -1;
     return ok;
 }

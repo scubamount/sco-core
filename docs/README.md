@@ -35,6 +35,7 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 |---|---|
 | [How it works](architecture.md) | Signature rows, results, resolving, the report, startup |
 | [Adding a signature](adding-signatures.md) | Moving a feature's addresses into a table, and the rules rows follow |
+| [ASOP, hangar and ATC rows](game/asop.md) | The 62 rows behind ship terminals, lifts, hangars and ATC, their capabilities and root causes |
 | [Checking a game build](sigcheck.md) | `sco-sigcheck`: output, exit codes, the patch-day routine |
 | [DataCore files and packs](datacore.md) | `sco-dcb info`, `records`, `lint`, `check`, `show` and `diff`: extracting `Game2.dcb`, the layout check, the `.toml` pack format, the `sco.datacore` service, exit codes |
 | [Design: multiplayer and cross-game bridges](design/multiplayer.md) | The scope change of 2026-10-09, what the fork's multiplayer code does, the `sco.net` and `sco.ipc` services, the `sco::game::net` rows, sc-offline's built-ins and the PR plan; in review |
