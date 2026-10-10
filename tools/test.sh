@@ -276,7 +276,9 @@ grep -F 'dcb_pack: OK' "$OUT/dcb_pack.log"
 # Plugins: discovery, plugin.ini, the native loader and the content index. The native tests load
 # real shared libraries built from tests/fixtures/plugins/native/fake_plugin.c, one per behavior
 # (FAKE_MODE), into tests/out/plugins/m<mode>/ with a generated plugin.ini; m11 is a second clean
-# plugin and text/ an entry that is not a library.
+# plugin, svc_provider/svc_prov_b/c/d provide a service (mode 11), svc_caller (mode 12) has commands
+# that call svc_provider's, and text/ is an entry that is not a library.
+# Keep in step with CMakeLists.txt and tools/test-win.sh.
 PLUG=$OUT/plugins
 rm -rf "$PLUG"
 SHARED=(-shared -fPIC); [ "$(uname)" = Darwin ] && SHARED=(-dynamiclib)
@@ -288,6 +290,8 @@ plugin() {   # plugin <id> <mode>
 }
 for m in 0 1 2 3 4 5 6 7 8 9 10; do plugin "m$m" "$m"; done
 plugin m11 0
+for p in svc_provider svc_prov_b svc_prov_c svc_prov_d; do plugin "$p" 11; done
+plugin svc_caller 12
 mkdir -p "$PLUG/text"
 printf 'id = text\nname = Not a library\nversion = 1\napi = 1.0\nkind = native\nentry = text.so\n' > "$PLUG/text/plugin.ini"
 echo "not a shared library" > "$PLUG/text/text.so"

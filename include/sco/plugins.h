@@ -78,7 +78,7 @@ enum class State : uint32_t {
     Ready,      // passed discovery; LoadNative (native), LoadScript (lua) or Build (data) takes it
     Loaded,     // native, builtin: sco_plugin_load returned OK; lua: the entry script ran; data: indexed
     Crashed,    // faulted in plugin code, or couldn't be released; never called again, DLL kept mapped
-    Unloaded,   // unloaded cleanly; DLL closed
+    Unloaded,   // unloaded cleanly; DLL closed (kept mapped when a service table of it was handed out)
 };
 const char* StateName(State s);                   // "off", "disabled", "refused", ...
 
@@ -97,7 +97,8 @@ struct Plugin {
     State       state = State::Refused;
     std::string reason;                           // why Refused / Disabled / Crashed
     // native (module, exports), builtin (exports), lua (self)
-    void*         module = nullptr;               // module handle while mapped; always null for a builtin
+    void*         module = nullptr;               // module handle while mapped (also kept after an unload that
+                                                  // left it mapped: see UnloadNative); null for a builtin
     sco_plugin*   self = nullptr;                 // the owner handle the host passed to load
     NativeExports exports;
     uint32_t      loadOrder = 0;                  // 1-based among loaded natives, builtins and scripts; 0 = never
@@ -145,6 +146,10 @@ ModuleOps PlatformModuleOps();
 // Crash guard: runs thunk(ctx); returns 0, or a nonzero fault code if plugin code faulted
 // (Windows: the SEH exception code, e.g. 0xC0000005). Default on Windows: __try/__except.
 // Elsewhere the default calls straight through (no containment); tests install their own.
+// The Windows default also records which modules the faulting frames were in (at most 32 frames,
+// up to its own), which CallPlugin uses to blame the plugin whose code faulted. Stack overflow is
+// not walked (too little stack is left): it is blamed on the owner. A guard that records nothing
+// (every non-Windows one) gets owner blame.
 using CallGuard = uint32_t (*)(void (*thunk)(void* ctx), void* ctx);
 void      SetCallGuard(CallGuard guard);         // nullptr restores the default
 uint32_t  Guarded(void (*thunk)(void* ctx), void* ctx);
@@ -166,7 +171,17 @@ bool LoadNative(Plugin& p, const sco_api* api, sco_plugin* self, const Options& 
 // Calls into a loaded plugin's code (an event callback, a command, a task, a done callback):
 // the runtime guard ContainCallouts installs routes every callout of a Loaded plugin through
 // this. Skips the call and returns false unless p is Loaded; runs thunk(ctx) under Guarded(); on
-// a fault calls MarkCrashed(p, where, code) and returns false. Game thread only.
+// a fault returns false and blames the code that faulted:
+//   - the first frame (innermost first) inside a plugin module that is not p's names another
+//     plugin, typically a provider whose service p called: that plugin gets
+//     MarkCrashed(culprit, "a service call from <p>", code) and p stays Loaded (its callout did
+//     not complete, its command answers Crashed). A culprit that is not Loaded any more (crashed,
+//     or unloaded with its module kept mapped) is only logged. Needs ContainCallouts's list to
+//     find the culprit; off the game thread the verdict is queued as a task and applied there.
+//   - otherwise (the first plugin frame is p's, no plugin frame, a built-in p, no trace) p gets
+//     MarkCrashed(p, where, code). Built-ins share the product's module, so a fault inside one is
+//     always blamed on its owner.
+// Faults in query, load, unload and script load keep owner blame. Game thread only.
 bool CallPlugin(Plugin& p, const char* where, void (*thunk)(void* ctx), void* ctx);
 
 // Marks a loaded plugin crashed after a fault caught in one of its callbacks (CallPlugin calls
@@ -188,7 +203,11 @@ void ContainCallouts(std::vector<Plugin>* list);
 // does a fault nested inside it, such as a crashing command it invoked), sco::Release(self),
 // close the module, state Unloaded. If Release fails (TooMany, or WrongThread when called off
 // the game thread) the module stays mapped and the plugin is Crashed with reason
-// "release failed: <RESULT>". Game thread only. No-op unless Loaded.
+// "release failed: <RESULT>". If a service table of the plugin was handed out by
+// sco::QueryService (sco::ServiceTableHandedOut), the module is not closed either: the state
+// changes as for any unload, ops.close is skipped, `module` stays set and mod.log says "kept
+// mapped: its service table was handed out" (a caller may still hold the table; the module stays
+// mapped until the process ends). Game thread only. No-op unless Loaded.
 void UnloadNative(Plugin& p, const ModuleOps& ops = PlatformModuleOps());
 
 // ---- built-in plugins -----------------------------------------------------------------------
