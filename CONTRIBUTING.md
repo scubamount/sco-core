@@ -7,7 +7,7 @@ sco-core is the game-facing core of [sc-offline](https://github.com/scubamount/s
 - **Offline, never CIG's servers.** Two kinds of connection are allowed: local IPC with other processes on the same PC (bridges such as Titanfall 2/Northstar or Minecraft), and private co-presence between sc-offline players over a LAN or VPN through `sco.net`. Never: connecting to Star Citizen's servers or online services, public or official online play, getting around anti-cheat or skipping its steps, signature-check bypass, account or entitlement tampering, forcing the game's host type or network context, unauthenticated remote commands between peers, telemetry, or anything that helps cheating in the official game. Full list: [Plugin rules](sdk/docs/plugin-rules.md). PRs like that are closed.
 - **No game files.** Byte patterns and the names of strings the game references are fine. Don't commit pieces of `StarCitizen.exe`, dumps or anything extracted from the game.
 - **No secrets or personal data** in code, tests or logs you paste.
-- **Portable core.** Only `src/sco_image_win.cpp` and the `_WIN32` halves of `src/plugins/loader.cpp` and `src/plugins/guard_win.cpp` may include Windows headers. Everything else must build with clang or gcc on macOS and Linux, so the tests and `sco-sigcheck` keep running without Windows, and with MSVC x64, the real target.
+- **Portable core.** Only `src/sco_image_win.cpp`, `src/ipc/shm_win.cpp` and the `_WIN32` halves of `src/plugins/loader.cpp` and `src/plugins/guard_win.cpp` may include Windows headers. Everything else must build with clang or gcc on macOS and Linux, so the tests and `sco-sigcheck` keep running without Windows, and with MSVC x64, the real target.
 - **The plugin ABI only grows.** `include/sco_api.h` follows the rules in [Plugin API v1 § Compatibility](docs/api-v1.md#compatibility). Any change to it updates `tests/abi_v1.c` and `docs/api-v1.md` in the same PR.
 - **No new dependencies** without discussing it in an issue first.
 
@@ -43,3 +43,5 @@ The product change and its sco-core counterpart can merge in either order; the p
 ## License
 
 GPL-3.0 ([LICENSE](LICENSE)). By opening a pull request you agree your contribution is licensed under GPL-3.0.
+
+**Interface exception:** [`include/sc_ipc.h`](include/sc_ipc.h), the shared-memory wire of `sco.ipc` bridges, is MIT (`SPDX-License-Identifier: MIT` and the MIT text in its header), so a program that isn't GPL, the other side of a bridge, may include it and speak the protocol ([docs/ipc.md](docs/ipc.md)). It covers that one file only; contributions to it are licensed under MIT. `include/sco_ipc.h`, the service and everything else stay GPL-3.0. Keep `sc_ipc.h` free of any sco-core include.

@@ -4,7 +4,7 @@
     sdk/package.py [--out DIR]          # writes DIR/sco-sdk-<version>.zip (default: sdk/out)
 
 The zip holds one folder, sco-sdk-<version>/, with everything a modder needs and nothing else:
-sco_api.h, sco_storage.h, sco_datacore.h, sco_ui.h, the C++20 headers (include/scosdk/), the C# library
+sco_api.h, sco_storage.h, sco_datacore.h, sco_ui.h, sco_ipc.h and its MIT wire sc_ipc.h, the C++20 headers (include/scosdk/), the C# library
 (csharp/), the CMake helper, the template, the examples, sco-plugin-check, the docs, LICENSE
 and SHA256SUMS. It needs only Python 3 (no zip tool), and the same sources always give the same
 bytes: entries are sorted and carry a fixed timestamp.
@@ -29,6 +29,8 @@ CONTENT = [
     ("include/sco_storage.h", "include/sco_storage.h"),
     ("include/sco_ui.h", "include/sco_ui.h"),
     ("include/sco_datacore.h", "include/sco_datacore.h"),
+    ("include/sco_ipc.h", "include/sco_ipc.h"),
+    ("include/sc_ipc.h", "include/sc_ipc.h"),
     ("include/scosdk", "include/scosdk"),
     ("LICENSE", "LICENSE"),
     ("sdk/VERSION", "VERSION"),
@@ -43,6 +45,7 @@ CONTENT = [
     ("docs/api-v1.md", "docs/api-v1.md"),
     ("docs/sdk-cpp.md", "docs/sdk-cpp.md"),
     ("docs/sdk-csharp.md", "docs/sdk-csharp.md"),
+    ("docs/ipc.md", "docs/ipc.md"),
 ]
 SKIP_DIRS = {"build", "out", "bin", "obj", ".DS_Store"}  # bin, obj: dotnet build output
 

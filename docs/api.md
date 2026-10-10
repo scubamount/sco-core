@@ -195,6 +195,17 @@ struct Options {
 | `void storage::Stop()` | Withdraws the service, rolls back open transactions, closes every database; the table then answers `SCO_UNAVAILABLE`. No-op unless started. Call after every plugin has unloaded |
 | `bool storage::Started()`, `const sco_storage_v1* storage::Table()`, `fs::path storage::DatabasePath(const char* id)` | State, the table `query_service` hands out, and a plugin's database path (empty unless started) |
 
+## `sco/ipc.h`: the `sco.ipc` service
+
+The host side of [`sco.ipc`](ipc.md) (library `sco_ipc`; the platform half is `src/ipc/shm_win.cpp`, or `shm_posix.cpp` for the host tests). `sco::app::Start` starts it, `sco::app::Tick` calls `ipc::Tick` and `sco::app::Stop` stops it after `UnloadAll`; other hosts call them themselves. Any thread.
+
+| Function | Does |
+|---|---|
+| `Result ipc::Start(const Options& o = {})` | Publishes `sco.ipc` 1.0 and installs a release hook, so `Release(self)` marks each of the plugin's channels closed and unmaps it. `Options::prefix` (default `ipc::kPrefix`, `Local\SCO_`; a test may add a unique tail) must start with `kPrefix`. `BadArg`: a bad prefix, already started |
+| `void ipc::Stop()` | Withdraws the service and closes every channel; the table then answers `SCO_UNAVAILABLE`. No-op unless started |
+| `void ipc::Tick()` | Writes the owner heartbeat (`GetTickCount64`) of every open channel |
+| `bool ipc::Started()`, `const sco_ipc_v1* ipc::Table()`, `std::string ipc::MappingName(id, channel)` | State, the table `query_service` hands out, and a channel's mapping name (empty unless started and both parts valid) |
+
 ## `sco/ui.h`: the `sco.ui` service
 
 The host side of [`sco.ui`](ui.md) (library `sco_ui`): the registry of plugin tabs, overlays and badges and the hotkey table. No renderer: the product draws what is registered. `sco::app::Start` calls `ui::Start` and reserves `Platform::reservedChords`; other hosts call them themselves.
