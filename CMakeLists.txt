@@ -394,6 +394,28 @@ if(SCO_BUILD_TESTS)
   add_test(NAME abi_sc_net
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_sc_net_targets})
 
+  # The sco.net table pin (tests/abi_net.c), the same three ways.
+  set(_abi_net_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_net.cpp")
+  file(CONFIGURE OUTPUT "${_abi_net_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_net.c\"\n")
+  add_library(sco_abi_net_c OBJECT tests/abi_net.c)
+  add_library(sco_abi_net_cxx OBJECT "${_abi_net_cxx}")
+  set(_abi_net_targets sco_abi_net_c sco_abi_net_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_net_short_enums OBJECT tests/abi_net.c)
+    target_compile_options(sco_abi_net_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_net_targets sco_abi_net_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_net_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME abi_net
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_net_targets})
+
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
   sco_project_target(test_core)
