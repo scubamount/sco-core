@@ -307,4 +307,27 @@ size_t WithdrawHostServices() {
     return n > 0 ? static_cast<size_t>(n) : 0;
 }
 
+// ---- game services ----------------------------------------------------------------------------
+
+namespace {
+char g_gameOwner = 0;   // its address is the owner token (not const: never folded); never released
+}  // namespace
+
+const void* GameOwner() { return &g_gameOwner; }
+
+Result ProvideGameService(const char* name, uint32_t version, const void* table) {
+    if (!name) return Result::BadArg;
+    if (strncmp(name, "game.", 5) == 0) return ProvideService(GameOwner(), kGameId, name, version, table);
+    for (const char* compat : kGameCompatNames)
+        if (strcmp(name, compat) == 0) return ProvideService(GameOwner(), nullptr, name, version, table);
+    return Result::BadArg;
+}
+
+Result WithdrawGameService(const char* name) { return ReleaseService(GameOwner(), name); }
+
+size_t WithdrawGameServices() {
+    const long n = detail::ReleaseServices(GameOwner());
+    return n > 0 ? static_cast<size_t>(n) : 0;
+}
+
 }  // namespace sco::host

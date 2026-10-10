@@ -1,7 +1,8 @@
 /* sc_spatial.h: sc-offline's teleport.spatial service: where you are, and positions converted
- * between the game's zones. This header ships with the sco SDK; the service is provided by
- * sc-offline's built-in "teleport" plugin, which publishes it through sco_api 1.1
- * (provide_service). The sc_ prefix marks a product's service: sco_ is reserved for host services.
+ * between the game's zones. This header ships with the sco SDK; the service is published by the
+ * Star Citizen game pack under the owner "game" (docs/game-services.md; before game pack 0.1.0,
+ * by sc-offline's built-in "teleport" plugin, with the same table). The sc_ prefix marks a game or
+ * product service: sco_ is reserved for host services.
  * To use it:
  *
  *   const sc_spatial_v1* sp = NULL;
@@ -23,9 +24,9 @@
  * Every function returns 1 when it answered and 0 when it can't (wrong thread, you haven't
  * spawned, an id that isn't streamed in, a null pointer, teleport unavailable on this game build);
  * outputs are written only on 1. Game thread only (a command, a tick or a run_on_game_thread
- * task): every call reads the game afresh, nothing is kept from an earlier tick. The built-in loads
- * before every plugin and unloads after them, so the table stays valid while your plugin is
- * loaded. Check size before calling a function a later minor adds. */
+ * task): every call reads the game afresh, nothing is kept from an earlier tick. The game pack
+ * publishes it before every plugin loads and withdraws it after they unload, so the table stays
+ * valid while your plugin is loaded. Check size before calling a function a later minor adds. */
 #ifndef SC_SPATIAL_SERVICE_H
 #define SC_SPATIAL_SERVICE_H
 #include <stdint.h>

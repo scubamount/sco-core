@@ -450,6 +450,23 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     sco::app::Stop();
     CHECK(!sco::caps::Has("sco.net") && !sco::net::Started());
     CHECK(api->query_service(SCO_NET_NAME, SCO_NET_VERSION_1_0, &table) == SCO_NOT_FOUND);
+
+#ifdef SCO_GAME_SERVICES
+    // gameServices: the game pack publishes teleport.spatial under "game" before plugins load and
+    // withdraws it after. With no game image the teleport.* rows aren't OK, so it answers 0.
+    pf.gameServices = true;
+    CHECK(sco::app::Start(pf));
+    CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_OK && table);
+    if (table) {
+        struct Spatial { uint32_t size; int (*player_pose)(double*, double*, uint64_t*); };
+        double pos[3], rot[4]; uint64_t zone = 0;
+        CHECK(static_cast<const Spatial*>(table)->size >= sizeof(Spatial));
+        CHECK(static_cast<const Spatial*>(table)->player_pose(pos, rot, &zone) == 0);
+    }
+    sco::app::Stop();
+    CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_NOT_FOUND);
+    pf.gameServices = false;
+#endif
     fs::remove_all(out / "app", ec);
 }
 
