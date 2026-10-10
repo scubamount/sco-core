@@ -167,7 +167,7 @@ typedef void (*sco_event_fn)(const char* event, const void* data, void* ctx);
 | `subscribe(self, event, fn, ctx)` | Any | Calls `fn(event, data, ctx)` for each dispatch of `event`. Applies from the next dispatch |
 | `unsubscribe(self, event, fn)` | Any | Removes the subscription for that `event` and `fn`; `SCO_NOT_FOUND` if there is none. Applies at once: a dispatch in progress won't call `fn` again. See [Freeing ctx](#freeing-ctx) |
 | `status(self, message)` | Any | Shows `hello: message` on the status line |
-| `log(self, level, message)` | Any | Writes `[hello] message` to `mod.log` |
+| `log(self, level, message)` | Any | Writes `[hello] message` to `mod.log`, on one line: CR and LF in `message` become spaces (so do they in `status`) |
 | `register_command(self, cmd)` | Any | Adds a command; see [Commands](#commands) |
 | `invoke(self, name, args, nargs, done, ctx)` | Any | Runs a command; see [Commands](#commands) |
 | `provide_service(self, name, version, vtable)` | Any | 1.1. Publishes a function table for other plugins; see [Services](#services-11) |

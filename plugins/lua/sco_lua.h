@@ -21,6 +21,7 @@ extern "C" {
 /* Limits for every script. */
 #define SCO_LUA_STEP_BUDGET   1000000u          /* per callback: VM instructions + library steps */
 #define SCO_LUA_MEMORY_LIMIT  (64u * 1024 * 1024) /* bytes per script */
+#define SCO_LUA_TOTAL_MEMORY_LIMIT (256u * 1024 * 1024) /* bytes, every script together */
 #define SCO_LUA_MAX_SOURCE    (1024u * 1024)     /* entry script size */
 #define SCO_LUA_MAX_SCRIPTS   64
 #define SCO_LUA_MAX_EVENTS    16                 /* distinct event names one script subscribes to */
