@@ -675,13 +675,14 @@ Public License instead of this License.  But first, please read
 
 ------------------------------------------------------------------------------
 
-Interface exception: include/sc_ipc.h
+Interface exception: include/sc_ipc.h and include/sc_net.h
 
 Everything in sco-core is licensed under the GNU General Public License
-version 3 above, except the single file include/sc_ipc.h, the shared-memory
-wire format of sco.ipc bridges. That file carries the per-file tag
-"SPDX-License-Identifier: MIT" and the MIT license text in its header, so a
-program that isn't GPL (the other side of a bridge, such as a plugin for
-another game) may include it and speak the protocol. The exception covers
-that one file only: include/sco_ipc.h, the sco.ipc service and the rest of
-sco-core remain GPL-3.0.
+version 3 above, except two files: include/sc_ipc.h, the shared-memory wire
+format of sco.ipc bridges, and include/sc_net.h, the datagram wire format of
+sco.net sessions. Each carries the per-file tag "SPDX-License-Identifier: MIT"
+and the MIT license text in its header, so a program that isn't GPL (the
+other side of a bridge, such as a plugin for another game, or another
+program speaking sco.net) may include it and speak the protocol. The
+exception covers those two files only: include/sco_ipc.h, include/sco_net.h,
+the services and the rest of sco-core remain GPL-3.0.

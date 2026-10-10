@@ -382,6 +382,15 @@ No OpenSSL and no new large dependency. sco-core vendors a **single-file C** imp
 - **Framing.** 32-bit length caps on every field (checked before any allocation), **monotonic per-sender sequence numbers**, a **sliding replay window** that rejects stale or duplicate `seq`, and **constant-time** MAC comparison.
 - **Confidentiality.** Traffic is **authenticated and integrity-protected but plaintext on the wire** — contents can be read by someone on the path. State this plainly to players: run sessions over a **VPN (Tailscale, ZeroTier, Radmin)** for confidentiality. Default binding is **LAN-only**; VPN ranges are opt-in (section 3.1).
 
+**As built (plan PR 4a).** The platform-free core is in `src/net/` and `include/sco/net/`; the wire, handshake and delivery rules as built are in [sco.net wire format](../net-wire.md). Where it differs from the text above, and why:
+
+- **The crypto is written for sco-core, not vendored.** `src/net/sha2.c` (plain C11, about 200 lines, under the project's own warnings) instead of `third_party/sha2/`: nothing to fetch, pin or audit from outside, and it is checked against the FIPS 180-4, RFC 4231, RFC 7914 and RFC 6070-style vectors in `tests/test_net.cpp`.
+- **Per-link keys.** Packets are MACed under `HMAC(K, "sco.net link" || cn || hn)`, derived from the session key and both handshake nonces, not under `K` itself: a packet from an earlier join (same peer, same `seq`) never verifies again, and one joiner can't forge another's packets.
+- **WELCOME is authenticated, and the table and peers follow it.** WELCOME carries an HMAC under `K` that the joiner checks (mutual authentication: a host without the passphrase admits no one). The channel table and the peer list, which can exceed one datagram, are the first reliable message on the control channel (SYNC). HELLO carries the channel names that fit; the rest are registered on the control channel.
+- **Star topology.** Joiners talk only to the host, which relays to the other joiners under its own link keys. So `sender_peer_id` is the link's sender (the host, for relayed messages), and the message's origin peer travels in the DATA body; the host checks a joiner can only be its own origin.
+- **The wire is also a standalone MIT header** (maintainer's roadmap ADR-003): `include/sc_net.h`, under the same interface exception as `sc_ipc.h`, so a program outside sco-core can frame and verify packets; sco-core's own code is built on its definitions. Its MAC input is the order above with the kind and two lengths added (`version || kind || u16 len || channel_fqn || sender_peer_id || seq || body_len || body`), so no two different packets share one.
+- **The iteration count is not on the wire.** `kPbkdf2Iters` (200,000) is a protocol constant; raising it needs a `kProtocolVersion` bump. Tests lower it through `Options` on both sides.
+
 ## 4. sc-offline design
 
 ### 4.1 `builtins/multiplayer`
@@ -499,3 +508,4 @@ The directive settled the earlier open questions. This document takes no legal p
 | Peer entity field | Kept, session-scoped (0 when streamed out) |
 | Lua | Peer list + pub/sub only, when the manifest `requires = sco.net`; no session control |
 | Terms of service | The maintainer decided to proceed; this document takes no legal position |
+| `sco.net` location (maintainer, 2026-10-10) | `sco.net` lives in sco-core as a host service: sockets, sessions, crypto, channel isolation and quotas, as section 3.1 says. This overrides the directive's line "sco-core contains zero socket code" |

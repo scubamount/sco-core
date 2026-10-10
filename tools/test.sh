@@ -49,6 +49,16 @@ clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x
 printf '#include "sc_ipc.h"\n' | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
 printf '#include "sc_ipc.h"\n' | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
 echo "abi_ipc: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_ipc.h stands alone"
+# The MIT wire of sco.net packets (tests/abi_sc_net.c), the same five ways; and sc_net.h on its own, as a
+# program outside sco-core includes it, as C11 and C++20.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_sc_net.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_sc_net.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_sc_net.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_sc_net.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_sc_net.c"
+printf '#include "sc_net.h"\n' | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
+printf '#include "sc_net.h"\n' | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
+echo "abi_sc_net: wire pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_net.h stands alone"
 # The teleport.spatial table sc-offline provides (tests/abi_spatial.c), the same five ways.
 "$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spatial.c"
 "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spatial.c"
@@ -161,6 +171,16 @@ IPC=("$ROOT/tests/test_ipc.cpp" "$ROOT/src/ipc/ipc.cpp" "$ROOT/src/ipc/shm_posix
 "$OUT/test_ipc"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${IPC[@]}" -o "$OUT/test_ipc_tsan"
 "$OUT/test_ipc_tsan"
+# sco.net's core (sco/net/*.h): sha2.c built as C once per sanitizer set with -Werror like the rest;
+# sessions of several Cores over the seeded in-memory network, so both sanitizer sets.
+NET_C=(-std=c11 -O1 -g -Wall -Wextra -Wpedantic -Werror -I "$ROOT/include")
+"$CC" "${NET_C[@]}" -fsanitize=address,undefined -c "$ROOT/src/net/sha2.c" -o "$OUT/sha2_asan.o"
+"$CC" "${NET_C[@]}" -fsanitize=thread -c "$ROOT/src/net/sha2.c" -o "$OUT/sha2_tsan.o"
+NET=("$ROOT/tests/test_net.cpp" "$ROOT/src/net/wire.cpp" "$ROOT/src/net/reliable.cpp" "$ROOT/src/net/core.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${NET[@]}" "$OUT/sha2_asan.o" -o "$OUT/test_net"
+"$OUT/test_net"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${NET[@]}" "$OUT/sha2_tsan.o" -o "$OUT/test_net_tsan"
+"$OUT/test_net_tsan"
 
 # The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
 # corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb

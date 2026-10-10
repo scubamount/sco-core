@@ -4,7 +4,7 @@
     sdk/package.py [--out DIR]          # writes DIR/sco-sdk-<version>.zip (default: sdk/out)
 
 The zip holds one folder, sco-sdk-<version>/, with everything a modder needs and nothing else:
-sco_api.h, sco_storage.h, sco_datacore.h, sco_ui.h, sc_spatial.h, sc_spawn.h, sco_ipc.h and its MIT wire sc_ipc.h, the C++20 headers
+sco_api.h, sco_storage.h, sco_datacore.h, sco_ui.h, sc_spatial.h, sc_spawn.h, sco_ipc.h and its MIT wire sc_ipc.h, the MIT sco.net wire sc_net.h, the C++20 headers
 (include/scosdk/), the C# library (csharp/), the CMake helper, the template, the examples, sco-plugin-check, the docs,
 ImGui's public headers (third_party/imgui/), LICENSE and SHA256SUMS. It needs only Python 3 (no zip tool), and the same sources always give the same
 bytes: entries are sorted and carry a fixed timestamp.
@@ -31,6 +31,7 @@ CONTENT = [
     ("include/sco_datacore.h", "include/sco_datacore.h"),
     ("include/sco_ipc.h", "include/sco_ipc.h"),
     ("include/sc_ipc.h", "include/sc_ipc.h"),
+    ("include/sc_net.h", "include/sc_net.h"),
     ("include/sc_spatial.h", "include/sc_spatial.h"),
     ("include/sc_spawn.h", "include/sc_spawn.h"),
     ("include/scosdk", "include/scosdk"),
@@ -49,6 +50,7 @@ CONTENT = [
     ("docs/sdk-cpp.md", "docs/sdk-cpp.md"),
     ("docs/sdk-csharp.md", "docs/sdk-csharp.md"),
     ("docs/ipc.md", "docs/ipc.md"),
+    ("docs/net-wire.md", "docs/net-wire.md"),
 ]
 SKIP_DIRS = {"build", "out", "bin", "obj", ".DS_Store"}  # bin, obj: dotnet build output
 
