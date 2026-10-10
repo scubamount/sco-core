@@ -72,6 +72,36 @@ constexpr Check kHelperChecks[] = {
     { 0x55C, "E8",             "layout changed at +0x55c" },   // call set location
 };
 
+// The entity system calls sc-offline's spawner, npc, ammo and loadout code make with the same
+// slots, as this helper makes them (offset sweep; not part of the scan sc-offline ran).
+constexpr Check kHelperSlotChecks[] = {
+    { 0x031, "48 8B 01 FF 90 28 01 00 00", "entity system slot 0x128 changed (+0x031)" },   // handle by id
+    { 0x0F7, "48 8B B8 90 03 00 00",       "entity slot 0x390 changed (+0x0f7)" },          // component by type
+    { 0x11D, "48 8B 01 FF 50 10",          "components slot 0x10 changed (+0x11d)" },       // type id by name
+    { 0x29C, "48 8B 01 FF 90 C0 00 00 00", "entity system slot 0xc0 changed (+0x29c)" },    // class registry
+    { 0x2A9, "48 8B 08 4C 8B 41 20",       "class registry slot 0x20 changed (+0x2a9)" },   // find class
+    { 0x5DA, "48 8B 01 FF 90 18 01 00 00", "entity system slot 0x118 changed (+0x5da)" },   // spawn attributes
+    { 0x765, "49 8B 06 48 8B 98 C8 00 00 00", "entity system slot 0xc8 changed (+0x765)" }, // create batch
+    { 0x896, "48 8B 01 FF 50 10",          "spawn batch slot 0x10 changed (+0x896)" },      // spawn
+    { 0x8E4, "4C 8B 80 D8 00 00 00",       "entity system slot 0xd8 changed (+0x8e4)" },    // release batch
+};
+// Where the helper loads the entity system global (teleport.entity_system) for those calls, and
+// the components global next to it (+8; sc-offline reads it as gEnv+0xB0 = gEnv+0xA8+8).
+constexpr size_t kHelperEntitySystemLoads[] = { 0x019, 0x295, 0x5CB, 0x75C, 0x8D2 };
+constexpr size_t kHelperComponentsLoad = 0x10A;
+
+const char* HelperSlots(const Image& img, const uint8_t* f) {
+    for (const Check& c : kHelperSlotChecks)
+        if (!rows::InText(img, f + c.off, rows::PatternBytes(c.bytes)) || !BytesMatch(f + c.off, c.bytes)) return c.why;
+    const uint8_t* es = Sig("teleport.entity_system");
+    for (size_t off : kHelperEntitySystemLoads)
+        if (!BytesMatch(f + off + 1, "8B ?? ?? ?? ?? ??") || RipTarget(f + off, 3, 7) != es)
+            return "the helper's entity system loads don't read teleport.entity_system";
+    if (!BytesMatch(f + kHelperComponentsLoad, "48 8B 0D") || RipTarget(f + kHelperComponentsLoad, 3, 7) != es + 8)
+        return "the components global isn't teleport.entity_system+8 (+0x10a)";
+    return nullptr;
+}
+
 SigResult ResolveLandingHelper(const Image& img) {
     const uint8_t* msg = FindCString(img.rdata, "Landing Area could not be found.");
     if (!msg) return SigFail("the Landing Area message isn't in .rdata");
@@ -82,6 +112,7 @@ SigResult ResolveLandingHelper(const Image& img) {
     const uint8_t* f = refs[0] - 0x59;
     for (const Check& c : kHelperChecks)
         if (!rows::InText(img, f + c.off, rows::PatternBytes(c.bytes)) || !BytesMatch(f + c.off, c.bytes)) return SigFail(c.why);
+    if (const char* why = HelperSlots(img, f)) return SigFail(why);
     return SigOk(f);
 }
 
@@ -106,6 +137,7 @@ constexpr FnSpec kFindSeat{
 
 constexpr Check kSeatChecks[] = {
     { 0x1D6, "FF 90 78 07 00 00", "seat picker changed at +0x1d6" },   // call [rax+0x778]: the seat container
+    { 0x223, "41 B8 C1 00 00 00", "seat item type 193 changed (+0x223)" },   // sweep: for_each_seat's item type
 };
 constexpr Check kSeatCallbackChecks[] = {
     { 0x037, "48 83 BF 58 01 00 00 00", "seat callback changed at +0x037" },   // cmp [rdi+0x158], 0
@@ -293,8 +325,13 @@ constexpr CallSpec kDirectRemove{ "npc.direct_remove_call", 6, "no call at +0x06
 
 // ---- infinite ammo: the magazine setter (ammo.cpp) -----------------------------------------------
 
+// Sweep: the magazine fields sc-offline reads (the key, +0xC4, is in the pattern).
+constexpr Check kSetAmmoChecks[] = {
+    { 0x25, "44 33 B9 C0 00 00 00", "magazine count field changed (+0x25)" },   // xor r15d, [rcx+0xC0]
+    { 0x3C, "8B B1 B8 00 00 00",    "magazine maximum field changed (+0x3c)" }, // mov esi, [rcx+0xB8]
+};
 constexpr FnSpec kSetAmmo{ "40 56 57 41 54 41 57 48 81 EC 88 00 00 00 8B 81 C4 00 00 00 45 33 FF 45 0F B6 E0 48 8B F9",
-                           nullptr, 0, nullptr };
+                           kSetAmmoChecks, std::size(kSetAmmoChecks), nullptr };
 
 // ---- gear menu and outfits: the player loadout loader (loadout.cpp) ------------------------------
 
@@ -383,7 +420,7 @@ const Capability* Capabilities(size_t& count) {
 
 extern const SigDef kActorsSignatures[] = {
     // spawner
-    { "spawn.landing_helper",       nullptr, 0, 0, ResolveLandingHelper,             {} },
+    { "spawn.landing_helper",       nullptr, 0, 0, ResolveLandingHelper,             { "teleport.entity_system" } },
     { "spawn.team_tag",             nullptr, 0, 0, ResolveTeamTag,                   { "spawn.landing_helper" } },
     { "spawn.team_category",        nullptr, 0, 0, ResolveCall<kTeamCategory>,       { "spawn.landing_helper" } },
     { "spawn.set_flags",            nullptr, 0, 0, ResolveCall<kSetFlags>,           { "spawn.landing_helper" } },
