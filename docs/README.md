@@ -49,6 +49,7 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 | [Design: game-file overrides and DataCore patches](design/vfs-datacore.md) | `sco::vfs`, `sco::game::pak`, the DataCore layout, a semantic patcher (with `AddRecord`), `.toml` overrides in data packs and the `sco.datacore` service; decisions of 2026-10-09 |
 | [Design: service calls that fault, and providers that unload](design/service-safety.md) | Audit item M1: blame by faulting address (no ABI change), an opt-in provider-side `guard_call` (1.2), pinning provider modules now and a counted `ServiceRef` once hot reload exists; proposal of 2026-10-10 |
 | [Design: game services](design/game-services.md) | The SDK as the platform every plugin builds on: `game.*` services in the game pack (entities, vehicles, actors, world, events), their own version line, the move of `teleport.spatial` and `spawn.entities` out of sc-offline, and the PR plan; decisions of 2026-10-10 |
+| [Design: game.world and event spikes (Appendix B)](design/game-world-spikes.md) | Raycast, camera, entity enumeration, actor health and state, and the player, zone, vehicle and streaming events: locator, byte checks, arguments and uniqueness evidence on 4.10.196.36804, or blocked with evidence; spike results of 2026-10-10 |
 
 ## Working on sco-core
 
