@@ -6,7 +6,9 @@
 // in test_plugins.cpp); on Windows the real __try/__except guard.
 //   tools/test.sh
 #include "sco/app.h"
+#ifndef SCO_KERNEL_ONLY
 #include "sco/game/signatures.h"
+#endif
 #include "sco/caps.h"
 #include "sco/host.h"
 #include "sco/log.h"
@@ -263,7 +265,11 @@ static void TestBuiltinLoader(const sco_api* api, const fs::path& plugins) {
 // The product's signature tables: Start registers them through Platform::registerSignatures, and
 // only with an image. Nothing in sco-core registers Star Citizen's tables on its own.
 static int g_registerCalls = 0;
+#ifndef SCO_KERNEL_ONLY
 static bool RegisterForTest() { ++g_registerCalls; return sco::game::RegisterGameSignatures(); }
+#else
+static bool RegisterForTest() { ++g_registerCalls; return true; }   // kernel only: no game tables
+#endif
 
 static void TestApp(const fs::path& sdk, const fs::path& out) {
     const fs::path root = out / "app" / "plugins";

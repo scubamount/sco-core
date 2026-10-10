@@ -16,9 +16,11 @@
 // stop) and the invoke, if any, answered OK; 1 otherwise; 2 for bad arguments or an unreadable
 // --exe.
 #include "sco/app.h"
-#include "sco/game/signatures.h"
 #include "sco/caps.h"
-#include "sco/datacore_pack.h"
+#ifndef SCO_KERNEL_ONLY
+#include "sco/datacore_pack.h"      // the pack lint (game pack)
+#include "sco/game/signatures.h"    // --exe: Star Citizen's tables (game pack)
+#endif
 #include "sco/log.h"
 #include "sco/pe_file.h"
 #include "sco/runtime.h"
@@ -138,6 +140,7 @@ int Usage() {
     return 2;
 }
 
+#ifndef SCO_KERNEL_ONLY   // the Star Citizen game pack (SCO_GAME_SC)
 // The pack lint for every indexed datacore/*.toml. False if one doesn't parse.
 bool LintDataCore() {
     bool ok = true;
@@ -156,6 +159,7 @@ bool LintDataCore() {
     }
     return ok;
 }
+#endif   // SCO_KERNEL_ONLY
 
 // Every plugin loaded, off or disabled (at start); none refused or crashed (at stop: unloaded
 // counts too). Prints the ones that aren't.
@@ -211,12 +215,16 @@ int main(int argc, char** argv) {
     pf.nBuiltins = sizeof(kBuiltins) / sizeof(kBuiltins[0]);
     pf.scripts = lua ? &kLua : nullptr;
     pf.image = exe ? &file.img : nullptr;
+#ifndef SCO_KERNEL_ONLY
     pf.registerSignatures = sco::game::RegisterGameSignatures;   // --exe: Star Citizen's tables
+#endif
     pf.setCapabilities = SetCaps;
     if (!sco::app::Start(pf)) return 1;
 
     bool ok = AllHealthy(false);
+#ifndef SCO_KERNEL_ONLY
     ok = LintDataCore() && ok;
+#endif
     for (long t = 1; t <= ticks; ++t) sco::app::Tick(static_cast<uint32_t>(t * 100));
     if (invokeName && !RunInvoke(invokeName, invokeArgs, nInvokeArgs)) ok = false;
     sco::app::Stop();

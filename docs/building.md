@@ -56,6 +56,7 @@ ctest --test-dir build -C RelWithDebInfo --output-on-failure
 | `SCO_BUILD_TESTS` | `ON` when sco-core is the top-level project, else `OFF` | Builds the tests and the fake plugins and registers them with CTest |
 | `SCO_WERROR` | `ON` | Warnings in sco-core's own code are errors (`-Wall -Wextra -Werror`; MSVC `/W4 /WX /utf-8`). Vendored Lua and SQLite are always built with warnings off |
 | `SCO_SANITIZE` | empty | Sanitizers for sco-core's code and tests, for example `address,undefined` (not MSVC) |
+| `SCO_GAME_SC` | `ON` | Builds the Star Citizen game pack: the signature rows in `src/game` (`sco_game_sc`), the CryPak adapter (`sco_pak`), DataCore (`sco_datacore`, `sco_datacore_service`), `sco-sigcheck` and `sco-dcb`. `OFF` builds and tests the kernel alone with `SCO_KERNEL_ONLY` defined: no game rows, `Platform::dataCore` logs `sco.datacore not started: this build has no game pack`. CI's `kernel-only` job builds it that way ([architecture](architecture.md#kernel-and-game-pack)) |
 
 The build is 64-bit only; configuring for 32 bits stops with an error.
 
