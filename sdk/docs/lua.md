@@ -133,6 +133,16 @@ for _, r in ipairs(p:report()) do print(r.op, r.state, r.reason) end
 
 Values: integers, numbers, strings (also enum options), booleans, `nil` (a null pointer), an instance from `add_instance`, `{ guid = "..." }`, `{ enum = "Option" }`, `{ ref = "RecordName" }` (a reference field's target). A `record` is a record name or `"guid:..."`. Errors are the same strings as elsewhere (`"bad_arg"`, `"not_found"`, `"unavailable"`, ...). Every call counts against the step budget like other host calls, and the sandbox is unchanged: scripts never touch files; the host writes the saved patch.
 
+## `sco.game.actors`
+
+Present only when the Star Citizen game pack publishes [`game.actors`](../../docs/game-services.md) (check `if sco.game and sco.game.actors then`); `lua-check.lua` has no stand-in for it. Lua gets the game services **read-only**: queries, never a function that changes the game, so a script owns no NPCs.
+
+| Call | Returns |
+|---|---|
+| `sco.game.actors.local_player()` | Your actor id and entity id (integers; the game's 64-bit ids, which can come back negative), or `nil, err, message` (`"not_found"` before you've spawned, `"unavailable"` when `game.actors.local_player` isn't ready) |
+
+Ids are session handles: use them on the same tick, never store them.
+
 ## Check a script
 
 Without the game, with a stock Lua 5.4:

@@ -7,6 +7,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using Sco.Sdk.Game;
 using Sco.Sdk.Interop;
 
 namespace Sco.Sdk.Tests
@@ -54,6 +55,8 @@ namespace Sco.Sdk.Tests
         private static readonly List<string> Logs = new();
         private static readonly nint Version = Marshal.StringToCoTaskMemUTF8("fake-host 1.0");   // static, never freed
         private static uint* _smallTable;   // a service table whose size covers only itself
+        private static ScActorsV1* _actors;  // a stand-in game.actors
+        private static void* _self;
         private static int _failures;
 
         private static void Expect(bool ok, string what)
@@ -135,8 +138,39 @@ namespace Sco.Sdk.Tests
         private static ScoResult QueryService(byte* name, uint minVersion, void** o)
         {
             *o = null;
+            if (S(name) == GameAbi.ActorsName) { *o = _actors; return ScoResult.Ok; }
             if (S(name) != "other.small") return ScoResult.NotFound;
             *o = _smallTable;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult ActLocal(ulong* actor, ulong* entity)
+        {
+            *actor = 5;
+            *entity = 6;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult ActSpawn(void* self, byte* cls, ulong zone, double* pos, ulong* id)
+        {
+            if (self != _self || S(cls) != "Npc" || zone != 9 || pos[2] != 3.0) return ScoResult.BadArg;
+            *id = 77;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult ActDespawn(void* self, ulong id) => self == _self && id == 77 ? ScoResult.Ok : ScoResult.NotFound;
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult ActLastError(void* self, byte* o, uint* io)
+        {
+            byte[] why = System.Text.Encoding.UTF8.GetBytes((self == null ? "read" : "not yours") + "\0");
+            uint cap = *io;
+            *io = (uint)why.Length;
+            if (cap < why.Length) return ScoResult.TooMany;
+            for (int i = 0; i < why.Length; ++i) o[i] = why[i];
             return ScoResult.Ok;
         }
 
@@ -247,6 +281,13 @@ namespace Sco.Sdk.Tests
             *_smallTable = 4;
             ScoApi* api = MakeApi();
             void* self = NativeMemory.AllocZeroed(8);
+            _self = self;
+            _actors = (ScActorsV1*)NativeMemory.AllocZeroed((nuint)sizeof(ScActorsV1));
+            _actors->size = (uint)sizeof(ScActorsV1);
+            _actors->local_player = &ActLocal;
+            _actors->spawn_npc = &ActSpawn;
+            _actors->despawn = &ActDespawn;
+            _actors->last_error = &ActLastError;
 
             var p = new TestPlugin();
             Expect(PluginExports.LoadPlugin(p, api, self, "test") == ScoResult.Ok, "load");
@@ -282,6 +323,14 @@ namespace Sco.Sdk.Tests
             Expect(p.Query("other.small", 0x10000, out ServiceRef<ScoStorageV1> small) == ScoResult.Ok && !small.Covers(8),
                    "the size check refuses a function past the provider's size");
             Expect(p.Query("nobody", 0x10000, out ServiceRef<ScoStorageV1> none) == ScoResult.NotFound && !none.IsValid, "query not found");
+
+            var actors = new Actors();
+            Expect(actors.Open(p) == ScoResult.Ok && actors.IsOpen, "game.actors opens");
+            Expect(actors.LocalPlayer(out ulong actorId, out ulong entityId) == ScoResult.Ok && actorId == 5 && entityId == 6, "Actors.LocalPlayer");
+            Expect(actors.SpawnNpc("Npc", 9, new double[] { 1, 2, 3 }, out ulong npc) == ScoResult.Ok && npc == 77, "Actors.SpawnNpc");
+            Expect(actors.SpawnNpc("Npc", 9, new double[] { 1, 2 }, out npc) == ScoResult.BadArg && npc == 0, "SpawnNpc wants 3 coordinates");
+            Expect(actors.Despawn(77) == ScoResult.Ok && actors.Despawn(78) == ScoResult.NotFound, "Actors.Despawn");
+            Expect(actors.LastError() == "not yours" && actors.LastReadError() == "read", "Actors.LastError, LastReadError");
 
             Cmd echo = Cmds[0];
             p.RunOnGameThread(() => ++ran);   // still queued at unload: must never run

@@ -15,6 +15,7 @@
 #include "sco/storage.h"
 #include "sco/ui.h"
 #include "../plugins/lua/sco_lua.h"
+#include "sc_actors.h"
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
@@ -560,6 +561,57 @@ end }
 }
 #endif   // SCO_KERNEL_ONLY
 
+// ---- sco.game.actors (read-only over game.actors; a stand-in table, published as the game pack does) --
+
+static bool g_spawned = false;
+static sco_result FakeLocalPlayer(uint64_t* actor, uint64_t* entity) {
+    if (!g_spawned) return SCO_NOT_FOUND;
+    if (actor) *actor = 11;
+    if (entity) *entity = 0x8000000000000016ull;   // past INT64_MAX: comes back as a negative integer
+    return SCO_OK;
+}
+static sco_result FakeSpawnNpc(sco_plugin*, const char*, uint64_t, const double*, uint64_t*) { return SCO_FAILED; }
+static sco_result FakeDespawn(sco_plugin*, uint64_t) { return SCO_FAILED; }
+static sco_result FakeLastError(sco_plugin* self, char* out, uint32_t* io) {
+    static const char kWhy[] = "local_player: you're not spawned yet";
+    if (!io || self) return SCO_BAD_ARG;
+    const uint32_t cap = *io;
+    *io = sizeof(kWhy);
+    if (cap < sizeof(kWhy)) return SCO_TOO_MANY;
+    std::memcpy(out, kWhy, sizeof(kWhy));
+    return SCO_OK;
+}
+
+static void TestGameActors() {
+    Write("ganone", "assert(sco.game == nil, 'not published')\n");
+    Loaded none = Load("ganone");
+    CHECK(none.p && none.p->state == State::Loaded);
+    Unload(none);
+
+    static const sc_actors_v1 kFake = { sizeof(sc_actors_v1), 0, FakeLocalPlayer, FakeSpawnNpc, FakeDespawn, FakeLastError };
+    CHECK(sco::host::ProvideGameService(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, &kFake) == Result::Ok);
+    Write("gaplay", R"(
+local a = assert(sco.game and sco.game.actors, "sco.game.actors")
+assert(a.spawn_npc == nil and a.despawn == nil and a.last_error == nil, "read-only")
+sco.register_command{ name = "gaplay.ids", title = "Ids", fn = function()
+  local actor, entity, msg = sco.game.actors.local_player()
+  if not actor then return entity .. ": " .. tostring(msg) end
+  return actor .. " " .. entity
+end }
+)");
+    Loaded l = Load("gaplay");
+    CHECK(l.p && l.p->state == State::Loaded);
+    if (l.p && l.p->state != State::Loaded) std::printf("  gaplay: %s\n", l.p->reason.c_str());
+    Reply r = Invoke(g_caller, "gaplay.ids");
+    CHECK(r.r == SCO_OK && r.text == "not_found: local_player: you're not spawned yet");
+    g_spawned = true;
+    r = Invoke(g_caller, "gaplay.ids");
+    CHECK(r.r == SCO_OK && r.text == "11 -9223372036854775786");
+    if (r.text != "11 -9223372036854775786") std::printf("  gaplay.ids -> %s\n", r.text.c_str());
+    Unload(l);
+    CHECK(sco::host::WithdrawGameService(SC_ACTORS_NAME) == Result::Ok);
+}
+
 // ---- sco.store (over the host service sco.storage) ---------------------------------------------
 
 // Opens and closes SCO_STORAGE_MAX_CURSORS cursors as `self`: true when none was refused, so the
@@ -770,6 +822,7 @@ int main(int argc, char** argv) {
 #ifndef SCO_KERNEL_ONLY
     TestDataCore();
 #endif
+    TestGameActors();
     TestStore(argv[1]);
     std::printf("sco-lua tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

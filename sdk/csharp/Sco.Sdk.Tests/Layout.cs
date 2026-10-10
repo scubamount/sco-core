@@ -12,6 +12,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using Sco.Sdk.Game;
 using Sco.Sdk.Interop;
 
 namespace Sco.Sdk.Tests
@@ -37,6 +38,7 @@ namespace Sco.Sdk.Tests
             ["sco_dc_report"] = typeof(ScoDcReport),
             ["sco_dc_applied"] = typeof(ScoDcApplied),
             ["sco_datacore_v1"] = typeof(ScoDatacoreV1),
+            ["sc_actors_v1"] = typeof(ScActorsV1),
         };
 
         private static readonly Dictionary<string, long> Constants = new()
@@ -101,6 +103,8 @@ namespace Sco.Sdk.Tests
             ["SCO_DC_INSTANCE"] = (long)ScoDcType.Instance,
             ["SCO_DC_REF"] = (long)ScoDcType.Ref,
             ["SCO_DC_TYPE_FORCE32"] = (long)ScoDcType.Force32,
+            ["SC_ACTORS_VERSION_1_0"] = GameAbi.ActorsVersion1_0,
+            ["SC_ACTORS_MAX_NPCS"] = GameAbi.ActorsMaxNpcs,
         };
 
         private static readonly Dictionary<string, string> Strings = new()
@@ -109,6 +113,7 @@ namespace Sco.Sdk.Tests
             ["SCO_UI_NAME"] = Abi.UiName,
             ["SCO_DATACORE_NAME"] = Abi.DataCoreName,
             ["SCO_DC_APPLIED_EVENT"] = Abi.DataCoreAppliedEvent,
+            ["SC_ACTORS_NAME"] = GameAbi.ActorsName,
         };
 
         private static readonly Regex Size = new(@"^SIZE\((\w+),\s*(\d+)\);");
@@ -187,6 +192,7 @@ namespace Sco.Sdk.Tests
             if (t == typeof(ScoDcReport)) return Unsafe.SizeOf<ScoDcReport>();
             if (t == typeof(ScoDcApplied)) return Unsafe.SizeOf<ScoDcApplied>();
             if (t == typeof(ScoDatacoreV1)) return Unsafe.SizeOf<ScoDatacoreV1>();
+            if (t == typeof(ScActorsV1)) return Unsafe.SizeOf<ScActorsV1>();
             return -1;
         }
     }

@@ -20,7 +20,9 @@
 #include "sco_api.h"
 #include "sco_lua.h"
 #ifdef SCO_GAME_SERVICES
+#include "sc_actors.h"
 #include "sc_spawn.h"
+#include <thread>
 #endif
 #include <csetjmp>
 #include <csignal>
@@ -483,9 +485,44 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
         CHECK(sp->local_player_id() == 0 && sp->player_ship_id() == 0 && sp->entity_alive(1) == 0);
         CHECK(sp->set_entity_transform(reinterpret_cast<sco_plugin*>(&table), 1, 0, offset, rot) == 0);
     }
+    // game.actors: published with them. No game image, so none of its capabilities is ready:
+    // every function answers SCO_UNAVAILABLE and last_error says why; off the game thread
+    // SCO_WRONG_THREAD; a handle NewPlugin didn't return is SCO_BAD_ARG.
+    CHECK(api->query_service(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, &table) == SCO_OK && table);
+    CHECK(!sco::caps::Has("game.actors.local_player") && !sco::caps::Has("game.actors.spawn_npc") &&
+          !sco::caps::Has("game.actors.despawn"));
+    if (table) {
+        const auto* ga = static_cast<const sc_actors_v1*>(table);
+        sco_plugin* me = sco::host::NewPlugin("actorstest");
+        CHECK(me && ga->size == sizeof(sc_actors_v1));
+        uint64_t actor = 7, entity = 7, id = 7;
+        const double pos[3] = { 1, 2, 3 };
+        char buf[256];
+        uint32_t n = sizeof(buf);
+        CHECK(ga->local_player(&actor, &entity) == SCO_UNAVAILABLE && actor == 0 && entity == 0);
+        CHECK(ga->last_error(nullptr, buf, &n) == SCO_OK && n == std::strlen(buf) + 1 &&
+              std::strstr(buf, "local_player: game.actors.local_player isn't available on this game build"));
+        CHECK(ga->local_player(nullptr, nullptr) == SCO_BAD_ARG);
+        sco_result off = SCO_OK;
+        std::thread([&] { off = ga->local_player(&actor, &entity); }).join();
+        CHECK(off == SCO_WRONG_THREAD);
+        CHECK(ga->spawn_npc(me, "Human_NPC", 1, pos, &id) == SCO_UNAVAILABLE && id == 0);
+        CHECK(ga->spawn_npc(reinterpret_cast<sco_plugin*>(&table), "Human_NPC", 1, pos, &id) == SCO_BAD_ARG);
+        CHECK(ga->despawn(me, 1) == SCO_UNAVAILABLE);
+        n = 4;   // the size handshake: too small answers the size needed
+        CHECK(ga->last_error(me, buf, &n) == SCO_TOO_MANY && n > 4);
+        const uint32_t need = n;
+        CHECK(ga->last_error(me, buf, &n) == SCO_OK && n == need &&
+              std::strstr(buf, "despawn: game.actors.despawn isn't available on this game build"));
+        CHECK(ga->last_error(me, buf, nullptr) == SCO_BAD_ARG);
+        CHECK(me && sco::Release(me) == sco::Result::Ok);   // through the release hook: no NPCs to remove
+        n = sizeof(buf);
+        CHECK(ga->last_error(me, buf, &n) == SCO_BAD_ARG);   // released
+    }
     sco::app::Stop();
     CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_NOT_FOUND);
     CHECK(api->query_service(SC_SPAWN_SERVICE_NAME, SC_SPAWN_SERVICE_VERSION, &table) == SCO_NOT_FOUND);
+    CHECK(api->query_service(SC_ACTORS_NAME, SC_ACTORS_VERSION_1_0, &table) == SCO_NOT_FOUND);
     pf.gameServices = false;
 #endif
     fs::remove_all(out / "app", ec);
