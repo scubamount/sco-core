@@ -320,9 +320,9 @@ Every function returns 1 when it answered and 0 when it can't (wrong thread, not
 
 Zone ids are volatile streaming handles: to save or send a place, keep the zone name and the double coordinates, never the id ([C++ SDK § Services](sdk-cpp.md#services)).
 
-### `spawn.entities` 1.2 (sc-offline)
+### `spawn.entities` 1.2 (game pack)
 
-[`sc_spawn.h`](../include/sc_spawn.h), pinned by [`tests/abi_spawn.c`](../tests/abi_spawn.c): spawn entities near you, look up your entity and ship ids, and move the entities you spawned. sc-offline's `spawn` built-in publishes it at load; whether it can answer is the capability `"spawn.ship"`. Frames, units and ids are `teleport.spatial`'s.
+[`sc_spawn.h`](../include/sc_spawn.h), pinned by [`tests/abi_spawn.c`](../tests/abi_spawn.c): spawn entities near you, look up your entity and ship ids, and move the entities you spawned. The Star Citizen game pack publishes it under the owner `game` before any plugin loads, next to `teleport.spatial` (when the product sets `Platform::gameServices`; before that sc-offline's `spawn` built-in published the same table; [game services](game-services.md)). It answers only when the spawner's rows (`spawn.helpers`, [actors](game/actors.md)) are OK; in sc-offline that is the capability `"spawn.ship"`. Frames, units and ids are `teleport.spatial`'s.
 
 ```c
 const sc_spawn_service_v1* sp = NULL;
@@ -342,7 +342,7 @@ To also run on an older sc-offline, ask for `0x00010000` and check `sp->size > o
 | `set_entity_transform(self, id, zone_id, pos[3], rot[4])` | 1.2 | Moves and turns an entity to `pos` / `rot` (unit quaternion, x y z w) in zone `zone_id`'s frame, 0 = the world; the entity stays in its zone. 1 on success, 0 on failure |
 | `spawn_as(self, class, offset[3], &id)` | 1.2 | `spawn_near_player`, recorded as the calling plugin's (`self` as `sco_plugin_load` received it) |
 
-`set_entity_transform` moves only an entity spawned through `spawn_as` with the same `self` while that plugin is loaded (unloading forgets them; `spawn_near_player` and the `spawn.ship` command count for nobody), or the player's own vehicle once sc-offline has registered it as retrieved or delivered by ATC (no build does yet). Anything else answers 0. A spawn's id is final at once, but the entity streams in seconds later (up to a minute for a big ship), and until then `set_entity_transform` answers 0: check `entity_alive(id)` first, and try again on a later tick. sc-offline logs why a call answered 0 to `mod.log`, once per id and reason.
+`set_entity_transform` moves only an entity spawned through `spawn_as` with the same `self` while that plugin is loaded (unloading forgets them; `spawn_near_player` and the `spawn.ship` command count for nobody), or the player's own vehicle once the product has registered it as retrieved or delivered by ATC (`sco::game::services::RegisterPlayerVehicle`; no build does yet). Anything else answers 0. A spawn's id is final at once, but the entity streams in seconds later (up to a minute for a big ship), and until then `set_entity_transform` answers 0: check `entity_alive(id)` first, and try again on a later tick. The game pack logs why a call answered 0 (`[game] warning: set_entity_transform(<id>) -> 0: <reason>`), once per id and reason.
 
 ## Raw handlers (1.1)
 
