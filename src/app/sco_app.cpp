@@ -5,6 +5,9 @@
 #ifndef SCO_KERNEL_ONLY
 #include "sco/datacore_service.h"   // sco.datacore: the Star Citizen game pack (SCO_GAME_SC)
 #endif
+#ifdef SCO_GAME_SERVICES
+#include "sco/game/services.h"      // the game pack's services (sco_game_services, Windows)
+#endif
 #include "sco/host.h"
 #include "sco/ipc.h"
 #include "sco/log.h"
@@ -67,6 +70,14 @@ bool Start(const Platform& platform) {
     if (ir != Result::Ok) Log("[app] sco.ipc not started: %s", ResultName(ir));
     const Result nr = net::Start();   // inert until the product calls net::Host or net::Join
     if (nr != Result::Ok) Log("[app] sco.net not started: %s", ResultName(nr));
+    if (pf.gameServices) {
+#ifdef SCO_GAME_SERVICES
+        const Result gr = game::services::Start();
+        if (gr != Result::Ok) Log("[app] game services not started: %s", ResultName(gr));
+#else
+        Log("[app] game services not built (SCO_GAME_SC off, or not Windows)");
+#endif
+    }
     for (size_t i = 0; pf.reservedChords && i < pf.nReservedChords; ++i) {
         const char* chord = pf.reservedChords[i];
         const Result rr = ui::ReserveChord(chord);
@@ -143,6 +154,10 @@ void Stop() {
 #ifndef SCO_KERNEL_ONLY
     datacore::service::Stop();
 #endif
+#ifdef SCO_GAME_SERVICES
+    game::services::Stop();
+#endif
+    host::WithdrawGameServices();
     host::WithdrawHostServices();
     plugins::ContainCallouts(nullptr);
     g_started = false;

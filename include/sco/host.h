@@ -76,4 +76,32 @@ Result WithdrawHostService(const char* name);
 // Withdraws every host service (host shutdown); returns how many.
 size_t WithdrawHostServices();
 
+// ---- game services ----------------------------------------------------------------------------
+//
+// Services a game pack publishes (docs/design/game-services.md decision 1): they live under the
+// reserved owner "game", which the bus already uses for game.ready and game.exit and which no
+// plugin can take. Names are "game.<name>" ("game.vehicles"), plus the product service names a game
+// pack took over and keeps for all of 1.x (kGameCompatNames: teleport.spatial, spawn.entities).
+// Plugins find them with the ordinary query_service. The owner is never released, so a service
+// withdrawn at shutdown can be published again by the next start. Game services outlive every
+// plugin: sco::app::Stop withdraws them after UnloadAll. Any thread.
+
+constexpr const char* kGameId = "game";
+
+// The product service names a game pack may publish besides "game.<name>".
+constexpr const char* kGameCompatNames[] = { "teleport.spatial", "spawn.entities" };
+
+// The runtime owner of every game service. Never released.
+const void* GameOwner();
+
+// Publishes table under name: "game.<name>" or one of kGameCompatNames. BadArg: a null table, any
+// other name, a bad or taken name. TooMany: out of memory.
+Result ProvideGameService(const char* name, uint32_t version, const void* table);
+
+// Withdraws one game service. NotFound: the game pack publishes nothing by that name.
+Result WithdrawGameService(const char* name);
+
+// Withdraws every game service (host shutdown); returns how many.
+size_t WithdrawGameServices();
+
 }  // namespace sco::host

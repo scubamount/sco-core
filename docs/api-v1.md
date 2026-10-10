@@ -296,9 +296,9 @@ The host side is `sco::host::ProvideHostService` ([API: sco/host.h](api.md#scoho
 
 Services a product's built-in plugins publish, under the built-in's id. Their headers ship with the SDK; the product, not sco-core, implements them, so on another host `query_service` answers `SCO_NOT_FOUND`.
 
-### `teleport.spatial` 1.0 (sc-offline)
+### `teleport.spatial` 1.0 (game pack)
 
-[`sc_spatial.h`](../include/sc_spatial.h), pinned by [`tests/abi_spatial.c`](../tests/abi_spatial.c): where you are, and positions converted between the game's zones. sc-offline's `teleport` built-in publishes it at load on every game build; whether it can answer there is the capability `"teleport"` (`has("teleport")`, the same gate as `teleport.save` / `teleport.go`). Without it every function returns 0. So check both:
+[`sc_spatial.h`](../include/sc_spatial.h), pinned by [`tests/abi_spatial.c`](../tests/abi_spatial.c): where you are, and positions converted between the game's zones. The Star Citizen game pack publishes it under the owner `game` before any plugin loads (since game pack 0.1.0, when the product sets `Platform::gameServices`; before that sc-offline's `teleport` built-in published the same table; [game services](game-services.md)); whether it can answer there is the capability `"teleport"` (`has("teleport")`, the same gate as `teleport.save` / `teleport.go`). Without it every function returns 0. So check both:
 
 ```c
 const sc_spatial_v1* sp = NULL;
