@@ -39,6 +39,14 @@ namespace Sco.Sdk.Tests
             ["sco_dc_applied"] = typeof(ScoDcApplied),
             ["sco_datacore_v1"] = typeof(ScoDatacoreV1),
             ["sc_actors_v1"] = typeof(ScActorsV1),
+            ["sc_actor_state"] = typeof(ScActorState),
+            ["sc_world_hit_flag"] = typeof(ScWorldHitFlag),
+            ["sc_world_hit"] = typeof(ScWorldHit),
+            ["sc_world_v1"] = typeof(ScWorldV1),
+            ["sc_game_player_spawned"] = typeof(ScGamePlayerSpawned),
+            ["sc_game_player_died"] = typeof(ScGamePlayerDied),
+            ["sc_game_zone_changed"] = typeof(ScGameZoneChanged),
+            ["sc_game_vehicle_seat"] = typeof(ScGameVehicleSeat),
             ["sc_vehicle_seat_flag"] = typeof(ScVehicleSeatFlag),
             ["sc_vehicle_seat"] = typeof(ScVehicleSeat),
             ["sc_vehicles_v1"] = typeof(ScVehiclesV1),
@@ -107,6 +115,16 @@ namespace Sco.Sdk.Tests
             ["SCO_DC_REF"] = (long)ScoDcType.Ref,
             ["SCO_DC_TYPE_FORCE32"] = (long)ScoDcType.Force32,
             ["SC_ACTORS_VERSION_1_0"] = GameAbi.ActorsVersion1_0,
+            ["SC_ACTORS_VERSION_1_1"] = GameAbi.ActorsVersion1_1,
+            ["SC_ACTOR_ALIVE"] = (long)ScActorState.Alive,
+            ["SC_ACTOR_INCAPACITATED"] = (long)ScActorState.Incapacitated,
+            ["SC_ACTOR_DEAD"] = (long)ScActorState.Dead,
+            ["SC_ACTOR_STATE_FORCE32"] = (long)ScActorState.Force32,
+            ["SC_WORLD_VERSION_1_0"] = GameAbi.WorldVersion1_0,
+            ["SC_WORLD_RAY_MAX_DISTANCE"] = GameAbi.WorldRayMaxDistance,
+            ["SC_WORLD_HIT_ENTITY"] = (long)ScWorldHitFlag.Entity,
+            ["SC_WORLD_HIT_NORMAL"] = (long)ScWorldHitFlag.Normal,
+            ["SC_WORLD_HIT_FLAG_FORCE32"] = (long)ScWorldHitFlag.Force32,
             ["SC_ACTORS_MAX_NPCS"] = GameAbi.ActorsMaxNpcs,
             ["SC_VEHICLES_SERVICE_VERSION"] = GameAbi.VehiclesVersion1_0,
             ["SC_VEHICLE_SEAT_NAME_MAX"] = GameAbi.VehicleSeatNameMax,
@@ -124,6 +142,12 @@ namespace Sco.Sdk.Tests
             ["SCO_DATACORE_NAME"] = Abi.DataCoreName,
             ["SCO_DC_APPLIED_EVENT"] = Abi.DataCoreAppliedEvent,
             ["SC_ACTORS_NAME"] = GameAbi.ActorsName,
+            ["SC_WORLD_NAME"] = GameAbi.WorldName,
+            ["SC_GAME_EVENT_PLAYER_SPAWNED"] = GameAbi.EventPlayerSpawned,
+            ["SC_GAME_EVENT_PLAYER_DIED"] = GameAbi.EventPlayerDied,
+            ["SC_GAME_EVENT_ZONE_CHANGED"] = GameAbi.EventZoneChanged,
+            ["SC_GAME_EVENT_VEHICLE_BOARDED"] = GameAbi.EventVehicleBoarded,
+            ["SC_GAME_EVENT_VEHICLE_EXITED"] = GameAbi.EventVehicleExited,
             ["SC_VEHICLES_SERVICE_NAME"] = GameAbi.VehiclesName,
         };
 
@@ -204,6 +228,12 @@ namespace Sco.Sdk.Tests
             if (t == typeof(ScoDcApplied)) return Unsafe.SizeOf<ScoDcApplied>();
             if (t == typeof(ScoDatacoreV1)) return Unsafe.SizeOf<ScoDatacoreV1>();
             if (t == typeof(ScActorsV1)) return Unsafe.SizeOf<ScActorsV1>();
+            if (t == typeof(ScWorldHit)) return Unsafe.SizeOf<ScWorldHit>();
+            if (t == typeof(ScWorldV1)) return Unsafe.SizeOf<ScWorldV1>();
+            if (t == typeof(ScGamePlayerSpawned)) return Unsafe.SizeOf<ScGamePlayerSpawned>();
+            if (t == typeof(ScGamePlayerDied)) return Unsafe.SizeOf<ScGamePlayerDied>();
+            if (t == typeof(ScGameZoneChanged)) return Unsafe.SizeOf<ScGameZoneChanged>();
+            if (t == typeof(ScGameVehicleSeat)) return Unsafe.SizeOf<ScGameVehicleSeat>();
             if (t == typeof(ScVehicleSeat)) return Unsafe.SizeOf<ScVehicleSeat>();
             if (t == typeof(ScVehiclesV1)) return Unsafe.SizeOf<ScVehiclesV1>();
             return -1;

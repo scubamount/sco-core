@@ -14,7 +14,9 @@
 // Game thread only, like the table. Every call answers sco_result and is noexcept. The service
 // is host-owned, so an open Actors may be kept for the plugin's life. The NPCs a plugin spawns
 // are its own and are removed when it unloads or crashes. Capabilities: has("game.actors.
-// local_player"), has("game.actors.spawn_npc"), has("game.actors.despawn"). Reference:
+// local_player"), has("game.actors.spawn_npc"), has("game.actors.despawn"), has("game.actors.health")
+// (1.1; Health answers SCO_UNAVAILABLE on a 1.0 table) and has("game.actors.state") (never ready yet:
+// State answers SCO_UNAVAILABLE). Reference:
 // docs/game-services.md, docs/sdk-cpp.md. GPL-3.0, like sco-core.
 #ifndef SCOSDK_GAME_ACTORS_HPP
 #define SCOSDK_GAME_ACTORS_HPP
@@ -59,9 +61,26 @@ public:
     // Removes an NPC this plugin spawned (it leaves the world within a few seconds).
     sco_result Despawn(uint64_t id) const noexcept { return t_ ? t_->despawn(self_, id) : SCO_UNAVAILABLE; }
 
+    // 1.1: the HealthPool of the actor with entity id (yours, or an NPC's). max is 0: the maximum isn't
+    // read yet. SCO_UNAVAILABLE on a 1.0 table or when game.actors.health isn't ready.
+    sco_result Health(uint64_t id, float& cur, float& max) const noexcept {
+        cur = max = 0;
+        if (!t_ || !Covers(t_->size, offsetof(sc_actors_v1, health))) return SCO_UNAVAILABLE;
+        return t_->health(id, &cur, &max);
+    }
+    // 1.1: alive, incapacitated or dead. SCO_UNAVAILABLE until game.actors.state is ready (not yet).
+    sco_result State(uint64_t id, sc_actor_state& state) const noexcept {
+        state = SC_ACTOR_ALIVE;
+        if (!t_ || !Covers(t_->size, offsetof(sc_actors_v1, state))) return SCO_UNAVAILABLE;
+        uint32_t raw = 0;
+        const sco_result r = t_->state(id, &raw);
+        if (r == SCO_OK) state = static_cast<sc_actor_state>(raw);
+        return r;
+    }
+
     // The reason for this plugin's last failed spawn_npc or despawn.
     std::string LastError() const noexcept { return Error(self_); }
-    // The reason for the last failed LocalPlayer (it takes no plugin handle).
+    // The reason for the last failed LocalPlayer, Health or State (they take no plugin handle).
     std::string LastReadError() const noexcept { return Error(nullptr); }
 
 private:

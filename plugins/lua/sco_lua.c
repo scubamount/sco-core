@@ -14,6 +14,8 @@
 #include "lauxlib.h"
 #include "lualib.h"
 #include "sc_actors.h"
+#include "sc_game_events.h"
+#include "sc_world.h"
 #include "sco_datacore.h"
 #include "sco_storage.h"
 #include "sco_ui.h"
@@ -217,6 +219,33 @@ static int StillSubscribed(lua_State* L, int list, int fn) {
     return 0;
 }
 
+/* The payload of a game.* event (sc_game_events.h) as a table: nil for any other event, and for a
+ * payload whose size is shorter than the struct this build knows. Ids are the game's 64-bit ids,
+ * carried in Lua integers bit for bit (one above 2^63 reads as negative). */
+static void PushGameEvent(lua_State* L, const char* name, const void* data) {
+    uint32_t size = 0;
+    if (!data || strncmp(name, "game.", 5) != 0) { lua_pushnil(L); return; }
+    memcpy(&size, data, sizeof(size));
+    if (strcmp(name, SC_GAME_EVENT_PLAYER_SPAWNED) == 0 && size >= sizeof(sc_game_player_spawned)) {
+        const sc_game_player_spawned* e = (const sc_game_player_spawned*)data;
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, (lua_Integer)e->entity_id); lua_setfield(L, -2, "entity_id");
+        lua_pushinteger(L, (lua_Integer)e->zone_id);   lua_setfield(L, -2, "zone_id");
+    } else if (strcmp(name, SC_GAME_EVENT_PLAYER_DIED) == 0 && size >= sizeof(sc_game_player_died)) {
+        const sc_game_player_died* e = (const sc_game_player_died*)data;
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, (lua_Integer)e->entity_id); lua_setfield(L, -2, "entity_id");
+        lua_pushinteger(L, (lua_Integer)e->killer_id); lua_setfield(L, -2, "killer_id");
+    } else if (strcmp(name, SC_GAME_EVENT_ZONE_CHANGED) == 0 && size >= sizeof(sc_game_zone_changed)) {
+        const sc_game_zone_changed* e = (const sc_game_zone_changed*)data;
+        lua_createtable(L, 0, 2);
+        lua_pushinteger(L, (lua_Integer)e->old_zone_id); lua_setfield(L, -2, "old_zone_id");
+        lua_pushinteger(L, (lua_Integer)e->new_zone_id); lua_setfield(L, -2, "new_zone_id");
+    } else {
+        lua_pushnil(L);
+    }
+}
+
 static int EventBody(lua_State* L) {
     EventCall* k = (EventCall*)lua_touserdata(L, 1);
     Script* s = k->e->s;
@@ -234,7 +263,7 @@ static int EventBody(lua_State* L) {
         if (!StillSubscribed(L, live, fn)) { lua_pop(L, 1); continue; }   /* unsubscribe applies at once */
         lua_pushstring(L, k->e->name);
         if (strcmp(k->e->name, "tick") == 0 && k->data) lua_pushinteger(L, *(const uint32_t*)k->data);
-        else lua_pushnil(L);
+        else PushGameEvent(L, k->e->name, k->data);   /* a table for a game.* event, else nil */
         const int st = lua_pcall(L, 2, 0, 0);
         if (st != LUA_OK) {
             char where[NAME_MAX_ + 16];
@@ -1255,6 +1284,26 @@ static int L_actors_local_player(lua_State* L) {
     return 2;
 }
 
+/* health(entity_id): the actor's health pool and its maximum (0: not read yet), or nil, err and the
+ * host's message. Needs game.actors 1.1. */
+static int L_actors_health(lua_State* L) {
+    const sc_actors_v1* a = ActorsTable(Of(L));
+    const uint64_t id = (uint64_t)luaL_checkinteger(L, 1);
+    float cur = 0, max = 0;
+    char msg[256];
+    uint32_t size = sizeof(msg);
+    const sco_result r = a && a->size > offsetof(sc_actors_v1, health) ? a->health(id, &cur, &max) : SCO_UNAVAILABLE;
+    if (r == SCO_OK) {
+        lua_pushnumber(L, (lua_Number)cur);
+        lua_pushnumber(L, (lua_Number)max);
+        return 2;
+    }
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(r));
+    if (a && a->last_error(NULL, msg, &size) == SCO_OK && msg[0]) { lua_pushstring(L, msg); return 3; }
+    return 2;
+}
+
 static const sco_ui_v1* UiTable(const Script* s) {
     const void* t = NULL;
     if (s->api->size <= offsetof(sco_api, query_service)) return NULL;
@@ -1434,6 +1483,68 @@ static int L_veh_seat_occupant(lua_State* L) {
 }
 
 
+/* ---- sco.game.world: the game pack's game.world, read-only queries (no self) ---------------------- */
+
+static const sc_world_v1* WorldTable(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service) || !s->api->query_service) return NULL;
+    if (s->api->query_service(SC_WORLD_NAME, SC_WORLD_VERSION_1_0, &t) != SCO_OK) return NULL;
+    return (const sc_world_v1*)t;
+}
+
+/* nil, the result's name and the game pack's reason (when it left one). */
+static int WorldFail(lua_State* L, const sc_world_v1* w, sco_result r) {
+    char msg[256];
+    uint32_t size = sizeof(msg);
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(r));
+    if (!w) { lua_pushliteral(L, "game.world is not available on this host"); return 3; }
+    if (w->last_error(NULL, msg, &size) == SCO_OK && msg[0]) { lua_pushstring(L, msg); return 3; }
+    return 2;
+}
+
+/* camera(): { x, y, z, qx, qy, qz, qw, zone }: the camera's position (metres) and rotation in the
+ * world frame, and the zone your player is in; or nil, err, message. No field of view. */
+static int L_world_camera(lua_State* L) {
+    const sc_world_v1* w = WorldTable(Of(L));
+    double pos[3] = { 0, 0, 0 }, rot[4] = { 0, 0, 0, 0 };
+    uint64_t zone = 0;
+    const sco_result r = w ? w->camera(pos, rot, &zone) : SCO_UNAVAILABLE;
+    if (r != SCO_OK) return WorldFail(L, w, r);
+    lua_createtable(L, 0, 8);
+    lua_pushnumber(L, pos[0]); lua_setfield(L, -2, "x");
+    lua_pushnumber(L, pos[1]); lua_setfield(L, -2, "y");
+    lua_pushnumber(L, pos[2]); lua_setfield(L, -2, "z");
+    lua_pushnumber(L, rot[0]); lua_setfield(L, -2, "qx");
+    lua_pushnumber(L, rot[1]); lua_setfield(L, -2, "qy");
+    lua_pushnumber(L, rot[2]); lua_setfield(L, -2, "qz");
+    lua_pushnumber(L, rot[3]); lua_setfield(L, -2, "qw");
+    lua_pushinteger(L, (lua_Integer)zone); lua_setfield(L, -2, "zone");
+    return 1;
+}
+
+/* raycast(zone, fx, fy, fz, dx, dy, dz, max_dist): { x, y, z, distance } where the ray hit, in zone's
+ * local frame; or nil, err, message ("not_found" when nothing was hit). */
+static int L_world_raycast(lua_State* L) {
+    const sc_world_v1* w = WorldTable(Of(L));
+    const uint64_t zone = (uint64_t)luaL_checkinteger(L, 1);
+    double from[3], dir[3];
+    for (int i = 0; i < 3; ++i) from[i] = (double)luaL_checknumber(L, 2 + i);
+    for (int i = 0; i < 3; ++i) dir[i] = (double)luaL_checknumber(L, 5 + i);
+    const double max = (double)luaL_checknumber(L, 8);
+    sc_world_hit hit;
+    memset(&hit, 0, sizeof(hit));
+    hit.size = sizeof(hit);
+    const sco_result r = w ? w->raycast(zone, from, dir, max, &hit) : SCO_UNAVAILABLE;
+    if (r != SCO_OK) return WorldFail(L, w, r);
+    lua_createtable(L, 0, 4);
+    lua_pushnumber(L, hit.pos[0]); lua_setfield(L, -2, "x");
+    lua_pushnumber(L, hit.pos[1]); lua_setfield(L, -2, "y");
+    lua_pushnumber(L, hit.pos[2]); lua_setfield(L, -2, "z");
+    lua_pushnumber(L, hit.distance); lua_setfield(L, -2, "distance");
+    return 1;
+}
+
 /* ---- setup ---------------------------------------------------------------------------------- */
 
 typedef struct LoadCall { const char* source; size_t size; const char* chunk; } LoadCall;
@@ -1516,11 +1627,11 @@ static int SetupBody(lua_State* L) {
         lua_setfield(L, -2, "datacore");
     }
     {                                                 /* sco.game: the game pack's services, read-only, each only when published */
-        const int actors = ActorsTable(s) != NULL, vehicles = Vehicles(s) != NULL;
-        if (actors || vehicles) {
+        const int actors = ActorsTable(s) != NULL, vehicles = Vehicles(s) != NULL, world = WorldTable(s) != NULL;
+        if (actors || vehicles || world) {
             lua_newtable(L);
             if (actors) {                             /* sco.game.actors */
-                static const luaL_Reg gafns[] = { { "local_player", L_actors_local_player }, { NULL, NULL } };
+                static const luaL_Reg gafns[] = { { "local_player", L_actors_local_player }, { "health", L_actors_health }, { NULL, NULL } };
                 luaL_newlib(L, gafns);
                 lua_setfield(L, -2, "actors");
             }
@@ -1530,6 +1641,11 @@ static int SetupBody(lua_State* L) {
                     { "seat_occupant", L_veh_seat_occupant }, { NULL, NULL } };
                 luaL_newlib(L, vehfns);
                 lua_setfield(L, -2, "vehicles");
+            }
+            if (world) {                              /* sco.game.world */
+                static const luaL_Reg wfns[] = { { "camera", L_world_camera }, { "raycast", L_world_raycast }, { NULL, NULL } };
+                luaL_newlib(L, wfns);
+                lua_setfield(L, -2, "world");
             }
             lua_setfield(L, -2, "game");
         }
