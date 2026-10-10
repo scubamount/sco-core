@@ -59,6 +59,18 @@ clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x
 printf '#include "sc_net.h"\n' | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
 printf '#include "sc_net.h"\n' | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
 echo "abi_sc_net: wire pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_net.h stands alone"
+# The MIT bridge layouts (tests/abi_titanlink.c, tests/abi_voxel_bridge.c), the same five ways; and each
+# header on its own, as the other side of a bridge includes it from the SDK, as C11 and C++20.
+for b in titanlink voxel_bridge; do
+  "$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_$b.c"
+  "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_$b.c"
+  "$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_$b.c"
+  clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_$b.c"
+  clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_$b.c"
+  printf '#include "sc_%s.h"\n' "$b" | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
+  printf '#include "sc_%s.h"\n' "$b" | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
+  echo "abi_$b: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_$b.h stands alone"
+done
 # The teleport.spatial table sc-offline provides (tests/abi_spatial.c), the same five ways.
 "$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spatial.c"
 "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spatial.c"
