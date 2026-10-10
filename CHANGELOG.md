@@ -4,6 +4,7 @@ What each change means for plugin authors and for products built on sco-core (sc
 
 ## Unreleased
 
+- **SDK: `sc_spatial.h` and ImGui's public headers** (`sco_api.h` unchanged). `include/sc_spatial.h` is sc-offline's `teleport.spatial` 1.0 table (until now `src/builtins/spatial_service.h` there, unchanged but for its comment), pinned by `tests/abi_spatial.c` and documented in [API v1 § Built-in services](docs/api-v1.md#built-in-services); the `sc_` prefix marks a product's service, `sco_` stays reserved for host services. `sdk/third_party/imgui/` holds Dear ImGui 1.92.8 WIP's `imconfig.h`, `imgui.h` and `LICENSE.txt`, byte for byte sc-offline's (its CI compares them), for plugins that draw in `sco.ui` ([UI](docs/ui.md#hosting-it)). The SDK zip ships both. Docs: zone ids are volatile streaming handles, so persist the zone name and double coordinates, never the id ([C++ SDK](docs/sdk-cpp.md#services)). For sc-offline: include `<sc_spatial.h>` from the submodule and drop its copy.
 - **Design: co-presence multiplayer and cross-game bridges** ([`docs/design/multiplayer.md`](docs/design/multiplayer.md)), for review, no code: the scope change of 2026-10-09 (sessions between players running sc-offline, local links to other games), updated to the maintainer's directive — co-presence by ghost replication (no dedicated server, the excluded patches named and never ported), the `sco.net` channel service and the `sco.ipc` / MIT `sc_ipc.h` bridge wire, a vendored SHA-256/HMAC/PBKDF2, `spawn.entities` 1.2, and the 7-PR plan.
 ## sdk-v1.1.0 (2026-10-09)
 
