@@ -534,19 +534,17 @@ static void TestCommands() {
     std::thread([&] { r = sco::Post(Record, Tag(1), &kOwnerH); }).join();
     CHECK(r == Result::BadArg && sco::QueuedTasks() == 0);
 
-    // Registering from another thread while the game thread lists. 25 slots are used so far
-    // (TestOverlap's 17, TestCalloutGuard's 1, TestDoneAfterRelease's 1 and 6 here; released ones
-    // count too: slots never move).
-    constexpr size_t kUsed = 25;
+    // Registering from another thread while the game thread lists: up to the cap on LIVE commands.
     const size_t liveBefore = sco::ListCommands(nullptr, 0);   // spawn.ship, test.long, copy.me
+    const size_t kBulkCount = sco::kMaxCommands - liveBefore;
     std::vector<std::string> names;
-    for (size_t i = 0; i < sco::kMaxCommands; ++i) names.push_back("bulk.c" + std::to_string(i));
+    for (size_t i = 0; i < kBulkCount; ++i) names.push_back("bulk.c" + std::to_string(i));
     std::atomic<int> ok{ 0 };
     std::thread reg([&] {
-        for (size_t i = kUsed; i < sco::kMaxCommands; ++i)
+        for (size_t i = 0; i < kBulkCount; ++i)
             ok += sco::RegisterCommand(&kBulk, "bulk", named(names[i].c_str())) == Result::Ok;
     });
-    const size_t want = liveBefore + sco::kMaxCommands - kUsed;
+    const size_t want = sco::kMaxCommands;
     size_t seen = 0;
     bool monotonic = true;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -558,7 +556,7 @@ static void TestCommands() {
     }
     reg.join();
     CHECK(liveBefore == 3 && monotonic);
-    CHECK(ok == static_cast<int>(sco::kMaxCommands - kUsed));
+    CHECK(ok == static_cast<int>(kBulkCount));
     CHECK(sco::RegisterCommand(&kBulk, "bulk", named("bulk.over")) == Result::TooMany);
     std::vector<const sco::Command*> all(sco::kMaxCommands);
     CHECK(sco::ListCommands(all.data(), all.size()) == want);
@@ -567,6 +565,99 @@ static void TestCommands() {
     CHECK(sco::Release(&kBulk) == Result::Ok && sco::ListCommands(nullptr, 0) == liveBefore);
 }
 
+
+// ---- command slots are reused ---------------------------------------------------------------
+
+static Result CmdTag(const sco::Arg*, uint32_t, void* ctx, char* reply, uint32_t size) {
+    snprintf(reply, size, "%s", static_cast<const char*>(ctx));
+    return Result::Ok;
+}
+
+static const sco::Command* ListedByName(const char* name) {
+    std::vector<const sco::Command*> all(sco::kMaxCommands);
+    const size_t n = sco::ListCommands(all.data(), all.size());
+    const sco::Command* found = nullptr;
+    for (size_t i = 0; i < n && i < all.size(); ++i)
+        if (strcmp(all[i]->name, name) == 0) found = all[i];
+    return found;
+}
+
+static char kCycle[2 * sco::kMaxCommands + 7];   // one owner per load: a released owner is final
+static char kStale, kFresh, kOrdA, kOrdB, kOrdC, kOrdD;
+static char kFill[2];
+
+static void TestCommandRecycling() {
+    const size_t base = sco::ListCommands(nullptr, 0);   // host features' commands, never released
+    const auto nop = [](const char* name) { return sco::Command{ name, name, nullptr, nullptr, nullptr, 0, CmdNop, nullptr }; };
+
+    // Load and unload for far more than kMaxCommands registrations in all: each round registers two
+    // commands under names the previous round freed, runs one, and releases both.
+    size_t goodRounds = 0;
+    for (size_t i = 0; i < sizeof(kCycle); ++i) {
+        size_t removed = 0;
+        const bool ok = sco::RegisterCommand(&kCycle[i], "cyc", nop("cyc.a")) == Result::Ok &&
+                        sco::RegisterCommand(&kCycle[i], "cyc", nop("cyc.b")) == Result::Ok &&
+                        sco::Invoke("cyc.a", nullptr, 0, nullptr, nullptr) == Result::Ok &&
+                        sco::ListCommands(nullptr, 0) == base + 2 &&
+                        sco::Release(&kCycle[i], &removed) == Result::Ok && removed == 2;
+        goodRounds += ok;
+    }
+    CHECK(2 * sizeof(kCycle) > sco::kMaxCommands && goodRounds == sizeof(kCycle));
+    CHECK(sco::ListCommands(nullptr, 0) == base);
+
+    // A released command's name answers NotFound; the same name registered again is a fresh
+    // record, with none of the old command's help, args, ctx or title.
+    static char kOldTag[] = "old", kNewTag[] = "new";
+    const sco::ArgDef oldArgs[] = { { "count", sco::ArgType::Int, "how many" } };
+    const sco::Command oldCmd{ "stale.cmd", "Old title", "old help", nullptr, oldArgs, 1, CmdTag, kOldTag };
+    CHECK(sco::RegisterCommand(&kStale, "stale", oldCmd) == Result::Ok);
+    const sco::Command* oldView = ListedByName("stale.cmd");
+    CHECK(oldView && strcmp(oldView->title, "Old title") == 0 && oldView->nargs == 1);
+    const sco::Arg one[] = { A(1) };
+    Done d;
+    CHECK(sco::Invoke("stale.cmd", one, 1, OnDone, &d) == Result::Ok && d.reply == "old");
+    CHECK(sco::Release(&kStale) == Result::Ok);
+    d = Done{};
+    CHECK(sco::Invoke("stale.cmd", one, 1, OnDone, &d) == Result::NotFound && d.r == Result::NotFound);
+    CHECK(ListedByName("stale.cmd") == nullptr && sco::ListCommands(nullptr, 0) == base);
+    const sco::Command newCmd{ "stale.cmd", "New title", nullptr, nullptr, nullptr, 0, CmdTag, kNewTag };
+    CHECK(sco::RegisterCommand(&kFresh, "stale", newCmd) == Result::Ok);
+    const sco::Command* newView = ListedByName("stale.cmd");
+    CHECK(newView && strcmp(newView->title, "New title") == 0 && newView->help == nullptr &&
+          newView->capability == nullptr && newView->args == nullptr && newView->nargs == 0);
+    d = Done{};
+    CHECK(sco::Invoke("stale.cmd", nullptr, 0, OnDone, &d) == Result::Ok && d.reply == "new");
+    CHECK(sco::Invoke("stale.cmd", one, 1, nullptr, nullptr) == Result::BadArg);   // the old arg list is gone
+    CHECK(sco::Release(&kFresh) == Result::Ok);
+
+    // The cap is on live commands: fill it, one more is TooMany, releasing frees every slot, and it
+    // fills again (through reused slots).
+    for (char& owner : kFill) {
+        const size_t room = sco::kMaxCommands - base;
+        std::vector<std::string> names;
+        for (size_t i = 0; i < room; ++i) names.push_back("fill.c" + std::to_string(i));
+        size_t ok = 0;
+        for (const std::string& n : names) ok += sco::RegisterCommand(&owner, "fill", nop(n.c_str())) == Result::Ok;
+        CHECK(ok == room && sco::ListCommands(nullptr, 0) == sco::kMaxCommands);
+        CHECK(sco::RegisterCommand(&owner, "fill", nop("fill.over")) == Result::TooMany);
+        size_t removed = 0;
+        CHECK(sco::Release(&owner, &removed) == Result::Ok && removed == room && sco::ListCommands(nullptr, 0) == base);
+    }
+
+    // ListCommands keeps registration order across reuse: a later registration that lands in an
+    // earlier slot still lists last.
+    CHECK(sco::RegisterCommand(&kOrdA, "oa", nop("oa.x")) == Result::Ok);
+    CHECK(sco::RegisterCommand(&kOrdB, "ob", nop("ob.x")) == Result::Ok);
+    CHECK(sco::RegisterCommand(&kOrdC, "oc", nop("oc.x")) == Result::Ok);
+    CHECK(sco::Release(&kOrdB) == Result::Ok);
+    CHECK(sco::RegisterCommand(&kOrdD, "od", nop("od.x")) == Result::Ok);
+    std::vector<const sco::Command*> all(sco::kMaxCommands);
+    CHECK(sco::ListCommands(all.data(), all.size()) == base + 3);
+    CHECK(strcmp(all[base]->name, "oa.x") == 0 && strcmp(all[base + 1]->name, "oc.x") == 0 &&
+          strcmp(all[base + 2]->name, "od.x") == 0);
+    CHECK(sco::Release(&kOrdA) == Result::Ok && sco::Release(&kOrdC) == Result::Ok && sco::Release(&kOrdD) == Result::Ok);
+    CHECK(sco::ListCommands(nullptr, 0) == base);
+}
 
 // ---- real overlap (meant for the ThreadSanitizer build) -------------------------------------
 
@@ -950,11 +1041,12 @@ int main() {
     TestTaskQueue();
     TestTasksManyThreads();
     TestEvents();
-    TestOverlap();    // before TestCommands, which fills every command slot
+    TestOverlap();
     TestCalloutGuard();
     TestDoneAfterRelease();
     TestServices();
     TestCommands();
+    TestCommandRecycling();   // after TestCommands: it leaves only the host's commands live
     TestRaw();
     std::printf("sco-core runtime tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

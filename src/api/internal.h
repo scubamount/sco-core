@@ -45,6 +45,14 @@ long ReleaseCommands(const void* owner);
 long ReleaseServices(const void* owner);
 long ReleaseRaw(const void* owner);
 
+// Calls visit(position, slot, gen, cmd, ctx) for each live command in registration order, with
+// the registry locked, and returns how many are live. `slot` (< kMaxCommands) is the registry slot
+// the command sits in; slots are reused after Release, so `gen` says which registration holds it:
+// it differs for every registration, ever. `cmd` is only valid inside the call. visit must not call
+// back into the runtime.
+using CommandVisitor = void (*)(size_t position, size_t slot, uint64_t gen, const Command& cmd, void* ctx);
+size_t VisitCommands(CommandVisitor visit, void* ctx);
+
 // The capability check SetCapabilityCheck installed: true when cap is available (false when no
 // check is installed). For modules other than the command registry.
 bool CapabilityAvailable(const char* cap);

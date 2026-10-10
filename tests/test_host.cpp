@@ -22,6 +22,12 @@ static int g_fail = 0, g_pass = 0;
 
 using sco::Result;
 
+// TestCommandRecycling's plugin loads: 17 loads of 32 commands is 544 registrations, past
+// kMaxCommands. The handle table is bounded for the life of the process, so the test is small and
+// TestTable's bound check counts its handles (caller, each load, one reload).
+constexpr int kCycleLoads = 17, kCycleCmds = 32;
+constexpr size_t kCycleHandles = 1 + kCycleLoads + 1;
+
 static std::mutex g_linesLock;
 static std::vector<std::string> g_lines;
 static void Capture(const char* line) {
@@ -403,7 +409,7 @@ static void TestTable() {
     api->log(hello, SCO_LOG_INFO, "after release");
     api->status(hello, "after release");
     CHECK(g_lines.size() == linesBefore);
-    CHECK(strcmp(vGreet->name, "hello.greet") == 0);   // old views stay readable
+    CHECK(strcmp(vGreet->name, "hello.greet") == 0);   // the memory of an old view stays mapped (its content holds until the slot is reused)
 
     // The id is free again: a reload gets a new handle and can reuse the prefix.
     sco_plugin* hello2 = sco::host::NewPlugin("hello");
@@ -433,7 +439,8 @@ static void TestTable() {
     size_t made = 0;
     for (size_t i = 0; i < sco::host::kMaxPlugins; ++i)
         made += sco::host::NewPlugin(("p" + std::to_string(i)).c_str()) != nullptr;
-    CHECK(made == sco::host::kMaxPlugins - 3);   // hello, the 31-char id and hello2 used three
+    // hello, the 31-char id and hello2 used three, TestCommandRecycling kCycleHandles
+    CHECK(made == sco::host::kMaxPlugins - 3 - kCycleHandles);
     CHECK(sco::host::NewPlugin("one_more") == nullptr);
 }
 
@@ -457,9 +464,72 @@ static void TestGameServices() {
     CHECK(sco::host::WithdrawGameServices() == 1);
 }
 
+// ---- plugin commands across load and unload ---------------------------------------------------
+
+static sco_result CycleCmd(const sco_arg*, uint32_t, void* ctx, char* reply, uint32_t size) {
+    ++*static_cast<int*>(ctx);
+    std::snprintf(reply, size, "ran");
+    return SCO_OK;
+}
+
+static void TestCommandRecycling() {
+    const sco_api* api = sco::host::BuildApi({ "sc-offline test" });
+    const uint32_t base = api->list_commands(nullptr, 0);
+    sco_plugin* caller = sco::host::NewPlugin("cycaller");
+    CHECK(caller != nullptr);
+
+    // Plugin loads past kMaxCommands registrations in all, the plugin id reused (a new handle each
+    // load). Every listing shows this load's commands and titles, so the host's views and records
+    // follow the recycled registry slots.
+    constexpr int kLoads = kCycleLoads, kCmds = kCycleCmds;
+    static_assert(kLoads * kCmds > static_cast<int>(sco::kMaxCommands), "must outrun the cap");
+    int runs = 0, goodLoads = 0;
+    for (int load = 0; load < kLoads; ++load) {
+        sco_plugin* p = sco::host::NewPlugin("cyc");
+        CHECK(p != nullptr);
+        if (!p) break;
+        char names[kCmds][16], titles[kCmds][32];
+        bool ok = true;
+        for (int k = 0; k < kCmds; ++k) {
+            std::snprintf(names[k], sizeof(names[k]), "cyc.c%d", k);
+            std::snprintf(titles[k], sizeof(titles[k]), "load %d cmd %d", load, k);
+            sco_command c = MakeCmd(names[k], CycleCmd, &runs);
+            c.title = titles[k];
+            ok = ok && api->register_command(p, &c) == SCO_OK;
+        }
+        ok = ok && api->list_commands(nullptr, 0) == base + kCmds;
+        for (int k = 0; k < kCmds; ++k) {
+            const sco_command* v = FindView(api, names[k]);
+            ok = ok && v && strcmp(v->title, titles[k]) == 0 && v->nargs == 0;
+        }
+        ok = ok && api->invoke(caller, "cyc.c2", nullptr, 0, nullptr, nullptr) == SCO_OK;
+        sco::Release(p, nullptr);
+        ok = ok && api->list_commands(nullptr, 0) == base;
+        goodLoads += ok;
+    }
+    CHECK(goodLoads == kLoads && runs == kLoads);
+
+    // Unloaded: the name answers NOT_FOUND and has no view. Loaded again: a new view, this plugin's.
+    CHECK(api->invoke(caller, "cyc.c0", nullptr, 0, nullptr, nullptr) == SCO_NOT_FOUND);
+    CHECK(FindView(api, "cyc.c0") == nullptr);
+    sco_plugin* again = sco::host::NewPlugin("cyc");
+    CHECK(again != nullptr);
+    int againRuns = 0;
+    sco_command fresh = MakeCmd("cyc.c0", CycleCmd, &againRuns);
+    fresh.title = "Again";
+    CHECK(api->register_command(again, &fresh) == SCO_OK);
+    const sco_command* v = FindView(api, "cyc.c0");
+    CHECK(v && strcmp(v->title, "Again") == 0 && v->help == nullptr && v->nargs == 0);
+    CHECK(api->invoke(caller, "cyc.c0", nullptr, 0, nullptr, nullptr) == SCO_OK && againRuns == 1 && runs == kLoads);
+    sco::Release(again, nullptr);
+    sco::Release(caller, nullptr);
+    CHECK(api->list_commands(nullptr, 0) == base);
+}
+
 int main() {
     sco::SetGameThread();
     TestCaps();
+    TestCommandRecycling();   // before TestTable, which uses up the handle table
     TestTable();
     TestGameServices();
     std::printf("sco-core host tests: %d passed, %d failed\n", g_pass, g_fail);
