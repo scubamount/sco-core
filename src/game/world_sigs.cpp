@@ -291,7 +291,7 @@ SigResult ResolveCVar(const Image& img) {
     const uint8_t* name = FindCString(img.rdata, c.name);
     if (!name) return SigFail("the cvar name isn't in .rdata");
     uint8_t* sites[4] = {};
-    const int n = RipRefs(img, 0x8D, 0x15, name, 0x20, 0x30, sites, 4, [&c](const uint8_t* p) {
+    const int n = RipRefs(img, 0x8D, 0x15, name, 0x20, 0x30, sites, 4, [](const uint8_t* p) {
         for (int f = 7; f <= 0x20; ++f)
             if ((BytesMatch(p + f, "FF 50") && p[f + 2] == c.registerSlot) || (BytesMatch(p + f, "4C 8B 50") && p[f + 3] == c.registerSlot))
                 return true;
