@@ -15,6 +15,7 @@
 //   pf.builtins = kBuiltins; pf.nBuiltins = std::size(kBuiltins);
 //   pf.scripts = &kLua;
 //   pf.image = &image;                         // sco::ModuleImage() in game
+//   pf.registerSignatures = sco::game::RegisterGameSignatures;   // the game's tables (Star Citizen)
 //   pf.setCapabilities = SetFeatureCaps;       // reads the resolved rows
 //   sco::app::Start(pf);                       // game thread, after the product's own patches
 //   ... sco::app::Tick(nowMs) on every main-thread tick ...
@@ -22,7 +23,7 @@
 //
 // Start, in order:
 //   1. SetGameThread (the caller's thread)
-//   2. image set: RegisterGameSignatures + ResolveAll(*image)
+//   2. image set: registerSignatures() (when set) + ResolveAll(*image)
 //   3. setCapabilities() (after the rows are resolved, so it can use caps::SetFromSignatures)
 //   4. host::BuildApi({ hostVersion }); with dataRoot set, storage::Start (sco.storage) and, with
 //      dataCore too, datacore::service::Start (sco.datacore); ui::Start (sco.ui) and ui::ReserveChord
@@ -59,6 +60,10 @@ struct Platform {
     size_t nBuiltins = 0;
     const plugins::ScriptRuntime* scripts = nullptr;   // sco-lua, or nullptr: lua plugins refused
     const Image* image = nullptr;                  // resolve signatures against this; nullptr skips
+    // With image set, Start calls this before ResolveAll: the product registers the signature
+    // tables of its game (Star Citizen: sco::game::RegisterGameSignatures). Null registers none, so a
+    // host for another game never scans for Star Citizen's rows. False is logged, never fatal.
+    bool (*registerSignatures)() = nullptr;
     void (*setCapabilities)() = nullptr;           // the product sets caps after ResolveAll
     plugins::ModuleOps moduleOps = plugins::PlatformModuleOps();
     // The product's data folder (sc-offline: data/). Set, Start publishes the host service

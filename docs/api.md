@@ -159,6 +159,7 @@ struct Platform {
     const plugins::Builtin* builtins = nullptr; size_t nBuiltins = 0;
     const plugins::ScriptRuntime* scripts = nullptr;   // sco-lua, or nullptr
     const Image* image = nullptr;                  // resolve signatures against this; nullptr skips
+    bool (*registerSignatures)() = nullptr;        // with image: the product's tables (sco::game::RegisterGameSignatures)
     void (*setCapabilities)() = nullptr;           // the product sets caps after ResolveAll
     plugins::ModuleOps moduleOps = plugins::PlatformModuleOps();
     std::filesystem::path dataRoot;                // data; set: sco.storage in <dataRoot>/storage/
@@ -167,7 +168,7 @@ struct Platform {
 
 | Function | Does |
 |---|---|
-| `bool app::Start(const Platform& pf)` | `SetGameThread`; with `image`, `RegisterGameSignatures` and `ResolveAll(*image)`; `setCapabilities()`; `host::BuildApi`; with `dataRoot`, `storage::Start` (a failure is logged `[app] storage not started: <RESULT>`); the list (every built-in, then `Discover(pluginRoot)` when `pluginsEnabled`); `ContainCallouts`; `LoadBuiltin` for the built-ins, then `LoadNative` / `LoadScript` in list order (a `lua` plugin is refused `no script runtime` without `scripts`); the content index; with `image`, `LogSignatureReport(false)`; `LogReport`; dispatches `game.ready`. Problems are logged, never fatal. False (nothing changes) when already started |
+| `bool app::Start(const Platform& pf)` | `SetGameThread`; with `image`, `registerSignatures()` when set (the product registers its game's tables; null registers none) and `ResolveAll(*image)`; `setCapabilities()`; `host::BuildApi`; with `dataRoot`, `storage::Start` (a failure is logged `[app] storage not started: <RESULT>`); the list (every built-in, then `Discover(pluginRoot)` when `pluginsEnabled`); `ContainCallouts`; `LoadBuiltin` for the built-ins, then `LoadNative` / `LoadScript` in list order (a `lua` plugin is refused `no script runtime` without `scripts`); the content index; with `image`, `LogSignatureReport(false)`; `LogReport`; dispatches `game.ready`. Problems are logged, never fatal. False (nothing changes) when already started |
 | `void app::Tick(uint32_t nowMs)` | `GameThreadTick(nowMs)`. No-op unless started |
 | `void app::Stop()` | Dispatches `game.exit`, then `UnloadAll` (newest first, built-ins last), `storage::Stop`, `ui::Stop`, `host::WithdrawHostServices` (host services outlive every plugin) and `ContainCallouts(nullptr)`. No-op unless started; `Start` works again afterwards, with fresh handles |
 | `const std::vector<plugins::Plugin>& app::Plugins()` | The list of the last `Start` (built-ins first), final states after `Stop`. Never resized between two `Start`s |
