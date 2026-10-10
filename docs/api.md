@@ -63,6 +63,7 @@ Helpers for resolvers:
 | `bool sco::game::TeleportAddresses(TeleportAddrs& out)` | Fills `clientMgr`, `entitySystem` and `handleFromId`, or returns false and leaves `out` untouched if any `teleport.*` row isn't OK |
 | `bool sco::game::QuitFunction(QuitHook& out)` (`sco/game/system.h`) | Fills `fn` (CSystem::Quit's entry) and `stolenBytes` (`kQuitStolenBytes`, 15: the whole instructions a 14-byte absolute jmp detour overwrites), or returns false and leaves `out` untouched if `system.quit` isn't OK |
 | `bool sco::game::pak::Resolve(Targets& out)` (`sco/game/pak.h`) | Fills `loader` and `cryPak` (the address of the `ICryPak*` global), or returns false and leaves `out` untouched unless all three `pak.*` rows are OK. The slot offsets are constants the rows pin: `kOpenSlot` 0x148 (`pak.crypak`), `kReadSlot` 0x160, `kSeekSlot` 0x1D0, `kCloseSlot` 0x1E0 (`pak.slots`) |
+| `const asop::Capability* sco::game::asop::Capabilities(size_t& count)` (`sco/game/asop.h`) | The 11 ASOP, hangar and ATC capabilities: `name`, `rows`/`count` (for `caps::SetFromSignatures`) and `causes` (root causes of the research doc). The offsets and vtable slots the rows pin are constants in the same header (`kCallerLookupSlot` 0xA0, `kKioskRetrieving` 0xA28, `kInsuranceTimeout` 0x48, `kDeferredUnstow` 0x318, ...). Rows: [ASOP, hangar and ATC rows](game/asop.md) |
 
 Rows today:
 
@@ -76,6 +77,7 @@ Rows today:
 | `pak.datacore_loader` | `CDataCoreLoader::InitializeBinary`: the function holding the `lea r9` to `"DCB file is smaller than expected"`, its start from `.pdata` (`FunctionStart`, chained unwind info followed), then the 24-byte prologue `48 89 5C 24 08 48 89 74 24 10 48 89 7C 24 18 55 41 54 41 55 41 56 41 57`. Every other `lea r9` to the string must be in the same function, else `AMBIG`. `MISSING` if the string is gone. Moved byte for byte from sc-offline's `quantum.cpp:417-427` |
 | `pak.crypak` | The `ICryPak*` global: in the loader's first 0x400 bytes, `48 8B 0D ?? ?? ?? ?? 4C 8D 05 ?? ?? ?? ?? 48 8B 55 ?? 45 33 C9 48 8B 01 FF 90 48 01 00 00` (`mov rcx, [rip+X]` ... `call [rax+0x148]`, FOpen); the result is `X`. Two matches naming different globals: `AMBIG` (`quantum.cpp:428-430`) |
 | `pak.slots` | Layout check: the loader's first 0x2400 bytes call `[rax+0x160]`, `[rax+0x1D0]` and `[rax+0x1E0]` (read, seek, close; `FF 90 <slot>`). The address is the first read call (`quantum.cpp:431-436`) |
+| `asop.*`, `insurance.*`, `atc.*`, `hangar.*`, `lift.*`, `landing.*`, `respawn.*` | 62 rows, one per byte pattern of the research doc's Appendix B plus derived globals and call targets; each row with its checks: [ASOP, hangar and ATC rows](game/asop.md) |
 
 ## `sco/log.h`: log
 

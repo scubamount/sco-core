@@ -1,5 +1,6 @@
 // Unit tests for sco-core's scanners and signature registry. Host build, no game needed.
 //   tools/test.sh
+#include "sco/game/asop.h"
 #include "sco/game/pak.h"
 #include "sco/game/signatures.h"
 #include "sco/game/system.h"
@@ -319,6 +320,95 @@ static void TestPakRows() {
     CHECK(Logged("[core] MISSING  pak.datacore_loader") && Logged("[core] BLOCKED  pak.crypak (needs pak.datacore_loader)"));
 }
 
+// A fake image for the asop.on_request_open rows: the prologue, shard gate site 1 at +0x21 and the
+// guards of build 4.10.196 (+0x189, +0x616, +0x958, the jmp at +0x95E to +0xDC0, the client gate
+// at +0x963) with the two globals in .rdata.
+static uint8_t g_asopImg[0x1800];
+struct AsopLayout { uint8_t* open; uint8_t* shardPersisted; uint8_t* clientGate; };
+static AsopLayout AsopImage(sco::Image& img) {
+    memset(g_asopImg, 0xCC, sizeof(g_asopImg));
+    img = {};
+    img.base = g_asopImg;
+    img.size = sizeof(g_asopImg);
+    img.text = { g_asopImg + 0x100, 0x1000 };
+    img.rdata = { g_asopImg + 0x1100, 0x700 };
+    memset(img.rdata.base, 0, img.rdata.size);
+    AsopLayout l{ img.text.base + 0x20, img.rdata.base + 0x40, img.rdata.base + 0x48 };
+    const auto put = [&](size_t off, std::vector<uint8_t> b) { memcpy(l.open + off, b.data(), b.size()); };
+    const auto rel = [&](size_t insn, size_t disp, size_t len, const uint8_t* to) {
+        const int32_t r = static_cast<int32_t>(to - (l.open + insn + len));
+        memcpy(l.open + insn + disp, &r, 4);
+    };
+    put(0x000, { 0x48, 0x89, 0x54, 0x24, 0x10, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x57, 0x48, 0x8D, 0x6C, 0x24, 0x80 });
+    put(0x021, { 0x44, 0x89, 0xAD, 0xD0, 0x00, 0x00, 0x00, 0x44, 0x38, 0x2D, 0, 0, 0, 0, 0x0F, 0x85, 0x10, 0x00, 0x00, 0x00,
+                 0x48, 0x8B, 0x51, 0x08, 0x48, 0x8D, 0x8D, 0xD0, 0x00, 0x00, 0x00, 0xE8 });
+    rel(0x028, 3, 7, l.shardPersisted);
+    put(0x189, { 0x48, 0x8B, 0x9E, 0xF8, 0x09, 0x00, 0x00 });
+    put(0x616, { 0x48, 0x8B, 0xBD, 0xD8, 0x00, 0x00, 0x00 });
+    put(0x958, { 0x89, 0xBE, 0xE8, 0x09, 0x00, 0x00 });
+    put(0x95E, { 0xE9, 0, 0, 0, 0 });
+    rel(0x95E, 1, 5, l.open + 0xDC0);
+    put(0x963, { 0x80, 0x3D, 0, 0, 0, 0, 0x00 });
+    rel(0x963, 2, 7, l.clientGate);
+    return l;
+}
+
+static void TestAsopRows() {
+    using S = sco::SigState;
+    CHECK(sco::game::RegisterGameSignatures());
+    sco::Image img;
+    AsopLayout l = AsopImage(img);
+    sco::ResolveAll(img);
+    CHECK(sco::SigLookup("asop.on_request_open")->state == S::Ok && sco::Sig("asop.on_request_open") == l.open);
+    CHECK(sco::Sig("asop.shard_persisted") == l.shardPersisted && sco::Sig("asop.client_gate") == l.clientGate);
+    CHECK(sco::Sig("asop.shard_gate_open") == l.open + 0x21);
+    CHECK(sco::SigLookup("asop.shard_gate_validation")->state == S::Blocked);   // no Deliver handler here
+    CHECK(sco::SigLookup("asop.validate_caller")->state == S::Blocked);
+    CHECK(sco::SigLookup("asop.rm_request_deliver")->state == S::Missing);
+
+    l.open[0x95F] ^= 1;   // the server half's jmp no longer reaches the exit
+    sco::ResolveAll(img);
+    const sco::SigResult* r = sco::SigLookup("asop.on_request_open");
+    CHECK(r->state == S::Failed && strcmp(r->why, "jmp at +0x95e doesn't reach +0xdc0") == 0);
+    CHECK(sco::SigLookup("asop.client_gate")->state == S::Blocked && sco::SigLookup("asop.shard_gate_open")->state == S::Blocked);
+
+    l = AsopImage(img);
+    l.open[0x618] = 0xB5;   // mov rsi instead of mov rdi
+    sco::ResolveAll(img);
+    r = sco::SigLookup("asop.on_request_open");
+    CHECK(r->state == S::Failed && strcmp(r->why, "layout changed at +0x616") == 0);
+
+    l = AsopImage(img);
+    memcpy(l.open + 0x41, l.open + 0x21, 32);   // a second shard gate site 1, not at +0x21
+    sco::ResolveAll(img);
+    CHECK(sco::SigLookup("asop.on_request_open")->state == S::Ok);
+    CHECK(sco::SigLookup("asop.shard_gate_open")->state == S::Ambiguous && sco::SigLookup("asop.shard_gate_open")->matches == 2);
+
+    // Every capability names registered rows only, and every asop/atc/hangar row is in one.
+    size_t n = 0;
+    const sco::game::asop::Capability* caps = sco::game::asop::Capabilities(n);
+    CHECK(n == 11);
+    for (size_t i = 0; i < n; ++i) {
+        CHECK(caps[i].count > 0);
+        for (size_t j = 0; j < caps[i].count; ++j) CHECK(sco::SigLookup(caps[i].rows[j]) != nullptr);
+        for (size_t j = 0; j < i; ++j) CHECK(strcmp(caps[i].name, caps[j].name) != 0);
+    }
+    size_t feature = 0;
+    for (size_t i = 0; i < sco::SignatureCount(); ++i) {
+        const char* id = sco::SignatureDef(i)->id;
+        bool ours = false;
+        for (const char* p : { "asop.", "atc.", "hangar.", "lift.", "landing.", "respawn.", "insurance." })
+            ours |= strncmp(id, p, strlen(p)) == 0;
+        if (!ours) continue;
+        ++feature;
+        bool listed = false;
+        for (size_t c = 0; c < n && !listed; ++c)
+            for (size_t j = 0; j < caps[c].count && !listed; ++j) listed = strcmp(caps[c].rows[j], id) == 0;
+        CHECK(listed);
+    }
+    CHECK(feature == 62);
+}
+
 static void TestStatus() {
     char buf[64] = "junk";
     CHECK(!sco::GetStatus(buf, sizeof(buf)) && buf[0] == 0);
@@ -338,6 +428,7 @@ int main() {
     TestRegistry();
     TestSystemQuit();
     TestPakRows();
+    TestAsopRows();
     std::printf("sco-core tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
