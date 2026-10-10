@@ -110,6 +110,7 @@ if (g.Query(*this, "hello.greeter", sco::sdk::ServiceVersion(1, 0)) == SCO_OK) g
 - `Release(plugin, name)` withdraws one of your services. The host withdraws the rest when you unload.
 - A provider's table goes away when it unloads: query when you need it, and don't keep a `ServiceRef` across ticks.
 - Entity ids, never pointers: a service that deals with game objects takes and returns entity and zone ids (opaque `uint64_t` values, as the game's are), resolves them on every call on the game thread, and answers `SCO_NOT_FOUND` or `SCO_UNAVAILABLE` once the entity has streamed out. Never return a pointer into the game: objects stream out and a stored pointer dangles. See [the API rule](api-v1.md#services-11).
+- Zone ids (`zone_id`, as in [`teleport.spatial`](api-v1.md#built-in-services)) are volatile streaming handles: the same place gets another id after it streams out and back in. Anything you persist or send keeps the zone name string plus `double` x, y, z in that zone, never the raw id; resolve the name back to an id when you need it.
 
 ## Raw handlers
 

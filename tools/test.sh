@@ -49,6 +49,13 @@ clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x
 printf '#include "sc_ipc.h"\n' | "$CC"  -std=c11   -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c   -
 printf '#include "sc_ipc.h"\n' | "$CXX" -std=c++20 -Wall -Wextra -Wpedantic -Werror -fsyntax-only -I "$ROOT/include" -x c++ -
 echo "abi_ipc: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc); sc_ipc.h stands alone"
+# The teleport.spatial table sc-offline provides (tests/abi_spatial.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spatial.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spatial.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_spatial.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spatial.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spatial.c"
+echo "abi_spatial: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
 # SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
 # header change that breaks them fails here. The full build from the packaged zip, with MSVC on

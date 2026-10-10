@@ -18,6 +18,7 @@ Plugins are native DLLs and run with the game's full rights. Only install plugin
 - [Capabilities](#capabilities)
 - [Services (1.1)](#services-11)
 - [Host-owned services](#host-owned-services)
+- [Built-in services](#built-in-services)
 - [Raw handlers (1.1)](#raw-handlers-11)
 - [Threading](#threading)
 - [Compatibility](#compatibility)
@@ -289,6 +290,34 @@ Some services are published by the host itself rather than by a plugin. They liv
 | `sco.ui` | 1.0 | [`sco_ui.h`](../include/sco_ui.h) | Tabs, overlays and badges in the product's menu, drawn by the product through the plugin's draw function, and hotkeys: key chords bound to commands. [UI](ui.md) |
 
 The host side is `sco::host::ProvideHostService` ([API: sco/host.h](api.md#scohosth-the-hosts-sco_api-table)).
+
+## Built-in services
+
+Services a product's built-in plugins publish, under the built-in's id. Their headers ship with the SDK; the product, not sco-core, implements them, so on another host `query_service` answers `SCO_NOT_FOUND`.
+
+### `teleport.spatial` 1.0 (sc-offline)
+
+[`sc_spatial.h`](../include/sc_spatial.h), pinned by [`tests/abi_spatial.c`](../tests/abi_spatial.c): where you are, and positions converted between the game's zones. sc-offline's `teleport` built-in publishes it at load on every game build; whether it can answer there is the capability `"teleport"` (`has("teleport")`, the same gate as `teleport.save` / `teleport.go`). Without it every function returns 0. So check both:
+
+```c
+const sc_spatial_v1* sp = NULL;
+if (api->size > offsetof(sco_api, query_service) &&
+    api->query_service(SC_SPATIAL_SERVICE_NAME, SC_SPATIAL_SERVICE_VERSION, (const void**)&sp) == SCO_OK &&
+    api->has("teleport")) { ... }
+```
+
+Every function returns 1 when it answered and 0 when it can't (wrong thread, not spawned, an id that isn't streamed in, a null pointer, teleport unavailable); outputs are written only on 1. Game thread only. Positions are metres as doubles; zone id 0 is the world frame.
+
+| Function | What |
+|---|---|
+| `player_pose(pos[3], rot_xyzw[4], &zone_id)` | Your position and orientation (unit quaternion, x y z w) in the zone you're in, and that zone's id |
+| `zone_of_entity(entity_id, &zone_id)` | The zone an entity is in |
+| `local_to_world(zone_id, local[3], world[3])` | A position in a zone to the world frame |
+| `world_to_local(zone_id, world[3], local[3])` | A world position to a zone's frame |
+| `zone_to_zone(from, to, in[3], out[3])` | A position in one zone to another, through their common ancestor (more precise than going through the world) |
+| `zone_name(zone_id, out, cap)` | The zone's name (`"OOC_Stanton_2b_Daymar"`), NUL-terminated and cut to fit `cap` |
+
+Zone ids are volatile streaming handles: to save or send a place, keep the zone name and the double coordinates, never the id ([C++ SDK § Services](sdk-cpp.md#services)).
 
 ## Raw handlers (1.1)
 
