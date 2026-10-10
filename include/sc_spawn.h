@@ -40,6 +40,8 @@ typedef struct sc_spawn_service_v1 {
     uint32_t size; /* sizeof(sc_spawn_service_v1) as sc-offline built it */
     /* Spawns an entity class (a ship, a vehicle, an item) at offset metres from you, in your
      * current zone's frame. NULL on success with *out_id = the new entity id; else the reason.
+     * The id is final at once, but the entity streams in later: a few seconds, up to a minute for
+     * a big ship. entity_alive(id) answers 1 once it has.
      * An entity spawned here belongs to no plugin: set_entity_transform refuses it. Use
      * spawn_as for an entity you will move. */
     const char* (*spawn_near_player)(const char* entity_class, const double offset[3], uint64_t* out_id);
@@ -59,7 +61,9 @@ typedef struct sc_spawn_service_v1 {
      * zone_of_entity). The entity stays in the zone it's in; the pose is converted to that zone's
      * frame. 1 on success, 0 on failure: wrong thread, a null pointer, rot not finite or of zero
      * length (it is normalized), an id that isn't streamed in, a zone the built-in can't place,
-     * or an entity you may not move. You may move:
+     * or an entity you may not move; sc-offline logs the reason to mod.log once per id and
+     * reason. A fresh spawn takes seconds to stream in and answers 0 until then: check
+     * entity_alive(id) first, and try again on a later tick while it answers 0. You may move:
      *  - an entity spawned through spawn_as with your own self, while your plugin is loaded
      *    (unloading forgets them; spawn_near_player and the spawn.ship command count for nobody);
      *  - your player's own vehicle once sc-offline has registered it as retrieved or delivered
