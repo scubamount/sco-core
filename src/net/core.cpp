@@ -26,25 +26,32 @@ namespace sco::net {
 
 namespace {
 
-constexpr uint32_t kControlMaxLen = 64u * 1024u;
+constexpr uint32_t kControlMaxLen = SC_NET_CONTROL_MAX;
 constexpr uint32_t kMaxPending = 32;        // half-open joins the host remembers
-constexpr uint32_t kHelloMinBody = 64;      // HELLO is padded to this: a CHALLENGE is never bigger
+constexpr uint32_t kHelloMinBody = SC_NET_HELLO_MIN_BODY;   // so a CHALLENGE is never bigger
 constexpr uint32_t kMaxPumpDatagrams = 4096;
 constexpr uint32_t kMaxUnrelQueue = 256;    // per link
 constexpr uint32_t kMaxReason = 128;
-constexpr uint32_t kAckEntryBytes = 20;
+constexpr uint32_t kAckEntryBytes = SC_NET_ACK_ENTRY_BYTES;
 
 // DATA body: u8 flags, u8 0, u16 0, u64 origin; reliable adds u64 unit seq, u32 msg_len, u32 offset.
-constexpr uint8_t kDataReliable = 0x1u;
-constexpr uint8_t kDataToHost = 0x2u;
+constexpr uint8_t kDataReliable = SC_NET_DATA_F_RELIABLE;
+constexpr uint8_t kDataToHost = SC_NET_DATA_F_TO_HOST;
+static_assert(SC_NET_DATA_HEAD_UNREL == 12 && SC_NET_DATA_HEAD_REL == 28, "DATA body heads");
+static_assert(SC_NET_CHALLENGE_BODY == 3 * kNonceBytes && SC_NET_PROOF_BODY == 2 * kNonceBytes + 32 &&
+                  SC_NET_WELCOME_BODY == kNonceBytes + 8 + 32,
+              "handshake bodies");
 
-enum class Ctl : uint8_t { Sync = 1, Channel = 2, Register = 3, PeerJoined = 4, PeerLeft = 5 };
+enum class Ctl : uint8_t {
+    Sync = SC_NET_CTL_SYNC, Channel = SC_NET_CTL_CHANNEL, Register = SC_NET_CTL_REGISTER,
+    PeerJoined = SC_NET_CTL_PEER_JOINED, PeerLeft = SC_NET_CTL_PEER_LEFT,
+};
 
 void Label(const uint8_t key[kKeyBytes], const char* label, const uint8_t cn[kNonceBytes],
            const uint8_t hn[kNonceBytes], const uint8_t* extra, size_t extraLen, uint8_t out[32]) {
     sco_hmac_sha256 c;
     sco_hmac_sha256_init(&c, key, kKeyBytes);
-    sco_hmac_sha256_update(&c, label, std::strlen(label) + 1);   // the NUL separates the label
+    sco_hmac_sha256_update(&c, label, std::strlen(label) + 1);   // with its NUL, as sc_net.h says
     sco_hmac_sha256_update(&c, cn, kNonceBytes);
     sco_hmac_sha256_update(&c, hn, kNonceBytes);
     if (extraLen) sco_hmac_sha256_update(&c, extra, extraLen);
@@ -278,7 +285,7 @@ struct Core::Impl {
 
     void DeriveLinkKey(Link& l) {
         uint8_t k[32];
-        Label(sessionKey, "sco.net link", l.cn, l.hn, nullptr, 0, k);
+        Label(sessionKey, SC_NET_LABEL_LINK, l.cn, l.hn, nullptr, 0, k);
         l.key.Set(k);
         sco_wipe(k, sizeof(k));
     }
@@ -337,7 +344,7 @@ struct Core::Impl {
 
     void SendProof() {
         uint8_t proof[32];
-        Label(sessionKey, "sco.net proof", cn, hn, nullptr, 0, proof);
+        Label(sessionKey, SC_NET_LABEL_PROOF, cn, hn, nullptr, 0, proof);
         std::vector<uint8_t> b;
         Writer w(b);
         w.Bytes(cn, kNonceBytes);
@@ -380,7 +387,7 @@ struct Core::Impl {
         }
         uint8_t idb[8], want[32];
         Le64(id, idb);
-        Label(sessionKey, "sco.net welcome", cn, hn, idb, sizeof(idb), want);
+        Label(sessionKey, SC_NET_LABEL_WELCOME, cn, hn, idb, sizeof(idb), want);
         if (!sco_ct_equal(want, mac, sizeof(want))) {
             ++stats.handshakeDropped;   // not from a host that knows the passphrase
             return;
@@ -436,7 +443,7 @@ struct Core::Impl {
     void SendWelcome(const Link& l) {
         uint8_t idb[8], mac[32];
         Le64(l.id, idb);
-        Label(sessionKey, "sco.net welcome", l.cn, l.hn, idb, sizeof(idb), mac);
+        Label(sessionKey, SC_NET_LABEL_WELCOME, l.cn, l.hn, idb, sizeof(idb), mac);
         std::vector<uint8_t> b;
         Writer w(b);
         w.Bytes(l.cn, kNonceBytes);
@@ -507,7 +514,7 @@ struct Core::Impl {
             return;
         }
         uint8_t want[32];
-        Label(sessionKey, "sco.net proof", rcn, rhn, nullptr, 0, want);
+        Label(sessionKey, SC_NET_LABEL_PROOF, rcn, rhn, nullptr, 0, want);
         const bool good = sco_ct_equal(want, proof, sizeof(want)) == 1;
         if (Link* l = LinkAt(from);
             l && std::memcmp(l->cn, rcn, kNonceBytes) == 0 && std::memcmp(l->hn, rhn, kNonceBytes) == 0) {

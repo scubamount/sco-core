@@ -3,23 +3,9 @@
 // parser, the per-packet MAC and the replay window. Platform-free and internal to sco-core: the
 // session (sco/net/core.h) and the 4b socket layer use it; plugins never see it.
 //
-// Every datagram:
-//
-//   off  size  field
-//    0    4    magic "SCON" (bytes 53 43 4F 4E)
-//    4    1    protocol_version (kProtocolVersion)
-//    5    1    kind (Kind)
-//    6    2    channel index in the session table (0 = the control channel "sco.net")
-//    8    8    sender_peer_id (the link sender; 0 before the handshake gives one)
-//   16    8    seq (per-sender, per-link, monotonic from 1; 0 in handshake packets)
-//   24    4    body_len (<= kMaxBody)
-//   28    n    body
-//  28+n  16    tag: HMAC-SHA-256 truncated to 16 bytes (authenticated kinds only)
-//
-// Integers are little-endian. The tag covers
-//   protocol_version || kind || u16 len(channel_fqn) || channel_fqn || sender_peer_id || seq ||
-//   body_len || body
-// so the channel is bound by its full name even though the wire carries its index.
+// The wire itself (layout, MAC input order, replay rules, the constants) is defined once, in the
+// MIT header include/sc_net.h; everything here is a C++ view of it. docs/net-wire.md describes it.
+#include "sc_net.h"
 #include "sco/net/sha2.h"
 #include <cstddef>
 #include <cstdint>
@@ -29,37 +15,38 @@
 
 namespace sco::net {
 
-inline constexpr uint32_t kMagic           = 0x4E4F4353u;   // "SCON" as little-endian bytes
-inline constexpr uint8_t  kProtocolVersion = 1;
-// PBKDF2-HMAC-SHA256 iterations for the session key (SCO_NET_PBKDF2_ITERS in the design). Raising it
-// is a protocol change: bump kProtocolVersion with it, since both sides must use the same count.
-inline constexpr uint32_t kPbkdf2Iters     = 200000;
+inline constexpr uint32_t kMagic           = SC_NET_MAGIC;
+inline constexpr uint8_t  kProtocolVersion = SC_NET_PROTOCOL_VERSION;
+// PBKDF2-HMAC-SHA256 iterations for the session key (SC_NET_PBKDF2_ITERS). Raising it is a protocol
+// change: bump the protocol version with it, since both sides must use the same count.
+inline constexpr uint32_t kPbkdf2Iters     = SC_NET_PBKDF2_ITERS;
 
-inline constexpr uint32_t kMaxPeers        = 16;             // SCO_NET_MAX_PEERS, self included
-inline constexpr uint32_t kMaxUnreliable   = 1200;           // SCO_NET_MAX_UNREL
-inline constexpr uint32_t kMaxReliable     = 256u * 1024u;   // SCO_NET_MAX_RELIABLE
-inline constexpr uint32_t kMaxDatagram     = 1400;           // fits a 1500-byte MTU with IP/UDP
-inline constexpr uint32_t kHeaderBytes     = 28;
-inline constexpr uint32_t kTagBytes        = 16;
-inline constexpr uint32_t kMaxBody         = kMaxDatagram - kHeaderBytes - kTagBytes;   // 1356
-inline constexpr uint32_t kMaxFqn          = 64;             // "<plugin id>.<channel>"
-inline constexpr uint32_t kMaxName         = 64;             // a player name, UTF-8 bytes
-inline constexpr uint32_t kMaxChannels     = 256;            // session table, control included
-inline constexpr uint32_t kReplayWindow    = 1024;           // packets
-inline constexpr uint32_t kKeyBytes        = 32;
-inline constexpr uint32_t kSaltBytes       = 16;
-inline constexpr uint32_t kNonceBytes      = 16;
-inline constexpr const char* kControlFqn   = "sco.net";      // channel index 0
+inline constexpr uint32_t kMaxPeers        = SC_NET_MAX_PEERS;
+inline constexpr uint32_t kMaxUnreliable   = SC_NET_MAX_UNREL;
+inline constexpr uint32_t kMaxReliable     = SC_NET_MAX_RELIABLE;
+inline constexpr uint32_t kMaxDatagram     = SC_NET_MAX_DATAGRAM;
+inline constexpr uint32_t kHeaderBytes     = SC_NET_HEADER_BYTES;
+inline constexpr uint32_t kTagBytes        = SC_NET_TAG_BYTES;
+inline constexpr uint32_t kMaxBody         = SC_NET_MAX_BODY;
+inline constexpr uint32_t kMaxFqn          = SC_NET_MAX_FQN;
+inline constexpr uint32_t kMaxName         = SC_NET_MAX_NAME;
+inline constexpr uint32_t kMaxChannels     = SC_NET_MAX_CHANNELS;
+inline constexpr uint32_t kReplayWindow    = SC_NET_REPLAY_WINDOW;
+inline constexpr uint32_t kKeyBytes        = SC_NET_KEY_BYTES;
+inline constexpr uint32_t kSaltBytes       = SC_NET_SALT_BYTES;
+inline constexpr uint32_t kNonceBytes      = SC_NET_NONCE_BYTES;
+inline constexpr const char* kControlFqn   = SC_NET_CONTROL_FQN;   // channel index 0
 
-// Channel flags (the values of SCO_NET_RELIABLE / FROM_HOST / TO_HOST in the design).
-inline constexpr uint32_t kReliable = 0x1u;
-inline constexpr uint32_t kFromHost = 0x2u;
-inline constexpr uint32_t kToHost   = 0x4u;
+// Channel flags (SCO_NET_RELIABLE / FROM_HOST / TO_HOST in the design).
+inline constexpr uint32_t kReliable = SC_NET_RELIABLE;
+inline constexpr uint32_t kFromHost = SC_NET_FROM_HOST;
+inline constexpr uint32_t kToHost   = SC_NET_TO_HOST;
 inline constexpr uint32_t kChannelFlags = kReliable | kFromHost | kToHost;
 
 enum class Kind : uint8_t {
-    Hello = 1, Challenge = 2, Proof = 3, Welcome = 4, Refuse = 5,   // handshake: no tag
-    Data = 6, Ack = 7, Ping = 8, Bye = 9,                           // session: tagged
+    Hello = SC_NET_HELLO, Challenge = SC_NET_CHALLENGE, Proof = SC_NET_PROOF, Welcome = SC_NET_WELCOME,
+    Refuse = SC_NET_REFUSE,                                              // handshake: no tag
+    Data = SC_NET_DATA, Ack = SC_NET_ACK, Ping = SC_NET_PING, Bye = SC_NET_BYE,   // session: tagged
 };
 // True for the kinds that carry a tag (and need an established link).
 bool KindHasTag(Kind k);
@@ -122,12 +109,10 @@ public:
     Verdict Check(uint64_t seq) const;
     // Records seq; call only after Check said New and the packet authenticated.
     void Accept(uint64_t seq);
-    uint64_t Highest() const { return top_; }
+    uint64_t Highest() const { return w_.top; }
 
 private:
-    static constexpr uint32_t kWords = kReplayWindow / 64;
-    uint64_t top_ = 0;
-    uint64_t bits_[kWords] = {};   // bit d: seq top_ - d was seen
+    sc_net_replay w_{};
 };
 
 // Bounds-checked little-endian reader. Any read past the end sets !ok() and returns zeros/null;

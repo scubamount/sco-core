@@ -25,7 +25,7 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 | [sco-lua](../plugins/lua/README.md) | The Lua runtime: sandbox, step and memory limits, updating Lua |
 | [How it works](architecture.md) | The runtime (tasks, events, commands, owners), threading and limits |
 | [Local IPC](ipc.md) | `sco.ipc` and the MIT wire `sc_ipc.h`: channels, rings, blocks, epochs, heartbeats and the hostile-peer rules, for plugin and bridge authors |
-| [sco.net wire format](net-wire.md) | Internal: the packets, handshake, keys, replay window and reliable delivery of `sco.net` as built (plan PR 4a) |
+| [sco.net wire format](net-wire.md) | The packets, handshake, keys, replay window and reliable delivery of `sco.net` as built (plan PR 4a), and the MIT wire header `sc_net.h` |
 | [C++ API reference](api.md) | Every function and type in `include/sco/`, including the host kit (`sco/app.h`), `caps`, `host` and the runtime |
 | [Building: sco-host-sim](building.md#sco-host-sim) | Running plugins through the real host kit, without the game |
 | [Framework plan § Lessons](framework.md#lessons) | Rules for hosts learned in game: where to call `Stop`, starting the host kit, adopting sco-core's types |

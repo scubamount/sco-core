@@ -1,9 +1,10 @@
 # sco.net wire format (internal, as built)
 
-What plan PR 4a built for [design section 3.5](design/multiplayer.md#35-session-crypto-d4): the packets, the handshake, the keys and the delivery rules of `sco.net`, in `src/net/` with headers in `include/sco/net/`. It's internal: plugins see only the `sco_net_v1` table (plan PR 4b), never this. Change it only together with `kProtocolVersion`.
+What plan PR 4a built for [design section 3.5](design/multiplayer.md#35-session-crypto-d4): the packets, the handshake, the keys and the delivery rules of `sco.net`, in `src/net/` with headers in `include/sco/net/`. Plugins see only the `sco_net_v1` table (plan PR 4b). The wire itself is defined once, in **[`include/sc_net.h`](../include/sc_net.h), MIT** (the [interface exception](../LICENSE), like `sc_ipc.h`): a program outside sco-core includes only that file to frame, parse and verify packets, supplying its own HMAC-SHA-256. sco-core's code takes its constants, parser, MAC input, replay window and name rules from it, and `tests/abi_sc_net.c` pins it. Change it only together with `SC_NET_PROTOCOL_VERSION`.
 
 | File | What |
 |---|---|
+| `sc_net.h` (MIT) | The wire: constants, kinds, header offsets, body layouts, codes, `sc_net_parse`, `sc_net_write_header`, `sc_net_mac_head` / `sc_net_tag` (over a caller-supplied HMAC), `sc_net_tag_equal`, the replay window, name rules. Header-only C11 / C++20, freestanding headers, no sco-core include |
 | `sco/net/sha2.h`, `src/net/sha2.c` | SHA-256, HMAC-SHA-256, PBKDF2-HMAC-SHA256, constant-time compare, wipe. Plain C11, written for sco-core |
 | `sco/net/wire.h`, `src/net/wire.cpp` | Constants, framing, the hostile-input parser, the MAC, the replay window, bounds-checked reader |
 | `sco/net/reliable.h`, `src/net/reliable.cpp` | Reliable streams: fragmentation, ordering, acknowledgements, retransmission |
@@ -27,7 +28,7 @@ All integers little-endian. Every datagram is at most **1,400 bytes** (`kMaxData
 | 28 | n | body |
 | 28+n | 16 | tag (kinds 6-9 only): HMAC-SHA-256 truncated to 128 bits |
 
-The tag is computed over `protocol_version || kind || u16 len || channel_fqn || sender_peer_id || seq || body_len || body` under the link key. The wire carries the channel's **index**, but the MAC covers its **full name**, so an index that resolves to another channel fails the check.
+The tag is computed over `protocol_version || kind || u16 len || channel_fqn || sender_peer_id || seq || body_len || body` under the link key (`sc_net_mac_head` writes everything before the body). That is the design's `protocol_version || channel_fqn || sender_peer_id || seq || payload` in the same order, plus the kind and two lengths, so no two different packets share a MAC input (without the kind, a DATA could be replayed as an ACK of the same bytes; without the lengths, name and body boundaries could shift). The wire carries the channel's **index**, but the MAC covers its **full name**, so an index that resolves to another channel fails the check.
 
 **Parser.** `Parse` checks, in order: at least 28 bytes; at most 1,400; magic; version (the header is still returned, so a HELLO from another version can be answered); a known kind; `body_len` at most 1,356; then the exact length `28 + body_len (+ 16)`, shorter (truncated) and longer (trailing bytes) both refused. Nothing is read through a length before it is checked. Body fields are read with `Reader`, which fails sticky on any read past the end. On a link, a datagram is dropped unless, in order: it comes from the link's address with the link's peer id; its channel index is in the table; the tag verifies (constant time); its `seq` is new in the replay window. Only then is the window updated and the body decoded.
 

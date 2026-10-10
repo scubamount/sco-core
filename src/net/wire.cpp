@@ -7,46 +7,29 @@ namespace sco::net {
 
 namespace {
 
-uint16_t Le16(const uint8_t* p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
-uint32_t Le32(const uint8_t* p) {
-    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
-           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
-}
-uint64_t Le64(const uint8_t* p) { return static_cast<uint64_t>(Le32(p)) | (static_cast<uint64_t>(Le32(p + 4)) << 32); }
-void Put16(uint8_t* p, uint16_t v) { p[0] = static_cast<uint8_t>(v); p[1] = static_cast<uint8_t>(v >> 8); }
-void Put32(uint8_t* p, uint32_t v) {
-    for (int i = 0; i < 4; ++i) p[i] = static_cast<uint8_t>(v >> (8 * i));
-}
-void Put64(uint8_t* p, uint64_t v) {
-    for (int i = 0; i < 8; ++i) p[i] = static_cast<uint8_t>(v >> (8 * i));
-}
-
-bool KnownKind(uint8_t k) { return k >= static_cast<uint8_t>(Kind::Hello) && k <= static_cast<uint8_t>(Kind::Bye); }
-
-void FullTag(const MacKey& key, std::string_view fqn, const Header& h, const uint8_t* body, uint8_t out[32]) {
-    uint8_t pre[2 + 2];
-    pre[0] = h.version;
-    pre[1] = static_cast<uint8_t>(h.kind);
-    Put16(pre + 2, static_cast<uint16_t>(fqn.size()));
-    uint8_t post[8 + 8 + 4];
-    Put64(post, h.sender);
-    Put64(post + 8, h.seq);
-    Put32(post + 16, h.bodyLen);
-    sco_hmac_sha256 c = key.keyed;
-    sco_hmac_sha256_update(&c, pre, sizeof(pre));
-    sco_hmac_sha256_update(&c, fqn.data(), fqn.size());
-    sco_hmac_sha256_update(&c, post, sizeof(post));
-    if (h.bodyLen) sco_hmac_sha256_update(&c, body, h.bodyLen);
+// sc_net.h's HMAC hook over a precomputed keyed state (MacKey).
+void Hmac2(void*, const void* key, const uint8_t* a, size_t aLen, const uint8_t* b, size_t bLen, uint8_t out[32]) {
+    sco_hmac_sha256 c = *static_cast<const sco_hmac_sha256*>(key);
+    sco_hmac_sha256_update(&c, a, aLen);
+    if (bLen) sco_hmac_sha256_update(&c, b, bLen);
     sco_hmac_sha256_final(&c, out);
 }
 
-bool IdChar(char c) {
-    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+sc_net_header ToC(const Header& h) {
+    sc_net_header c{};
+    c.magic = SC_NET_MAGIC;
+    c.version = h.version;
+    c.kind = static_cast<uint8_t>(h.kind);
+    c.channel = h.channel;
+    c.sender = h.sender;
+    c.seq = h.seq;
+    c.body_len = h.bodyLen;
+    return c;
 }
 
 }  // namespace
 
-bool KindHasTag(Kind k) { return static_cast<uint8_t>(k) >= static_cast<uint8_t>(Kind::Data); }
+bool KindHasTag(Kind k) { return sc_net_kind_tagged(static_cast<uint8_t>(k)) != 0; }
 
 const char* ParseErrorName(ParseError e) {
     switch (e) {
@@ -63,45 +46,44 @@ const char* ParseErrorName(ParseError e) {
 }
 
 ParseError Parse(const uint8_t* data, size_t len, Packet* out) {
-    if (!data || len < kHeaderBytes) return ParseError::Short;
-    if (len > kMaxDatagram) return ParseError::Oversize;
-    if (Le32(data) != kMagic) return ParseError::BadMagic;
-    Header h;
-    h.version = data[4];
-    h.kind = static_cast<Kind>(data[5]);
-    h.channel = Le16(data + 6);
-    h.sender = Le64(data + 8);
-    h.seq = Le64(data + 16);
-    h.bodyLen = Le32(data + 24);
-    out->h = h;
-    out->body = nullptr;
-    out->tag = nullptr;
-    if (h.version != kProtocolVersion) return ParseError::BadVersion;
-    if (!KnownKind(data[5])) return ParseError::BadKind;
-    if (h.bodyLen > kMaxBody) return ParseError::Oversize;
-    // 64-bit sums: bodyLen is at most kMaxBody here, but keep the arithmetic overflow-free anyway.
-    const uint64_t need = uint64_t{ kHeaderBytes } + h.bodyLen + (KindHasTag(h.kind) ? kTagBytes : 0u);
-    if (len < need) return ParseError::Truncated;
-    if (len > need) return ParseError::Trailing;
-    out->body = data + kHeaderBytes;
-    if (KindHasTag(h.kind)) out->tag = data + kHeaderBytes + h.bodyLen;
-    return ParseError::Ok;
+    sc_net_header c{};
+    const uint8_t* body = nullptr;
+    const uint8_t* tag = nullptr;
+    const int e = sc_net_parse(data, len, &c, &body, &tag);
+    out->body = body;
+    out->tag = tag;
+    if (e == SC_NET_OK || e == SC_NET_E_BAD_VERSION) {
+        out->h.version = c.version;
+        out->h.kind = static_cast<Kind>(c.kind);
+        out->h.channel = c.channel;
+        out->h.sender = c.sender;
+        out->h.seq = c.seq;
+        out->h.bodyLen = c.body_len;
+    }
+    switch (e) {
+    case SC_NET_OK: return ParseError::Ok;
+    case SC_NET_E_SHORT: return ParseError::Short;
+    case SC_NET_E_OVERSIZE: return ParseError::Oversize;
+    case SC_NET_E_BAD_MAGIC: return ParseError::BadMagic;
+    case SC_NET_E_BAD_VERSION: return ParseError::BadVersion;
+    case SC_NET_E_BAD_KIND: return ParseError::BadKind;
+    case SC_NET_E_TRUNCATED: return ParseError::Truncated;
+    default: return ParseError::Trailing;
+    }
 }
 
 void MacKey::Set(const uint8_t key[kKeyBytes]) { sco_hmac_sha256_init(&keyed, key, kKeyBytes); }
 
 void ComputeTag(const MacKey& key, std::string_view fqn, const Header& h, const uint8_t* body, uint8_t tag[kTagBytes]) {
-    uint8_t full[32];
-    FullTag(key, fqn, h, body, full);
-    std::memcpy(tag, full, kTagBytes);
-    sco_wipe(full, sizeof(full));
+    const sc_net_header c = ToC(h);
+    if (!sc_net_tag(Hmac2, nullptr, &key.keyed, &c, fqn.data(), fqn.size(), body, tag)) sco_wipe(tag, kTagBytes);
 }
 
 bool VerifyTag(const MacKey& key, std::string_view fqn, const Packet& p) {
     if (!p.tag || fqn.size() > kMaxFqn) return false;
     uint8_t want[kTagBytes];
     ComputeTag(key, fqn, p.h, p.body, want);
-    return sco_ct_equal(want, p.tag, kTagBytes) == 1;
+    return sc_net_tag_equal(want, p.tag) == 1;
 }
 
 size_t Encode(const Header& h, const uint8_t* body, uint32_t bodyLen, const MacKey* key, std::string_view fqn,
@@ -112,50 +94,22 @@ size_t Encode(const Header& h, const uint8_t* body, uint32_t bodyLen, const MacK
     if (total > cap || total > kMaxDatagram) return 0;
     Header w = h;
     w.bodyLen = bodyLen;
-    Put32(out, kMagic);
-    out[4] = w.version;
-    out[5] = static_cast<uint8_t>(w.kind);
-    Put16(out + 6, w.channel);
-    Put64(out + 8, w.sender);
-    Put64(out + 16, w.seq);
-    Put32(out + 24, w.bodyLen);
+    const sc_net_header c = ToC(w);
+    sc_net_write_header(&c, out);
     if (bodyLen) std::memcpy(out + kHeaderBytes, body, bodyLen);
     if (tagged) ComputeTag(*key, fqn, w, out + kHeaderBytes, out + kHeaderBytes + bodyLen);
     return total;
 }
 
 ReplayWindow::Verdict ReplayWindow::Check(uint64_t seq) const {
-    if (seq == 0) return Verdict::TooOld;
-    if (seq > top_) return Verdict::New;
-    const uint64_t d = top_ - seq;
-    if (d >= kReplayWindow) return Verdict::TooOld;
-    return (bits_[d / 64] >> (d % 64)) & 1u ? Verdict::Duplicate : Verdict::New;
+    switch (sc_net_replay_check(&w_, seq)) {
+    case SC_NET_REPLAY_NEW: return Verdict::New;
+    case SC_NET_REPLAY_DUPLICATE: return Verdict::Duplicate;
+    default: return Verdict::TooOld;
+    }
 }
 
-void ReplayWindow::Accept(uint64_t seq) {
-    if (seq == 0) return;
-    if (seq > top_) {
-        const uint64_t shift = seq - top_;
-        if (shift >= kReplayWindow) {
-            std::memset(bits_, 0, sizeof(bits_));
-        } else {
-            const uint32_t ws = static_cast<uint32_t>(shift / 64), bs = static_cast<uint32_t>(shift % 64);
-            for (uint32_t i = kWords; i-- > 0;) {
-                uint64_t v = 0;
-                if (i >= ws) {
-                    v = bits_[i - ws] << bs;
-                    if (bs && i >= ws + 1) v |= bits_[i - ws - 1] >> (64 - bs);
-                }
-                bits_[i] = v;
-            }
-        }
-        top_ = seq;
-        bits_[0] |= 1u;
-        return;
-    }
-    const uint64_t d = top_ - seq;
-    if (d < kReplayWindow) bits_[d / 64] |= uint64_t{ 1 } << (d % 64);
-}
+void ReplayWindow::Accept(uint64_t seq) { sc_net_replay_accept(&w_, seq); }
 
 uint8_t Reader::U8() {
     const uint8_t* b = Bytes(1);
@@ -163,15 +117,15 @@ uint8_t Reader::U8() {
 }
 uint16_t Reader::U16() {
     const uint8_t* b = Bytes(2);
-    return b ? Le16(b) : 0;
+    return b ? sc_net_get16(b) : 0;
 }
 uint32_t Reader::U32() {
     const uint8_t* b = Bytes(4);
-    return b ? Le32(b) : 0;
+    return b ? sc_net_get32(b) : 0;
 }
 uint64_t Reader::U64() {
     const uint8_t* b = Bytes(8);
-    return b ? Le64(b) : 0;
+    return b ? sc_net_get64(b) : 0;
 }
 const uint8_t* Reader::Bytes(size_t len) {
     if (!ok_ || len > n_ - off_) {
@@ -191,17 +145,17 @@ bool Reader::Str(size_t len, std::string* out) {
 
 void Writer::U16(uint16_t x) {
     uint8_t b[2];
-    Put16(b, x);
+    sc_net_put16(b, x);
     Bytes(b, 2);
 }
 void Writer::U32(uint32_t x) {
     uint8_t b[4];
-    Put32(b, x);
+    sc_net_put32(b, x);
     Bytes(b, 4);
 }
 void Writer::U64(uint64_t x) {
     uint8_t b[8];
-    Put64(b, x);
+    sc_net_put64(b, x);
     Bytes(b, 8);
 }
 void Writer::Bytes(const void* p, size_t n) {
@@ -209,29 +163,8 @@ void Writer::Bytes(const void* p, size_t n) {
     v_.insert(v_.end(), b, b + n);
 }
 
-bool ValidFqn(std::string_view fqn) {
-    if (fqn.size() < 3 || fqn.size() > kMaxFqn) return false;
-    bool dot = false;
-    char prev = '.';
-    for (char c : fqn) {
-        if (c == '.') {
-            if (prev == '.') return false;
-            dot = true;
-        } else if (!IdChar(c)) {
-            return false;
-        }
-        prev = c;
-    }
-    return dot && prev != '.';
-}
+bool ValidFqn(std::string_view fqn) { return sc_net_valid_fqn(fqn.data(), fqn.size()) != 0; }
 
-bool ValidName(std::string_view name) {
-    if (name.empty() || name.size() > kMaxName) return false;
-    for (char c : name) {
-        const unsigned char u = static_cast<unsigned char>(c);
-        if (u < 0x20u || u == 0x7Fu) return false;
-    }
-    return true;
-}
+bool ValidName(std::string_view name) { return sc_net_valid_name(name.data(), name.size()) != 0; }
 
 }  // namespace sco::net

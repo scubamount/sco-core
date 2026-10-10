@@ -4,6 +4,7 @@
 // in-memory network of tests/net_mem.h. Time is a virtual clock the test advances: nothing sleeps
 // or reads a clock, so every run with a seed is the same run.
 //   test_net                     (tools/test.sh, CTest test_net)
+#include "sc_net.h"
 #include "sco/net/core.h"
 #include "sco/net/reliable.h"
 #include "sco/net/sha2.h"
@@ -246,7 +247,7 @@ static void TestWire() {
 
     // Any single flipped bit is caught: by the framing, or by the tag under the name the (possibly
     // changed) channel index resolves to.
-    const std::map<uint16_t, std::string> table{ { 0, "sco.net" }, { 1, "game.pose" }, { 3, "game.spawn" } };
+    const std::map<int, std::string> table{ { 0, "sco.net" }, { 1, "game.pose" }, { 3, "game.spawn" } };
     int caught = 0, flips = 0;
     for (size_t i = 0; i < pkt.size(); ++i) {
         for (int bit = 0; bit < 8; ++bit) {
@@ -313,6 +314,56 @@ static void TestWire() {
     CHECK(ValidFqn(std::string(kMaxFqn - 2, 'a') + ".b"));
     CHECK(ValidName("Pilot One") && ValidName("\xc3\x89lodie") && !ValidName("") && !ValidName("a\nb") &&
           !ValidName(std::string(kMaxName + 1, 'x')));
+}
+
+// A program outside sco-core: sc_net.h alone, with a plain HMAC over the raw link key.
+static void RawHmac(void*, const void* key, const uint8_t* a, size_t aLen, const uint8_t* b, size_t bLen, uint8_t out[32]) {
+    std::vector<uint8_t> m(a, a + aLen);
+    m.insert(m.end(), b, b + bLen);
+    sco_hmac_sha256_mac(key, kKeyBytes, m.data(), m.size(), out);
+}
+
+static void TestScNet() {
+    uint8_t raw[kKeyBytes];
+    std::memset(raw, 0x42, sizeof(raw));   // KeyOf(0x42)
+    const std::vector<uint8_t> body(50, 7);
+    sc_net_header h{};
+    h.version = SC_NET_PROTOCOL_VERSION;
+    h.kind = SC_NET_DATA;
+    h.channel = 3;
+    h.sender = 5;
+    h.seq = 11;
+    h.body_len = 50;
+    std::vector<uint8_t> pkt(SC_NET_HEADER_BYTES + 50 + SC_NET_TAG_BYTES);
+    sc_net_write_header(&h, pkt.data());
+    std::memcpy(pkt.data() + SC_NET_HEADER_BYTES, body.data(), 50);
+    CHECK(sc_net_tag(RawHmac, nullptr, raw, &h, "game.spawn", 10, body.data(), pkt.data() + 78) == 1);
+    // Byte for byte what sco-core sends.
+    CHECK(pkt == MakeData(KeyOf(0x42), "game.spawn", 3, 5, 11, body));
+    // And sco-core's packet parses and verifies with sc_net.h alone.
+    sc_net_header g{};
+    const uint8_t* b = nullptr;
+    const uint8_t* t = nullptr;
+    CHECK(sc_net_parse(pkt.data(), pkt.size(), &g, &b, &t) == SC_NET_OK && g.seq == 11 && g.channel == 3 &&
+          g.sender == 5 && b == pkt.data() + 28 && t == pkt.data() + 78);
+    uint8_t want[SC_NET_TAG_BYTES];
+    CHECK(sc_net_tag(RawHmac, nullptr, raw, &g, "game.spawn", 10, b, want) == 1 && sc_net_tag_equal(want, t) == 1);
+    want[15] ^= 1;
+    CHECK(sc_net_tag_equal(want, t) == 0);
+    CHECK(sc_net_tag(RawHmac, nullptr, raw, &g, "game.pose", 9, b, want) == 1 && sc_net_tag_equal(want, t) == 0);
+    // The MAC input before the body, field by field.
+    uint8_t head[SC_NET_MAC_HEAD_MAX];
+    CHECK(sc_net_mac_head(&h, "game.spawn", 10, head, sizeof(head)) == 34);
+    CHECK(head[0] == SC_NET_PROTOCOL_VERSION && head[1] == SC_NET_DATA && head[2] == 10 && head[3] == 0 &&
+          std::memcmp(head + 4, "game.spawn", 10) == 0 && head[14] == 5 && head[22] == 11 && head[30] == 50);
+    CHECK(sc_net_mac_head(&h, "game.spawn", 10, head, 33) == 0);
+    CHECK(sc_net_mac_head(&h, "game.spawn", SC_NET_MAX_FQN + 1, head, sizeof(head)) == 0);
+    std::vector<uint8_t> bad = pkt;
+    bad[SC_NET_OFF_VERSION] = 2;
+    CHECK(sc_net_parse(bad.data(), bad.size(), &g, &b, &t) == SC_NET_E_BAD_VERSION && g.version == 2 && !b && !t);
+    sc_net_replay w{};
+    CHECK(sc_net_replay_check(&w, 1) == SC_NET_REPLAY_NEW && sc_net_replay_check(&w, 0) == SC_NET_REPLAY_TOO_OLD);
+    CHECK(sc_net_valid_fqn("game.spawn", 10) == 1 && sc_net_valid_fqn(nullptr, 3) == 0);
 }
 
 static void TestReplay() {
@@ -992,6 +1043,7 @@ int main() {
     Run("TestPbkdf2", TestPbkdf2);
     Run("TestCtEqual", TestCtEqual);
     Run("TestWire", TestWire);
+    Run("TestScNet", TestScNet);
     Run("TestReplay", TestReplay);
     Run("TestStreams", TestStreams);
     Run("TestHandshake", TestHandshake);

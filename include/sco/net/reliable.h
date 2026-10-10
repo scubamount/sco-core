@@ -11,6 +11,7 @@
 // unit that isn't acknowledged after its timeout, doubling it up to a ceiling. Retransmissions are
 // new packets with new packet seqs (the replay window never sees a seq twice); the unit seq makes
 // them idempotent here.
+#include "sc_net.h"
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -18,9 +19,9 @@
 
 namespace sco::net {
 
-inline constexpr uint32_t kFragBytes     = 1200;   // data bytes per unit
-inline constexpr uint32_t kWindow        = 64;     // units in flight / buffered ahead
-inline constexpr uint32_t kMaxQueuedUnits = 1024;  // per stream, ~1.2 MB; then Push refuses
+inline constexpr uint32_t kFragBytes     = SC_NET_FRAG_BYTES;   // data bytes per unit
+inline constexpr uint32_t kWindow        = SC_NET_WINDOW;       // units in flight / buffered ahead
+inline constexpr uint32_t kMaxQueuedUnits = 1024;               // per stream, ~1.2 MB; then Push refuses
 
 struct OutUnit {
     uint64_t seq = 0;

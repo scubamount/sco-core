@@ -42,7 +42,8 @@ const char* SendResultName(SendResult r);
 
 // Why a join failed or a session ended (also as text in LastReason()).
 enum class Refusal : uint8_t {
-    None = 0, Version = 1, Passphrase = 2, Full = 3, NotAdmitted = 4, BadHello = 5,
+    None = 0, Version = SC_NET_REFUSE_VERSION, Passphrase = SC_NET_REFUSE_PASSPHRASE, Full = SC_NET_REFUSE_FULL,
+    NotAdmitted = SC_NET_REFUSE_NOT_ADMITTED, BadHello = SC_NET_REFUSE_BAD_HELLO,
 };
 
 enum class PeerEvent : uint8_t { Joined, Left };
