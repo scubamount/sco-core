@@ -6,6 +6,7 @@
 // in test_plugins.cpp); on Windows the real __try/__except guard.
 //   tools/test.sh
 #include "sco/app.h"
+#include "sco/game/signatures.h"
 #include "sco/caps.h"
 #include "sco/host.h"
 #include "sco/log.h"
@@ -259,6 +260,11 @@ static void TestBuiltinLoader(const sco_api* api, const fs::path& plugins) {
 
 // ---- the host kit ---------------------------------------------------------------------------
 
+// The product's signature tables: Start registers them through Platform::registerSignatures, and
+// only with an image. Nothing in sco-core registers Star Citizen's tables on its own.
+static int g_registerCalls = 0;
+static bool RegisterForTest() { ++g_registerCalls; return sco::game::RegisterGameSignatures(); }
+
 static void TestApp(const fs::path& sdk, const fs::path& out) {
     const fs::path root = out / "app" / "plugins";
     std::error_code ec;
@@ -276,6 +282,7 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     fs::copy(sdk / "examples" / "travel_pack", root / "travel_pack", fs::copy_options::recursive);
 
     sco::app::Platform pf;
+    pf.registerSignatures = RegisterForTest;
     pf.hostVersion = "test-app 1.0";
     pf.pluginRoot = root;
     pf.pluginsEnabled = true;
@@ -308,6 +315,7 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     CHECK(Logged("[plugin] core1 1.0.0 builtin loaded"));
     CHECK(Logged("[m0] hello from m0"));
     CHECK(!Logged("[core] signatures"));                                     // no image: skipped
+    CHECK(g_registerCalls == 0);                                             // nor registered
 
     // Capabilities before the plugins, game.ready after them.
     CHECK((g_events == std::vector<std::string>{ "caps", "core1:load", "core1:game.ready" }));
@@ -367,6 +375,7 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     g_log.clear();
     CHECK(sco::app::Start(pf));
     CHECK(Logged("[core] signatures: 0/"));
+    CHECK(g_registerCalls == 1 && !Logged("signature tables did not all register"));
     CHECK(LogIndex("[core] signatures") < LogIndex("[plugin] 6 found, 6 loaded (plugins = on)"));
     CHECK(sco::app::Plugins().size() == 6 && Find("core1")->self && Find("core1")->self != firstSelf);
     for (const auto& p : sco::app::Plugins()) CHECK(p.state == State::Loaded);

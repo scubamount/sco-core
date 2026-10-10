@@ -16,6 +16,7 @@
 // stop) and the invoke, if any, answered OK; 1 otherwise; 2 for bad arguments or an unreadable
 // --exe.
 #include "sco/app.h"
+#include "sco/game/signatures.h"
 #include "sco/caps.h"
 #include "sco/datacore_pack.h"
 #include "sco/log.h"
@@ -210,6 +211,7 @@ int main(int argc, char** argv) {
     pf.nBuiltins = sizeof(kBuiltins) / sizeof(kBuiltins[0]);
     pf.scripts = lua ? &kLua : nullptr;
     pf.image = exe ? &file.img : nullptr;
+    pf.registerSignatures = sco::game::RegisterGameSignatures;   // --exe: Star Citizen's tables
     pf.setCapabilities = SetCaps;
     if (!sco::app::Start(pf)) return 1;
 
