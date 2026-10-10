@@ -456,6 +456,47 @@ static void TestLimits() {
     Unload(l);
 }
 
+// Memory, every script together: SCO_LUA_TOTAL_MEMORY_LIMIT (256 MiB) caps the sum, so scripts each
+// under their own 64 MiB can't take the game's memory between them. Each pool<n>.hold keeps one more
+// 8 MiB string, a 1 KiB chunk repeated 8192 times (string.rep costs a step per copy, so about 9k
+// steps; string.rep("x", 8 MiB) would be 8M steps and run out of budget first), and catches a failed allocation with pcall so the script stays alive. 10
+// scripts x 4 calls ask for 320 MiB: between 24 and 32 calls fit (192 to 256 MiB, less while a copy
+// is in flight), and once one is refused every later one is too.
+static void TestTotalMemory() {
+    std::vector<Loaded> pools;
+    pools.reserve(10);
+    for (int i = 1; i <= 10; ++i) {
+        const std::string id = "pool" + std::to_string(i);
+        Write(id, "local kept, chunk = {}, string.rep(\"x\", 1024)\nsco.register_command{ name = \"" + id + ".hold\", title = \"Hold\",\n"
+                  "  fn = function()\n"
+                  "    local ok = pcall(function() kept[#kept + 1] = string.rep(chunk, 8192) end)\n"
+                  "    return ok and \"held\" or \"refused\" end }\n");
+        pools.push_back(Load(id));
+        CHECK(pools.back().p && pools.back().p->state == State::Loaded);
+    }
+    int held = 0, refused = 0, other = 0;
+    bool heldAfterRefused = false;
+    for (int i = 1; i <= 10; ++i)
+        for (int k = 0; k < 4; ++k) {
+            const std::string cmd = "pool" + std::to_string(i) + ".hold";
+            const Reply r = Invoke(g_caller, cmd.c_str());
+            if (r.text == "held") { ++held; if (refused) heldAfterRefused = true; }
+            else if (r.text == "refused") ++refused;
+            else { ++other; std::printf("  %s -> %s\n", cmd.c_str(), r.text.c_str()); }
+        }
+    CHECK(other == 0 && held + refused == 40 && !heldAfterRefused);
+    CHECK(held >= 24 && held <= 32);
+    if (!(held >= 24 && held <= 32)) std::printf("  pools: %d held, %d refused\n", held, refused);
+    for (const auto& l : pools) CHECK(l.p && sco_lua_alive(l.p->self));
+    for (auto& l : pools) Unload(l);
+    // Unloading gives the memory back.
+    Write("pool11", "local kept, chunk = nil, string.rep(\"x\", 1024)\nsco.register_command{ name = \"pool11.hold\", title = \"Hold\",\n"
+                    "  fn = function() kept = string.rep(chunk, 8192) return \"held\" end }\n");
+    Loaded l = Load("pool11");
+    CHECK(Invoke(g_caller, "pool11.hold").text == "held");
+    Unload(l);
+}
+
 #ifndef SCO_KERNEL_ONLY   // the Star Citizen game pack (SCO_GAME_SC)
 // ---- sco.datacore (published by the host only when the product enables it) --------------------
 
@@ -725,6 +766,7 @@ int main(int argc, char** argv) {
     TestHotkeys();
     TestSandbox();
     TestLimits();
+    TestTotalMemory();
 #ifndef SCO_KERNEL_ONLY
     TestDataCore();
 #endif

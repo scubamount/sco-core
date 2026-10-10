@@ -1,9 +1,9 @@
 name: release
 
 # Publishes an SDK release when a tag sdk-v<version> is pushed. The tag must match sdk/VERSION. The
-# job packages the SDK and checks it exactly as the sdk workflow does (the C# layout test against the
+# package job packages the SDK and checks it exactly as the sdk workflow does (the C# layout test against the
 # ABI pins, every example built and checked from the zip, cs_hello published with NativeAOT), then
-# creates the GitHub release with the zip, its .sha256 file and the tag's CHANGELOG section as notes.
+# the release job creates the GitHub release with the zip, its .sha256 file and the tag's CHANGELOG section as notes.
 #
 # Releasing: set sdk/VERSION, add a "## sdk-v<version> (<date>)" section to CHANGELOG.md, merge,
 # then tag that commit on main: git tag sdk-v<version> && git push origin sdk-v<version>.
@@ -12,19 +12,24 @@ on:
   push:
     tags: ['sdk-v*']
 
+# Two jobs: package builds and checks the SDK with read-only access to the repository; release, which
+# runs no build step, is the only one that can write, and only creates the release from package's files.
 permissions:
-  contents: write   # creating the release; nothing else
+  contents: read
 
 jobs:
-  release:
+  package:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: The tag matches sdk/VERSION and has a CHANGELOG section
+        id: tag
         run: |
           v=$(tr -d '\r\n' < sdk/VERSION)
           if [ "$GITHUB_REF_NAME" != "sdk-v$v" ]; then
@@ -35,6 +40,7 @@ jobs:
             on { print }' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then echo "CHANGELOG.md has no '## $GITHUB_REF_NAME' section"; exit 1; fi
           echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Install Lua 5.4
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends lua5.4
@@ -54,12 +60,35 @@ jobs:
           SCO_SDK_CSHARP: "1"
         run: sdk/test-zip.sh dist/sco-sdk-*.zip
 
+      - name: Checksum
+        run: (cd dist && sha256sum "sco-sdk-$VERSION.zip" > "sco-sdk-$VERSION.zip.sha256")
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            dist/sco-sdk-${{ steps.tag.outputs.version }}.zip
+            dist/sco-sdk-${{ steps.tag.outputs.version }}.zip.sha256
+            notes.md
+          if-no-files-found: error
+
+  release:
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write   # creating the release; nothing else
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.package.outputs.version }}
         run: |
           zip="dist/sco-sdk-$VERSION.zip"
-          test -f "$zip"
-          (cd dist && sha256sum "sco-sdk-$VERSION.zip" > "sco-sdk-$VERSION.zip.sha256")
+          test -f "$zip" && test -f "$zip.sha256" && test -s notes.md
           gh release create "$GITHUB_REF_NAME" "$zip" "$zip.sha256" \
             --repo "$GITHUB_REPOSITORY" --title "sco-core SDK $VERSION" --notes-file notes.md --verify-tag
