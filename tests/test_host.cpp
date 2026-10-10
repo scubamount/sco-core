@@ -437,10 +437,31 @@ static void TestTable() {
     CHECK(sco::host::NewPlugin("one_more") == nullptr);
 }
 
+// Game services: the owner "game", names "game.<name>" or a taken-over product name only.
+static void TestGameServices() {
+    static const uint32_t table[2] = { 8, 0 };
+    const void* t = nullptr;
+    CHECK(sco::host::ProvideGameService("game.test", 0x00010000, table) == Result::Ok);
+    CHECK(sco::QueryService("game.test", 0x00010000, &t) == Result::Ok && t == table);
+    CHECK(sco::host::ProvideGameService("game.test", 0x00010000, table) == Result::BadArg);           // taken
+    CHECK(sco::host::ProvideGameService("teleport.spatial", 0x00010000, table) == Result::Ok);        // compat name
+    CHECK(sco::host::ProvideGameService("teleport.other", 0x00010000, table) == Result::BadArg);
+    CHECK(sco::host::ProvideGameService("sco.test", 0x00010000, table) == Result::BadArg);
+    CHECK(sco::host::ProvideGameService("game", 0x00010000, table) == Result::BadArg);                // bare owner
+    CHECK(sco::host::ProvideGameService(nullptr, 0x00010000, table) == Result::BadArg);
+    CHECK(sco::host::ProvideGameService("game.null", 0x00010000, nullptr) == Result::BadArg);
+    CHECK(sco::host::WithdrawGameService("game.test") == Result::Ok);
+    CHECK(sco::QueryService("game.test", 0x00010000, &t) == Result::NotFound);
+    CHECK(sco::host::WithdrawGameServices() == 1);                                                    // teleport.spatial
+    CHECK(sco::host::ProvideGameService("teleport.spatial", 0x00010000, table) == Result::Ok);        // owner never released
+    CHECK(sco::host::WithdrawGameServices() == 1);
+}
+
 int main() {
     sco::SetGameThread();
     TestCaps();
     TestTable();
+    TestGameServices();
     std::printf("sco-core host tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

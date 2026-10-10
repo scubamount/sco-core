@@ -240,6 +240,16 @@ if(SCO_GAME_SC)
   # Platform::registerSignatures (sco::game::RegisterGameSignatures).
   target_link_libraries(sco_app PUBLIC sco_datacore_service sco_game_sc)
 endif()
+# The game pack's services (sco/game/services.h, docs/design/game-services.md): teleport.spatial
+# today, published under the owner "game" when the product sets Platform::gameServices. They read
+# game memory under SEH (__try), so Windows only; SCO_GAME_SERVICES tells sco_app they're there.
+if(SCO_GAME_SC AND WIN32)
+  add_library(sco_game_services STATIC src/game/services/reads.cpp src/game/services/spatial.cpp)
+  target_link_libraries(sco_game_services PUBLIC sco_game_sc sco_host sco_engine)
+  target_compile_definitions(sco_game_services PUBLIC SCO_GAME_SERVICES=1)
+  sco_project_target(sco_game_services)
+  target_link_libraries(sco_app PUBLIC sco_game_services)
+endif()
 sco_project_target(sco_app)
 
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.

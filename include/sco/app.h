@@ -28,7 +28,8 @@
 //   4. host::BuildApi({ hostVersion }); with dataRoot set, storage::Start (sco.storage) and, with
 //      dataCore too, datacore::service::Start (sco.datacore); ui::Start (sco.ui) and ui::ReserveChord
 //      for each of reservedChords; ipc::Start (sco.ipc); net::Start (sco.net and the capability
-//      "sco.net"; no socket until the product calls net::Host or net::Join, sco/net/session.h)
+//      "sco.net"; no socket until the product calls net::Host or net::Join, sco/net/session.h); with
+//      gameServices, game::services::Start (teleport.spatial under the owner "game")
 //   5. the list: every built-in (FromBuiltin), then, with pluginsEnabled, Discover(pluginRoot)
 //   6. ContainCallouts(list)
 //   7. LoadBuiltin for each built-in; then, in list order, LoadNative / LoadScript (a lua plugin
@@ -41,7 +42,8 @@
 // messages and events (net::Tick).
 // Stop: Dispatch "game.exit", UnloadAll (newest first, built-ins last), storage::Stop, net::Stop (leaves
 // any session), ipc::Stop, ui::Stop,
-// datacore::service::Stop and host::WithdrawHostServices (host services outlive every plugin),
+// datacore::service::Stop, game::services::Stop and host::WithdrawGameServices, and
+// host::WithdrawHostServices (host and game services outlive every plugin),
 // ContainCallouts(nullptr).
 #include "sco/plugins.h"
 #include "sco/scan.h"
@@ -79,6 +81,13 @@ struct Platform {
     // after the load. Off by default: a product turns it on once its CryPak adapter applies the
     // DataCore load (sc-offline: design plan PR 8). Off, query_service answers SCO_NOT_FOUND.
     bool dataCore = false;
+    // Start also publishes the Star Citizen game pack's services (sco/game/services.h: today
+    // teleport.spatial 1.0) under the owner "game", before any plugin loads, and Stop withdraws
+    // them after UnloadAll. They read the game through the teleport.* rows, so the product resolves
+    // them first (Platform::registerSignatures, or its own ResolveAll). Off by default: a product
+    // turns it on once it no longer publishes those names itself. Builds without the game pack's
+    // services (SCO_GAME_SC off, or not Windows) log "[app] game services not built" and go on.
+    bool gameServices = false;
 };
 
 // Starts the host kit (see above). Game thread: it becomes the game thread. False, and nothing
