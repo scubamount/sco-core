@@ -53,11 +53,11 @@ Terms used in the table:
 | `contracts.objective_to_player_logs` | 0x1bc6700 | string fn "AddActiveObjectiveToPlayerLogs" | prologue | mission_modules |
 | `contracts.create_objective` | 0x1c1fe90 | string fn "$$[$$] - Created: $$[$$], parent id=$$, flags=$$" | prologue | mission_modules, abandon |
 | `contracts.loc_id` | 0x3b6700 | pattern | | mission_modules |
-| `contracts.stop_mission` | 0x1d1f6c0 | string fn "StopMission called with reason ..." | prologue | abandon |
+| `contracts.stop_mission` | 0x1d1f6c0 | string fn "StopMission called with reason ..." | prologue | mission_modules |
 | `contracts.mission_entity_vtbl` | 0x823d1d0 | vtable: the slot holding create_objective, minus 0x708 | exactly one slot | abandon |
 | `contracts.mission_entity_remove_player` | 0x1cf8610 | slot 0x720 of mission_entity_vtbl | prologue | abandon |
-| `contracts.offline_end_hauling` | 0x1cf9c30 | string fn "CMissionServiceOffline::RequestEndHaulingObjectiveAndPhase is not implemented yet" | one function | abandon, phase_ends |
-| `contracts.offline_service_vtbl` | 0x81d4ad0 | vtable: the slot holding offline_end_hauling, minus 0xC0 | exactly one slot | abandon, phase_ends |
+| `contracts.offline_end_hauling` | 0x1cf9c30 | string fn "CMissionServiceOffline::RequestEndHaulingObjectiveAndPhase is not implemented yet" | one function | offline_service, abandon, phase_ends |
+| `contracts.offline_service_vtbl` | 0x81d4ad0 | vtable: the slot holding offline_end_hauling, minus 0xC0 | exactly one slot | offline_service, abandon, phase_ends |
 | `contracts.offline_leave_mission` | 0x1cf45d0 | slot 0x18 of offline_service_vtbl | prologue | abandon |
 | `contracts.offline_end_phase` | 0x1cfaf10 | slot 0x48 of offline_service_vtbl | prologue | phase_ends |
 | `contracts.send_rewards_authority` | 0x1d09b5a | 14 bytes before the first `lea r8, "CSCPlayerMissionLog::SendRewards No authority"` | `call [rax+disp32]; test al, al; jnz` (sc-offline nops the jnz at +8) | rewards |

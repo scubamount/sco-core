@@ -503,10 +503,11 @@ constexpr const char* kDiagnostics[] = {
 };
 constexpr const char* kModules[] = {
     "contracts.module_initialize", "contracts.module_start_mission", "contracts.module_authority", "contracts.module_entry_answer",
-    "contracts.objective_to_player_logs", "contracts.create_objective", "contracts.loc_id",
+    "contracts.objective_to_player_logs", "contracts.create_objective", "contracts.loc_id", "contracts.stop_mission",
 };
+constexpr const char* kOfflineService[] = { "contracts.offline_end_hauling", "contracts.offline_service_vtbl" };
 constexpr const char* kAbandon[] = {
-    "contracts.stop_mission", "contracts.offline_end_hauling", "contracts.offline_service_vtbl", "contracts.offline_leave_mission",
+    "contracts.offline_end_hauling", "contracts.offline_service_vtbl", "contracts.offline_leave_mission",
     "contracts.create_objective", "contracts.mission_entity_vtbl", "contracts.mission_entity_remove_player",
 };
 constexpr const char* kPhaseEnds[] = {
@@ -536,6 +537,7 @@ constexpr Capability kCaps[] = {
     { "contracts.mission_log",         kMissionLog,       std::size(kMissionLog) },
     { "contracts.mission_diagnostics", kDiagnostics,      std::size(kDiagnostics) },
     { "contracts.mission_modules",     kModules,          std::size(kModules) },
+    { "contracts.offline_service",     kOfflineService,   std::size(kOfflineService) },
     { "contracts.abandon",             kAbandon,          std::size(kAbandon) },
     { "contracts.phase_ends",          kPhaseEnds,        std::size(kPhaseEnds) },
     { "contracts.rewards",             kRewards,          std::size(kRewards) },

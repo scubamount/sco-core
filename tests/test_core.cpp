@@ -448,7 +448,7 @@ static void TestContractsRows() {
     CHECK(sco::game::RegisterGameSignatures());
     size_t n = 0;
     const sco::game::contracts::Capability* caps = sco::game::contracts::Capabilities(n);
-    CHECK(caps && n == 14);
+    CHECK(caps && n == 15);
     for (size_t c = 0; c < n; ++c)
         for (size_t j = 0; j < caps[c].count; ++j) CHECK(sco::SigLookup(caps[c].rows[j]) != nullptr);
     size_t rows = 0, autoAccept = 0;

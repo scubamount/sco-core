@@ -103,9 +103,9 @@ constexpr int kAddPlayerSites = 2;
 constexpr size_t kModuleState   = 0x130;   // checked (see above)
 constexpr size_t kModuleMission = 0x150;   // checked (see above)
 // contracts.loc_id: pattern.
-
-// ---- contracts.abandon --------------------------------------------------------------------------
 // contracts.stop_mission: string function "StopMission called with reason ...".
+
+// ---- contracts.offline_service, contracts.abandon, contracts.phase_ends -------------------------
 // contracts.mission_entity_vtbl: the CMissionEntity vtable: the one .rdata slot holding
 //   create_objective, minus kEntityCreateObjectiveSlot.
 // contracts.mission_entity_remove_player: the function in slot kEntityRemovePlayerSlot of that
