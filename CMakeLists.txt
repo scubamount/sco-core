@@ -184,6 +184,13 @@ endif()
 target_link_libraries(sco_ipc PUBLIC sco_host)
 sco_project_target(sco_ipc)
 
+# sco.net core (sco/net/*.h): SHA-256/HMAC/PBKDF2 (sha2.c, plain C), the wire framing, reliable
+# streams and the session over an abstract datagram transport. Platform-free; the sockets and the
+# sco_net_v1 service table come in plan PR 4b (docs/net-wire.md).
+add_library(sco_net STATIC src/net/sha2.c src/net/wire.cpp src/net/reliable.cpp src/net/core.cpp)
+target_include_directories(sco_net PUBLIC "${SCO_INCLUDE_DIR}")
+sco_project_target(sco_net)
+
 # sco.datacore (sco/datacore_service.h, include/sco_datacore.h): plugins queue DataCore overrides; the
 # DataCore load applies data packs, saved patches and queued patches in plugin order.
 add_library(sco_datacore_service STATIC src/datacore/service.cpp)
@@ -397,6 +404,13 @@ if(SCO_BUILD_TESTS)
   target_link_libraries(test_ipc PRIVATE sco_ipc)
   sco_project_target(test_ipc)
   add_test(NAME test_ipc COMMAND test_ipc)
+
+  # sco.net's core: crypto vectors, the parser against hostile input, replay, reliable delivery over
+  # a seeded lossy in-memory network, several sessions in one process (virtual clock, no sleeps).
+  add_executable(test_net tests/test_net.cpp)
+  target_link_libraries(test_net PRIVATE sco_net)
+  sco_project_target(test_net)
+  add_test(NAME test_net COMMAND test_net)
 
   # sco.ui over the real host table, with built-in plugins under the loader's crash guard.
   add_executable(test_ui tests/test_ui.cpp)

@@ -154,6 +154,16 @@ IPC=("$ROOT/tests/test_ipc.cpp" "$ROOT/src/ipc/ipc.cpp" "$ROOT/src/ipc/shm_posix
 "$OUT/test_ipc"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "${IPC[@]}" -o "$OUT/test_ipc_tsan"
 "$OUT/test_ipc_tsan"
+# sco.net's core (sco/net/*.h): sha2.c built as C once per sanitizer set with -Werror like the rest;
+# sessions of several Cores over the seeded in-memory network, so both sanitizer sets.
+NET_C=(-std=c11 -O1 -g -Wall -Wextra -Wpedantic -Werror -I "$ROOT/include")
+"$CC" "${NET_C[@]}" -fsanitize=address,undefined -c "$ROOT/src/net/sha2.c" -o "$OUT/sha2_asan.o"
+"$CC" "${NET_C[@]}" -fsanitize=thread -c "$ROOT/src/net/sha2.c" -o "$OUT/sha2_tsan.o"
+NET=("$ROOT/tests/test_net.cpp" "$ROOT/src/net/wire.cpp" "$ROOT/src/net/reliable.cpp" "$ROOT/src/net/core.cpp")
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "${NET[@]}" "$OUT/sha2_asan.o" -o "$OUT/test_net"
+"$OUT/test_net"
+"$CXX" "${FLAGS[@]}" -fsanitize=thread "${NET[@]}" "$OUT/sha2_tsan.o" -o "$OUT/test_net_tsan"
+"$OUT/test_net_tsan"
 
 # The DataCore parser (sco/datacore.h) over tests/dcb_builder.h fixtures, including truncated and
 # corrupted files. A pure function over bytes with no shared state, so ASan+UBSan only. Then sco-dcb
