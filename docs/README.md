@@ -37,7 +37,12 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 |---|---|
 | [How it works](architecture.md) | Signature rows, results, resolving, the report, startup |
 | [Adding a signature](adding-signatures.md) | Moving a feature's addresses into a table, and the rules rows follow |
-| [ASOP, hangar and ATC rows](game/asop.md) | The 62 rows behind ship terminals, lifts, hangars and ATC, their capabilities and root causes |
+  | [ASOP, hangar and ATC rows](game/asop.md) | The 62 rows behind ship terminals, lifts, hangars and ATC, their capabilities and root causes |
+  | [Building, missions, cvars and quantum rows](game/world.md) | The 36 rows behind build mode, the mission system, cvar storage and quantum boost, their capabilities |
+  | [Contracts rows](game/contracts.md) | The 83 rows and 15 capabilities behind sc-offline's contracts feature |
+  | [Features rows](game/features.md) | The rows moved out of sc-offline's five FindPattern scans, and their capabilities |
+  | [Offline patches and startup rows](game/offline.md) | The 60 rows and 19 capabilities behind sc-offline's offline patches, boot and startup hooks |
+  | [Actors rows](game/actors.md) | The 33 rows behind spawning, NPCs, ammo and the player loadout |
 | [Checking a game build](sigcheck.md) | `sco-sigcheck`: output, exit codes, the patch-day routine |
 | [DataCore files and packs](datacore.md) | `sco-dcb info`, `records`, `lint`, `check`, `show` and `diff`: extracting `Game2.dcb`, the layout check, the `.toml` pack format, the `sco.datacore` service, exit codes |
 | [Design: multiplayer and cross-game bridges](design/multiplayer.md) | The scope change of 2026-10-09, what the fork's multiplayer code does, the `sco.net` and `sco.ipc` services, the `sco::game::net` rows, sc-offline's built-ins and the PR plan; in review |
