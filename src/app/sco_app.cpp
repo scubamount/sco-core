@@ -2,7 +2,9 @@
 // Everything runs on the game thread; the state below is touched by nothing else.
 #include "sco/app.h"
 #include "sco/caps.h"
-#include "sco/datacore_service.h"
+#ifndef SCO_KERNEL_ONLY
+#include "sco/datacore_service.h"   // sco.datacore: the Star Citizen game pack (SCO_GAME_SC)
+#endif
 #include "sco/host.h"
 #include "sco/ipc.h"
 #include "sco/log.h"
@@ -49,10 +51,14 @@ bool Start(const Platform& platform) {
         const Result sr = storage::Start(so);
         if (sr != Result::Ok) Log("[app] storage not started: %s", ResultName(sr));
         if (pf.dataCore) {
+#ifndef SCO_KERNEL_ONLY
             datacore::service::Options dco;
             dco.dataRoot = pf.dataRoot;
             const Result dr = datacore::service::Start(dco);
             if (dr != Result::Ok) Log("[app] sco.datacore not started: %s", ResultName(dr));
+#else
+            Log("[app] sco.datacore not started: this build has no game pack (SCO_GAME_SC=OFF)");
+#endif
         }
     }
     const Result ur = ui::Start();
@@ -134,7 +140,9 @@ void Stop() {
     net::Stop();   // leaves any session
     ipc::Stop();
     ui::Stop();
+#ifndef SCO_KERNEL_ONLY
     datacore::service::Stop();
+#endif
     host::WithdrawHostServices();
     plugins::ContainCallouts(nullptr);
     g_started = false;

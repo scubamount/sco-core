@@ -32,6 +32,36 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 300
 
+  # The kernel alone (SCO_GAME_SC=OFF): it must build and pass its tests with no Star Citizen code.
+  kernel-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSCO_SANITIZE=address,undefined -DSCO_GAME_SC=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: No game pack object was built
+        run: |
+          if find build -name '*.o' | grep -E '/src/(game|datacore)/'; then
+            echo "game pack objects in a kernel-only build"; exit 1
+          fi
+          if nm -C --defined-only build/*.a 2>/dev/null | grep -E 'RegisterGameSignatures|datacore::'; then
+            echo "game pack symbols in a kernel library"; exit 1
+          fi
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 300
+
   windows:
     runs-on: windows-2025
     timeout-minutes: 30

@@ -1,9 +1,11 @@
 // Unit tests for sco-core's scanners and signature registry. Host build, no game needed.
 //   tools/test.sh
+#ifndef SCO_KERNEL_ONLY   // the Star Citizen rows (game pack, SCO_GAME_SC)
 #include "sco/game/asop.h"
 #include "sco/game/pak.h"
 #include "sco/game/signatures.h"
 #include "sco/game/system.h"
+#endif
 #include "sco/log.h"
 #include "sco/scan.h"
 #include "sco/signatures.h"
@@ -136,6 +138,7 @@ static void TestRegistry() {
     CHECK(sco::Sig("t.dependent") == img.rdata.base + 0x48);
 }
 
+#ifndef SCO_KERNEL_ONLY   // the Star Citizen game pack (SCO_GAME_SC)
 // A fake image with CSystem::Quit's log string and a function laid out like build 4.10.193.11644:
 // the bytes system.quit checks, the string's lea r9 at +0xA3 and +0x176, 0xCC everywhere else.
 // `flip` changes one byte of the function (offset from its start), < 0 for none.
@@ -408,6 +411,7 @@ static void TestAsopRows() {
     }
     CHECK(feature == 62);
 }
+#endif   // SCO_KERNEL_ONLY
 
 static void TestStatus() {
     char buf[64] = "junk";
@@ -426,9 +430,11 @@ int main() {
     TestStatus();   // first: checks the "never set" state
     TestScan();
     TestRegistry();
+#ifndef SCO_KERNEL_ONLY
     TestSystemQuit();
     TestPakRows();
     TestAsopRows();
+#endif
     std::printf("sco-core tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

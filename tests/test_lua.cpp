@@ -4,7 +4,9 @@
 //   tools/test.sh
 #include "dcb_builder.h"
 #include "sco/caps.h"
-#include "sco/datacore_service.h"
+#ifndef SCO_KERNEL_ONLY
+#include "sco/datacore_service.h"   // TestDataCore (game pack)
+#endif
 #include "sco/host.h"
 #include "sco/log.h"
 #include "sco/plugins.h"
@@ -454,6 +456,7 @@ static void TestLimits() {
     Unload(l);
 }
 
+#ifndef SCO_KERNEL_ONLY   // the Star Citizen game pack (SCO_GAME_SC)
 // ---- sco.datacore (published by the host only when the product enables it) --------------------
 
 static void TestDataCore() {
@@ -514,6 +517,7 @@ end }
     Unload(l);
     svc::Stop();
 }
+#endif   // SCO_KERNEL_ONLY
 
 // ---- sco.store (over the host service sco.storage) ---------------------------------------------
 
@@ -721,7 +725,9 @@ int main(int argc, char** argv) {
     TestHotkeys();
     TestSandbox();
     TestLimits();
+#ifndef SCO_KERNEL_ONLY
     TestDataCore();
+#endif
     TestStore(argv[1]);
     std::printf("sco-lua tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

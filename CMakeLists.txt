@@ -17,6 +17,16 @@ endif()
 
 option(SCO_BUILD_TESTS "Build the sco-core unit tests and register them with CTest" ${_sco_top_level})
 option(SCO_WERROR "Treat warnings in sco-core's own code as errors" ON)
+# The kernel (sco_api, runtime, host, plugins, app, storage, ui, ipc, net, hook, vfs, engine, the
+# signature engine, sco-lua) is game-agnostic. The Star Citizen game pack is everything else: the
+# signature rows in src/game (sco_game_sc), the CryPak adapter (sco_pak), DataCore (sco_datacore,
+# sco_datacore_service) and their tools (sco-sigcheck, sco-dcb). OFF builds and tests the kernel
+# alone, with SCO_KERNEL_ONLY defined; CI's kernel-only job does, so nothing in the kernel can
+# depend on the game pack without that job failing.
+option(SCO_GAME_SC "Build the Star Citizen game pack (signature rows, CryPak adapter, DataCore)" ON)
+if(NOT SCO_GAME_SC)
+  add_compile_definitions(SCO_KERNEL_ONLY=1)
+endif()
 set(SCO_SANITIZE "" CACHE STRING "Sanitizers for project code, e.g. address,undefined (not MSVC)")
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -56,19 +66,26 @@ set(SCO_INCLUDE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 # ---- libraries --------------------------------------------------------------------------------
 
-# Pattern scanning, signatures, log/status, PE files and the game signature tables.
-file(GLOB SCO_GAME_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.cpp")
-# The CryPak hooks are their own library (sco_pak): the rows and sco-sigcheck don't need hooks.
-list(FILTER SCO_GAME_SOURCES EXCLUDE REGEX "/pak_hooks\\.cpp$")
+# Pattern scanning, the signature engine, log/status and PE files (kernel).
 add_library(sco_core STATIC
-  src/sco_scan.cpp src/sco_signatures.cpp src/sco_log_status.cpp src/sco_pe_file.cpp
-  ${SCO_GAME_SOURCES})
+  src/sco_scan.cpp src/sco_signatures.cpp src/sco_log_status.cpp src/sco_pe_file.cpp)
 if(WIN32)
   target_sources(sco_core PRIVATE src/sco_image_win.cpp)
 endif()
 target_include_directories(sco_core PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_core PUBLIC Threads::Threads)
 sco_project_target(sco_core)
+
+# The Star Citizen signature tables (game pack): every src/game/*_sigs.cpp row and
+# sco::game::RegisterGameSignatures. The CryPak hooks are their own library (sco_pak): the rows and
+# sco-sigcheck don't need hooks.
+if(SCO_GAME_SC)
+  file(GLOB SCO_GAME_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.cpp")
+  list(FILTER SCO_GAME_SOURCES EXCLUDE REGEX "/pak_hooks\\.cpp$")
+  add_library(sco_game_sc STATIC ${SCO_GAME_SOURCES})
+  target_link_libraries(sco_game_sc PUBLIC sco_core)
+  sco_project_target(sco_game_sc)
+endif()
 
 # Tasks, events and commands: the cross-thread runtime under the plugin ABI.
 add_library(sco_runtime STATIC src/api/sco_tasks.cpp src/api/sco_events.cpp src/api/sco_commands.cpp
@@ -103,21 +120,25 @@ target_include_directories(sco_vfs PUBLIC "${SCO_INCLUDE_DIR}")
 target_link_libraries(sco_vfs PUBLIC Threads::Threads)
 sco_project_target(sco_vfs)
 
-# The CryPak adapter (sco/game/pak.h): the loader detour and the vtable slot swaps that serve
-# sco::vfs mounts to the engine. Its rows are in sco_core; the vfs.pak capability in sco_host.
-add_library(sco_pak STATIC src/game/pak_hooks.cpp)
-target_link_libraries(sco_pak PUBLIC sco_core sco_hook sco_vfs sco_host)
-sco_project_target(sco_pak)
+# The CryPak adapter (sco/game/pak.h, game pack): the loader detour and the vtable slot swaps that
+# serve sco::vfs mounts to the engine. Its rows are in sco_game_sc; the vfs.pak capability in sco_host.
+if(SCO_GAME_SC)
+  add_library(sco_pak STATIC src/game/pak_hooks.cpp)
+  target_link_libraries(sco_pak PUBLIC sco_game_sc sco_core sco_hook sco_vfs sco_host)
+  sco_project_target(sco_pak)
+endif()
 
 # The DataCore parser, validation and patcher (sco/datacore.h) and data packs (sco/datacore_pack.h):
 # bytes in, tables and sco::vfs splices out. No engine, no Windows. Vendored toml++
 # (third_party/tomlplusplus, see its README) is a private SYSTEM include of this library only; its
 # warnings are also off around the include (src/datacore/toml.h).
+if(SCO_GAME_SC)   # DataCore is game pack
 add_library(sco_datacore STATIC src/datacore/datacore.cpp src/datacore/patch.cpp src/datacore/pack.cpp)
 target_include_directories(sco_datacore PUBLIC "${SCO_INCLUDE_DIR}")
 target_include_directories(sco_datacore SYSTEM PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/tomlplusplus")
 target_link_libraries(sco_datacore PUBLIC sco_vfs)
 sco_project_target(sco_datacore)
+endif()
 
 add_library(sco_plugins STATIC
   src/plugins/manifest.cpp src/plugins/discover.cpp src/plugins/loader.cpp src/plugins/content.cpp)
@@ -205,14 +226,20 @@ sco_project_target(sco_net_service)
 
 # sco.datacore (sco/datacore_service.h, include/sco_datacore.h): plugins queue DataCore overrides; the
 # DataCore load applies data packs, saved patches and queued patches in plugin order.
+if(SCO_GAME_SC)   # sco.datacore is game pack
 add_library(sco_datacore_service STATIC src/datacore/service.cpp)
 target_link_libraries(sco_datacore_service PUBLIC sco_datacore sco_host sco_plugins)
 sco_project_target(sco_datacore_service)
+endif()
 
 # The host kit (sco/app.h): Start / Tick / Stop over the host table, caps, signatures and loader.
 add_library(sco_app STATIC src/app/sco_app.cpp)
-target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui sco_ipc sco_net_service
-                      sco_datacore_service)
+target_link_libraries(sco_app PUBLIC sco_host sco_plugins sco_core sco_storage sco_ui sco_ipc sco_net_service)
+if(SCO_GAME_SC)
+  # sco.datacore (Platform::dataCore) and the Star Citizen tables a product passes as
+  # Platform::registerSignatures (sco::game::RegisterGameSignatures).
+  target_link_libraries(sco_app PUBLIC sco_datacore_service sco_game_sc)
+endif()
 sco_project_target(sco_app)
 
 # Vendored Lua 5.4 (plugins/lua/third_party/lua): built as-is, its own warnings off.
@@ -245,19 +272,26 @@ endif()
 
 # ---- tools ------------------------------------------------------------------------------------
 
-add_executable(sco-sigcheck tools/sco-sigcheck.cpp)
-target_link_libraries(sco-sigcheck PRIVATE sco_core)
-sco_project_target(sco-sigcheck)
+if(SCO_GAME_SC)
+  add_executable(sco-sigcheck tools/sco-sigcheck.cpp)
+  target_link_libraries(sco-sigcheck PRIVATE sco_game_sc)
+  sco_project_target(sco-sigcheck)
+endif()
 
 # The real host kit, loader and sco-lua outside the game.
 add_executable(sco-host-sim tools/sco-host-sim.cpp)
-target_link_libraries(sco-host-sim PRIVATE sco_app sco_lua sco_datacore)
+target_link_libraries(sco-host-sim PRIVATE sco_app sco_lua)
+if(SCO_GAME_SC)
+  target_link_libraries(sco-host-sim PRIVATE sco_datacore)   # the pack lint
+endif()
 sco_project_target(sco-host-sim)
 
 # DataCore files on disk (docs/datacore.md): info and records.
+if(SCO_GAME_SC)
 add_executable(sco-dcb tools/sco-dcb.cpp)
 target_link_libraries(sco-dcb PRIVATE sco_datacore)
 sco_project_target(sco-dcb)
+endif()
 
 # ---- tests ------------------------------------------------------------------------------------
 
@@ -455,6 +489,9 @@ if(SCO_BUILD_TESTS)
 
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
+  if(SCO_GAME_SC)
+    target_link_libraries(test_core PRIVATE sco_game_sc)   # the system.quit, pak.* and asop.* rows
+  endif()
   sco_project_target(test_core)
   add_test(NAME test_core COMMAND test_core)
 
@@ -517,18 +554,21 @@ if(SCO_BUILD_TESTS)
   sco_project_target(test_spatial)
   add_test(NAME test_spatial COMMAND test_spatial)
 
+  if(SCO_GAME_SC)
   # sco::game::pak over a fake ICryPak (a real vtable) and a fake loader; x86-64 only (the loader
   # detour), skipped elsewhere.
   add_executable(test_pak tests/test_pak.cpp)
   target_link_libraries(test_pak PRIVATE sco_pak)
   sco_project_target(test_pak)
   add_test(NAME test_pak COMMAND test_pak)
+  endif()
 
   add_executable(test_vfs tests/test_vfs.cpp)
   target_link_libraries(test_vfs PRIVATE sco_vfs)
   sco_project_target(test_vfs)
   add_test(NAME test_vfs COMMAND test_vfs)
 
+  if(SCO_GAME_SC)
   # The DataCore parser over tests/dcb_builder.h fixtures; it also writes the fixtures dcb_tool
   # runs sco-dcb on.
   add_executable(test_datacore tests/test_datacore.cpp)
@@ -571,6 +611,7 @@ if(SCO_BUILD_TESTS)
     FIXTURES_REQUIRED dcb_fixtures
     PASS_REGULAR_EXPRESSION "dcb_tool: OK"
     FAIL_REGULAR_EXPRESSION "dcb_tool: FAIL")
+  endif()
 
   # Fake native plugins for test_plugins, laid out like tools/test.sh (tools/test-win.sh on
   # Windows): <out>/plugins/m<mode>/{plugin.ini,m<mode>.<ext>}, m11 a second clean plugin, and
@@ -623,7 +664,10 @@ if(SCO_BUILD_TESTS)
            COMMAND test_plugins "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugins" "${SCO_TEST_OUT}")
 
   add_executable(test_lua tests/test_lua.cpp)
-  target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua sco_ui sco_datacore_service sco_storage)
+  target_link_libraries(test_lua PRIVATE sco_plugins sco_host sco_lua sco_ui sco_storage)
+  if(SCO_GAME_SC)
+    target_link_libraries(test_lua PRIVATE sco_datacore_service)   # TestDataCore
+  endif()
   sco_project_target(test_lua)
   add_test(NAME test_lua COMMAND test_lua "${CMAKE_CURRENT_SOURCE_DIR}/sdk" "${SCO_TEST_OUT}")
 
