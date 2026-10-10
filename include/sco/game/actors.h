@@ -43,6 +43,12 @@ const Capability* Capabilities(size_t& count);
 // spawn.is_linked / .force_delink / .for_each_seat / .actor_of_user / .handle_to_id /
 //   .actor_link / .force_link: the calls at find_seat +0xB2, +0x19C, +0x242, +0x3CE, +0x3F1,
 //   +0x3FE, +0x40B; spawn.seat_priority: the call at seat_callback +0xD6.
+// spawn.seat_interactable: the callback's first test (+0x1A..+0x31: get the seat owner's
+//   IInteractableComponent, skip the seat unless it's alive), resolved to the getter it calls at
+//   +0x22. Checks the getter reads the owner at seat+8, calls entity slot kEntityComponent and the
+//   components global's slot kComponentsTypeId, that global is teleport.entity_system+8, and the
+//   name it looks up is kSeatInteractable. Capability spawn.seat_gate: game.vehicles marks a seat
+//   usable only when the game's own seat picker would take it.
 // spawn.find_entity_by_name: the function whose lea rcx at +0x36 loads
 //   "FindEntityByName_SlowDebugCodeOnly: %s"; exactly one has the checked prologue.
 // spawn.toggle_flight_ready: the Events/ISC/Dashboards.h sender for line 0x49 (Flight Ready);
@@ -82,6 +88,7 @@ constexpr size_t   kComponentsTypeId    = 0x10;    // checked: spawn.landing_hel
 constexpr size_t   kPortsSeatContainer  = 0x778;   // checked: spawn.seat_callback (find_seat +0x1D6)
 constexpr uint32_t kSeatItemType        = 193;     // checked: spawn.seat_callback (find_seat +0x223)
 constexpr size_t   kSeatOccupant        = 0x158;   // checked: spawn.seat_callback (callback +0x37)
+constexpr char     kSeatInteractable[]  = "IInteractableComponent";   // checked: spawn.seat_interactable (+0x62)
 constexpr size_t   kGodModeData         = 0x208;   // checked: spawn.god_mode_call pattern
 constexpr size_t   kGodModeState        = 0x27F0;  // checked: spawn.god_mode_call pattern
 constexpr size_t   kSpawnParamsSize     = 0x800;   // unchecked: sc-offline's buffer for the params ctor

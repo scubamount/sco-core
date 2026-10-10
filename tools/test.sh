@@ -92,6 +92,13 @@ echo "abi_spatial: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-m
 clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_spawn.c"
 clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_spawn.c"
 echo "abi_spawn: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
+# The game pack's game.vehicles table (tests/abi_game_vehicles.c), the same five ways.
+"$CC"  -std=c11   "${ABI[@]}" "$ROOT/tests/abi_game_vehicles.c"
+"$CXX" -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_game_vehicles.c"
+"$CC"  -std=c11   "${ABI[@]}" -fshort-enums "$ROOT/tests/abi_game_vehicles.c"
+clang   --target=x86_64-pc-windows-msvc -ffreestanding -std=c11   "${ABI[@]}" "$ROOT/tests/abi_game_vehicles.c"
+clang++ --target=x86_64-pc-windows-msvc -ffreestanding -std=c++20 "${ABI[@]}" -x c++ "$ROOT/tests/abi_game_vehicles.c"
+echo "abi_game_vehicles: layout pinned (C11, C++20, -fshort-enums, x86_64-pc-windows-msvc)"
 
 # SDK sources (sdk/): the template and native example compile against sco_api.h alone, so a
 # header change that breaks them fails here. The full build from the packaged zip, with MSVC on
@@ -101,7 +108,7 @@ for f in "$ROOT/sdk/template/plugin.c" "$ROOT/sdk/examples/hello/hello.c"; do
 done
 "$CC" -std=c11 -D_DEFAULT_SOURCE -Wall -Wextra -Werror -I "$ROOT/include" -fsyntax-only "$ROOT/sdk/tools/sco-plugin-check.c"
 # The C++20 layer (include/scosdk/): the cpp_hello example and each header on its own.
-for f in "$ROOT/sdk/examples/cpp_hello/cpp_hello.cpp" "$ROOT"/include/scosdk/*.hpp; do
+for f in "$ROOT/sdk/examples/cpp_hello/cpp_hello.cpp" "$ROOT"/include/scosdk/*.hpp "$ROOT"/include/scosdk/game/*.hpp; do
   "$CXX" -std=c++20 "${ABI[@]}" -x c++ "$f"
 done
 echo "sdk: template, hello, cpp_hello, include/scosdk and sco-plugin-check compile against sco_api.h"

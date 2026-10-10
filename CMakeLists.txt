@@ -245,7 +245,7 @@ endif()
 # game memory under SEH (__try), so Windows only; SCO_GAME_SERVICES tells sco_app they're there.
 if(SCO_GAME_SC AND WIN32)
   add_library(sco_game_services STATIC src/game/services/reads.cpp src/game/services/spatial.cpp
-                                       src/game/services/spawn.cpp)
+                                       src/game/services/spawn.cpp src/game/services/vehicles.cpp)
   target_link_libraries(sco_game_services PUBLIC sco_game_sc sco_host sco_engine)
   target_compile_definitions(sco_game_services PUBLIC SCO_GAME_SERVICES=1)
   sco_project_target(sco_game_services)
@@ -361,6 +361,29 @@ if(SCO_BUILD_TESTS)
   endforeach()
   add_test(NAME abi_storage
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_storage_targets})
+
+  # The game.vehicles table pin (tests/abi_game_vehicles.c), the same three ways. Header only, so the
+  # kernel-only build checks it too.
+  set(_abi_vehicles_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_game_vehicles.cpp")
+  file(CONFIGURE OUTPUT "${_abi_vehicles_cxx}"
+       CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_game_vehicles.c\"\n")
+  add_library(sco_abi_game_vehicles_c OBJECT tests/abi_game_vehicles.c)
+  add_library(sco_abi_game_vehicles_cxx OBJECT "${_abi_vehicles_cxx}")
+  set(_abi_vehicles_targets sco_abi_game_vehicles_c sco_abi_game_vehicles_cxx)
+  if(NOT MSVC)
+    add_library(sco_abi_game_vehicles_short_enums OBJECT tests/abi_game_vehicles.c)
+    target_compile_options(sco_abi_game_vehicles_short_enums PRIVATE -fshort-enums)
+    list(APPEND _abi_vehicles_targets sco_abi_game_vehicles_short_enums)
+  endif()
+  foreach(t IN LISTS _abi_vehicles_targets)
+    target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+    sco_warnings(${t})
+    if(NOT MSVC)
+      target_compile_options(${t} PRIVATE -Wpedantic)
+    endif()
+  endforeach()
+  add_test(NAME abi_game_vehicles
+           COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_vehicles_targets})
 
   # The sco.ui table pin (tests/abi_ui.c), the same three ways.
   set(_abi_ui_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_ui.cpp")

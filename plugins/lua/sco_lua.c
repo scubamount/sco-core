@@ -16,6 +16,7 @@
 #include "sco_datacore.h"
 #include "sco_storage.h"
 #include "sco_ui.h"
+#include "sc_vehicles.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1315,6 +1316,94 @@ static int L_setmetatable(lua_State* L) {
     return 1;
 }
 
+/* ---- sco.game.vehicles: the game pack's game.vehicles, read-only (no seat, eject or power_on) ---- */
+
+static const sc_vehicles_v1* Vehicles(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service) || !s->api->query_service) return NULL;
+    if (s->api->query_service(SC_VEHICLES_SERVICE_NAME, SC_VEHICLES_SERVICE_VERSION, &t) != SCO_OK) return NULL;
+    return (const sc_vehicles_v1*)t;
+}
+
+/* nil, the result's name and the game pack's reason (when it left one). */
+static int VehFail(lua_State* L, const Script* s, const sc_vehicles_v1* v, sco_result r) {
+    char msg[256];
+    uint32_t size = sizeof(msg);
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(r));
+    if (!v) { lua_pushliteral(L, "game.vehicles is not available on this host"); return 3; }
+    if (v->last_error(s->self, msg, &size) == SCO_OK && msg[0]) { lua_pushstring(L, msg); return 3; }
+    return 2;
+}
+
+/* Ids are the game's 64-bit entity ids, carried in a Lua integer bit for bit (one above 2^63 reads
+ * as negative); pass them back unchanged. */
+static uint64_t VehId(lua_State* L, int i) { return (uint64_t)luaL_checkinteger(L, i); }
+
+/* player_ship(): the id of the ship you're aboard, or nil, err, message. */
+static int L_veh_player_ship(lua_State* L) {
+    Script* s = Of(L);
+    const sc_vehicles_v1* v = Vehicles(s);
+    uint64_t ship = 0;
+    const sco_result r = v ? v->player_ship(&ship) : SCO_UNAVAILABLE;
+    if (r != SCO_OK) return VehFail(L, s, v, r);
+    lua_pushinteger(L, (lua_Integer)ship);
+    return 1;
+}
+
+static sc_vehicle_seat g_vehSeats[256];   /* game thread only, like every call into game.vehicles */
+
+/* seats(ship): a list of { index, seat_id, occupant_id, priority, name, usable, usable_known,
+ * occupied, pilot } (index is the game pack's, from 0) and whether the ship has more than were
+ * listed; or nil, err, message. */
+static int L_veh_seats(lua_State* L) {
+    Script* s = Of(L);
+    const uint64_t ship = VehId(L, 1);
+    const sc_vehicles_v1* v = Vehicles(s);
+    uint32_t n = 0, more = 0;
+    const sco_result r = v ? v->seats(ship, g_vehSeats, (uint32_t)(sizeof(g_vehSeats) / sizeof(g_vehSeats[0])), &n, &more)
+                           : SCO_UNAVAILABLE;
+    if (r != SCO_OK) return VehFail(L, s, v, r);
+    lua_createtable(L, (int)n, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+        const sc_vehicle_seat* e = &g_vehSeats[i];
+        lua_createtable(L, 0, 9);
+        lua_pushinteger(L, (lua_Integer)e->index);       lua_setfield(L, -2, "index");
+        lua_pushinteger(L, (lua_Integer)e->seat_id);     lua_setfield(L, -2, "seat_id");
+        lua_pushinteger(L, (lua_Integer)e->occupant_id); lua_setfield(L, -2, "occupant_id");
+        lua_pushinteger(L, (lua_Integer)e->priority);    lua_setfield(L, -2, "priority");
+        const char* end = (const char*)memchr(e->name, 0, sizeof(e->name));
+        lua_pushlstring(L, e->name, end ? (size_t)(end - e->name) : sizeof(e->name)); lua_setfield(L, -2, "name");
+        lua_pushboolean(L, (e->flags & SC_SEAT_USABLE) != 0);       lua_setfield(L, -2, "usable");
+        lua_pushboolean(L, (e->flags & SC_SEAT_USABLE_KNOWN) != 0); lua_setfield(L, -2, "usable_known");
+        lua_pushboolean(L, (e->flags & SC_SEAT_OCCUPIED) != 0);     lua_setfield(L, -2, "occupied");
+        lua_pushboolean(L, (e->flags & SC_SEAT_PILOT) != 0);        lua_setfield(L, -2, "pilot");
+        lua_rawseti(L, -2, (lua_Integer)i + 1);
+    }
+    lua_pushboolean(L, more != 0);
+    return 2;
+}
+
+/* seat_occupant(ship, index): the actor's id, 0 when the seat is empty; or nil, err, message. */
+static int L_veh_seat_occupant(lua_State* L) {
+    Script* s = Of(L);
+    const uint64_t ship = VehId(L, 1);
+    const lua_Integer index = luaL_checkinteger(L, 2);
+    const sc_vehicles_v1* v = Vehicles(s);
+    if (index < 0 || index > (lua_Integer)UINT32_MAX) {
+        lua_pushnil(L);
+        lua_pushliteral(L, "bad_arg");
+        lua_pushliteral(L, "index is a seat's index from seats()");
+        return 3;
+    }
+    uint64_t actor = 0;
+    const sco_result r = v ? v->seat_occupant(ship, (uint32_t)index, &actor) : SCO_UNAVAILABLE;
+    if (r != SCO_OK) return VehFail(L, s, v, r);
+    lua_pushinteger(L, (lua_Integer)actor);
+    return 1;
+}
+
+
 /* ---- setup ---------------------------------------------------------------------------------- */
 
 typedef struct LoadCall { const char* source; size_t size; const char* chunk; } LoadCall;
@@ -1390,6 +1479,15 @@ static int SetupBody(lua_State* L) {
             { "sql", L_store_sql }, { NULL, NULL } };
         luaL_newlib(L, stfns);
         lua_setfield(L, -2, "store");
+    }
+    if (Vehicles(s)) {                                /* sco.game.vehicles: only when the game pack publishes it */
+        static const luaL_Reg vehfns[] = {
+            { "player_ship", L_veh_player_ship }, { "seats", L_veh_seats },
+            { "seat_occupant", L_veh_seat_occupant }, { NULL, NULL } };
+        lua_createtable(L, 0, 1);
+        luaL_newlib(L, vehfns);
+        lua_setfield(L, -2, "vehicles");
+        lua_setfield(L, -2, "game");
     }
     if (DataCore(s)) {                                /* sco.datacore: only when the host publishes it */
         static const luaL_Reg dcfns[] = { { "begin", L_dc_begin }, { "state", L_dc_state }, { NULL, NULL } };

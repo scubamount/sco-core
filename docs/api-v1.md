@@ -344,6 +344,39 @@ To also run on an older sc-offline, ask for `0x00010000` and check `sp->size > o
 
 `set_entity_transform` moves only an entity spawned through `spawn_as` with the same `self` while that plugin is loaded (unloading forgets them; `spawn_near_player` and the `spawn.ship` command count for nobody), or the player's own vehicle once the product has registered it as retrieved or delivered by ATC (`sco::game::services::RegisterPlayerVehicle`; no build does yet). Anything else answers 0. A spawn's id is final at once, but the entity streams in seconds later (up to a minute for a big ship), and until then `set_entity_transform` answers 0: check `entity_alive(id)` first, and try again on a later tick. The game pack logs why a call answered 0 (`[game] warning: set_entity_transform(<id>) -> 0: <reason>`), once per id and reason.
 
+### `game.vehicles` 1.0 (game pack)
+
+[`sc_vehicles.h`](../include/sc_vehicles.h), pinned by [`tests/abi_game_vehicles.c`](../tests/abi_game_vehicles.c): the ship you're aboard, a ship's seats and who sits in them, seating and unseating your own actors, and Flight Ready. The Star Citizen game pack publishes it under the owner `game` before any plugin loads (when the product sets `Platform::gameServices`; [game services](game-services.md)). Each system has its own capability, set from the rows it reads ([actors](game/actors.md)), so a game patch that breaks one leaves the others:
+
+| Capability | Functions | Rows |
+|---|---|---|
+| `game.vehicles.seats` | `player_ship`, `seats`, `seat_occupant` | `teleport.entity_system`, `spawn.landing_helper`, `spawn.find_seat`, `spawn.seat_callback`, `spawn.for_each_seat`, `spawn.seat_priority`, `spawn.handle_to_id` (and the `teleport.*` reads) |
+| `game.vehicles.seat` | `seat`, `eject` | the seats rows, `spawn.seat_interactable`, `spawn.is_linked`, `spawn.force_delink`, `spawn.actor_of_user`, `spawn.actor_link`, `spawn.force_link` |
+| `game.vehicles.flight_ready` | `power_on` | the seats rows, `spawn.toggle_flight_ready` |
+
+```c
+const sc_vehicles_v1* veh = NULL;
+if (api->size > offsetof(sco_api, query_service) &&
+    api->query_service(SC_VEHICLES_SERVICE_NAME, SC_VEHICLES_SERVICE_VERSION, (const void**)&veh) == SCO_OK &&
+    api->has("game.vehicles.seats")) { ... }
+```
+
+Every function returns `sco_result` and is game thread only: from another thread it answers `SCO_WRONG_THREAD` without touching the game. A function whose capability isn't ready answers `SCO_UNAVAILABLE`. Every failure leaves its reason for `last_error`. The functions that change the game take `self` first, and the game pack logs each of them with your plugin id (`[game] vehicles: <plugin>: ...`).
+
+| Function | What |
+|---|---|
+| `player_ship(&ship)` | The ship you're aboard. `SCO_NOT_FOUND`: in no ship; `SCO_UNAVAILABLE`: not spawned yet |
+| `seats(ship, out, max, &count, &more)` | Writes up to `max` `sc_vehicle_seat`s (96 bytes each) into your array: `index`, the seat item's `seat_id`, `occupant_id` (0: empty or unknown), `priority`, `name` (64 bytes, NUL-terminated) and `flags`; `more` is 1 when the ship has more seats than were written. `out` may be `NULL` with `max` 0 |
+| `seat_occupant(ship, seat_index, &actor)` | The actor in a seat, 0 when it's empty. `SCO_FAILED` when it's occupied by something the game pack can't decode |
+| `seat(self, actor, ship, seat_index)` | Links `actor` into the seat, out of any seat it was in. `SCO_OK` = the game accepted the link; check `seat_occupant` on a later tick |
+| `eject(self, actor)` | Takes `actor` out of its seat. `SCO_FAILED` when it isn't seated |
+| `power_on(self, ship)` | Sends the game's Flight Ready event to the pilot seat's dashboard (as R in the pilot seat). `SCO_FAILED` while no dashboard is streamed in yet: try again on a later tick |
+| `last_error(self, out, &size)` | The reason for the last failure, with `sco.storage`'s size handshake: on the game thread the newer of your own last failed call and the last failed query (queries carry no `self`), so ask right after the call; on another thread the refusal on that thread |
+
+Seat flags: `SC_SEAT_USABLE` (the game's own seat picker takes the seat: its owner has a live `IInteractableComponent`), `SC_SEAT_USABLE_KNOWN` (the game pack could check that on this build; without it usability is unknown, not "no"), `SC_SEAT_OCCUPIED` (the occupant field isn't 0), `SC_SEAT_PILOT` (the highest-priority seat). Ships list turret items and remote-operated parts as seats too; the game never puts anyone in them, and `seat` refuses any seat without `SC_SEAT_USABLE` (`SCO_FAILED`, "isn't interactable"). It never evicts: a seat someone else is in is `SCO_FAILED`.
+
+Whose actors and ships: `seat` and `eject` take your player's own actor, or an actor your plugin spawned through `spawn.entities`' `spawn_as` while your plugin is loaded. `power_on` takes the ship you're aboard, the player's registered vehicles (`RegisterPlayerVehicle`) and ships your plugin spawned through `spawn_as`. Anything else is `SCO_BAD_ARG`. Seat indexes are positions in the list `seats` returns; they hold while the ship stays streamed in, and `seat` / `seat_occupant` read the list afresh each call. Ids are session handles: never store one.
+
 ## Raw handlers (1.1)
 
 A raw handler is a call that takes and returns bytes: for data that doesn't fit a command's typed arguments and 256-byte reply (a list of entities, a transform, a buffer). The bytes' layout is the handler's contract, as a service table's is; put a size or version field first.

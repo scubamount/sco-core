@@ -4,10 +4,12 @@
 // Platform::gameServices and the game pack's services are built (SCO_GAME_SC, Windows: the
 // sco_game_services library, which defines SCO_GAME_SERVICES); Stop calls Stop after UnloadAll.
 //
-// Today: teleport.spatial 1.0 (sc_spatial.h) and spawn.entities 1.2 (sc_spawn.h). teleport.spatial
+// Today: teleport.spatial 1.0 (sc_spatial.h), spawn.entities 1.2 (sc_spawn.h) and game.vehicles 1.0
+// (sc_vehicles.h; capabilities game.vehicles.seats / .seat / .flight_ready). teleport.spatial
 // answers 0 until the teleport.* rows are resolved (the product's ResolveAll before Start) and
 // you've spawned; spawn.entities answers "the spawner isn't available on this game build" (and 0)
-// unless the spawn.helpers rows (sco/game/actors.h) were OK at Start too.
+// unless the spawn.helpers rows (sco/game/actors.h) were OK at Start too; game.vehicles answers
+// SCO_UNAVAILABLE for each system whose rows weren't.
 #include "sco/runtime.h"
 #include <cstdint>
 

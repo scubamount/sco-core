@@ -21,6 +21,7 @@ Fly mode (`spawn.request_fly_mode`) and Clear NPCs' RemoveEntity slot (`npc.remo
 | `spawn.seat_callback` | `lea rax` at find_seat +0x21C | `call [rax+0x778]` +0x1D6; callback `cmp [rdi+0x158], 0` +0x37. *Sweep:* `mov r8d, 193` +0x223 | `spawn.seat_picker` |
 | `spawn.is_linked`, `.force_delink`, `.for_each_seat`, `.actor_of_user`, `.handle_to_id`, `.actor_link`, `.force_link` | calls at find_seat +0xB2, +0x19C, +0x242, +0x3CE, +0x3F1, +0x3FE, +0x40B | E8 each | `spawn.seat_picker` |
 | `spawn.seat_priority` | call at seat_callback +0xD6 | E8 | `spawn.seat_picker` |
+| `spawn.seat_interactable` | call at seat_callback +0x22: the getter of the seat owner's `IInteractableComponent` (the callback's first test, +0x1A..+0x31) | callback `lea rdx; mov rcx, rdi; call; mov rcx, rax; call; test al, al; je` +0x1A; getter `mov rax, [rcx+8]` +0x06, `mov rsi, [rax+0x390]` +0x48, `mov rcx, [components]` +0x5B (= `teleport.entity_system`+8), `lea r8` +0x62 naming `"IInteractableComponent"`, `call [rax+0x10]` +0x6E | `spawn.seat_gate` |
 | `spawn.find_entity_by_name` | the `lea rcx` of "FindEntityByName_SlowDebugCodeOnly: %s" minus 0x36 | exactly one of the references has the prologue | `spawn.find_by_name` |
 | `spawn.toggle_flight_ready` | the Events/ISC/Dashboards.h sender whose r8d line is 0x49 | exactly one sender; `48 89 5C 24` start, `mov rdi, rdx`, `mov [rsp+..], r8` | `spawn.flight_ready` |
 | `spawn.game_cvars` | `mov [rip+X], rax` after the 0x98-byte allocation (unique pattern) | - | `spawn.fly_speed` |
@@ -44,6 +45,7 @@ Fly mode (`spawn.request_fly_mode`) and Clear NPCs' RemoveEntity slot (`npc.remo
 |---|---|---|
 | `spawn.helpers` | `teleport.entity_system`, landing helper and its calls, params ctor, find_seat | ship spawner (and NPCs, build mode, crates that ride it) |
 | `spawn.seat_picker` | find_seat, seat_callback and the eight call rows | seat control (Crew & seats), "sit in pilot seat" |
+| `spawn.seat_gate` | `spawn.seat_callback`, `spawn.seat_interactable` | `game.vehicles`: a seat is usable only when the game's seat picker would take it (the Javelin bulk fill) |
 | `spawn.find_by_name` | `spawn.find_entity_by_name` | spawn above Daymar |
 | `spawn.flight_ready` | `spawn.toggle_flight_ready` | Flight Ready after spawning (else presses R) |
 | `spawn.fly_speed` | `spawn.game_cvars`, `spawn.fly_speed_scaler` | noclip speed |
