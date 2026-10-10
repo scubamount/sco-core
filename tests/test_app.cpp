@@ -461,11 +461,11 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     // it requires, whatever the folder order (aaa_user sorts before m11, whose service it needs).
     // Host services (sco.storage, sco.ui) count as provided; a cycle, a missing provider and a
     // game service the host doesn't publish are refused with a reason, and nothing else is affected.
-    auto makeLua = [&](const char* id, const char* requires, const char* script = "-- nothing to do\n") {
+    auto makeLua = [&](const char* id, const char* needs, const char* script = "-- nothing to do\n") {
         fs::create_directories(root / id);
         std::FILE* f = std::fopen((root / id / "plugin.ini").string().c_str(), "wb");
         std::fprintf(f, "id = %s\nname = %s\nversion = 1.0.0\napi = 1.0\nkind = lua\nentry = main.lua\n", id, id);
-        if (*requires) std::fprintf(f, "requires = %s\n", requires);
+        if (*needs) std::fprintf(f, "requires = %s\n", needs);
         std::fclose(f);
         f = std::fopen((root / id / "main.lua").string().c_str(), "wb");
         std::fputs(script, f);
