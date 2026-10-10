@@ -1,6 +1,7 @@
 // Services: function tables published by one owner and found by name (sco/runtime.h).
 #include "sco/runtime.h"
 #include "internal.h"
+#include <algorithm>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -19,6 +20,10 @@ struct Service {
 
 std::mutex           g_lock;
 std::vector<Service> g_services;
+// Owners whose table QueryService has returned at least once. Kept after the services are
+// withdrawn: the loader asks once the owner is released, to keep its module mapped. One pointer
+// per provider (owners are never reused), so it stays small.
+std::vector<const void*> g_handedOut;
 
 bool ValidServiceName(const char* name) {
     if (!name) return false;
@@ -60,10 +65,23 @@ Result QueryService(const char* name, uint32_t minVersion, const void** out) {
     for (const Service& s : g_services) {
         if (s.name != name) continue;
         if ((s.version >> 16) != (minVersion >> 16) || s.version < minVersion) return Result::Unavailable;
+        // Record the hand-out first: a table that is returned must be one the loader knows about.
+        if (std::find(g_handedOut.begin(), g_handedOut.end(), s.owner) == g_handedOut.end()) {
+            try {
+                g_handedOut.push_back(s.owner);
+            } catch (...) {
+                return Result::TooMany;   // nothing handed out
+            }
+        }
         *out = s.table;
         return Result::Ok;
     }
     return Result::NotFound;
+}
+
+bool ServiceTableHandedOut(const void* owner) {
+    std::lock_guard<std::mutex> hold(g_lock);
+    return std::find(g_handedOut.begin(), g_handedOut.end(), owner) != g_handedOut.end();
 }
 
 Result ReleaseService(const void* owner, const char* name) {

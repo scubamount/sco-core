@@ -31,6 +31,8 @@ plugin() {   # plugin <id> <mode>
 }
 for m in 0 1 2 3 4 5 6 7 8 9 10; do plugin "m$m" "$m"; done
 plugin m11 0
+for p in svc_provider svc_prov_b svc_prov_c svc_prov_d; do plugin "$p" 11; done
+plugin svc_caller 12
 mkdir -p "$PLUG/text"
 printf 'id = text\nname = Not a library\nversion = 1\napi = 1.0\nkind = native\nentry = text.dll\n' > "$PLUG/text/plugin.ini"
 echo "not a DLL" > "$PLUG/text/text.dll"

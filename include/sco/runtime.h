@@ -70,6 +70,10 @@ Result RemoveReleaseHook(ReleaseHook hook);
 // A caller that holds a table must stop using it when its provider unloads: query it when
 // needed rather than caching it across ticks (built-in plugins unload after every other plugin,
 // so a table from a built-in stays valid for the life of any plugin that queried it).
+// A native plugin whose table was handed out is never unmapped by the plugin loader, even after it
+// unloads or crashes (ServiceTableHandedOut): a caller that kept the table jumps into code that is
+// still there, running against the provider's torn-down state, which is the provider's to guard.
+// A fault inside such a call is blamed on the provider, not on the caller (sco/plugins.h).
 
 constexpr size_t kMaxServiceNameLen = 63;
 
@@ -83,8 +87,14 @@ Result ProvideService(const void* owner, const char* prefix, const char* name, u
 
 // Finds a published service. Ok: *out = its table. NotFound: no service by that name.
 // Unavailable: its major version differs from minVersion's, or it is older than minVersion.
-// BadArg: null name or out. *out is null unless Ok.
+// BadArg: null name or out. TooMany: out of memory (nothing handed out). *out is null unless Ok.
+// Ok marks the provider as handed out, for the rest of the process (see above).
 Result QueryService(const char* name, uint32_t minVersion, const void** out);
+
+// True once QueryService has returned a table of `owner`'s, even if that service has been
+// withdrawn since. Final once Release(owner) has returned: nothing of owner's can be queried
+// after that. Any thread.
+bool ServiceTableHandedOut(const void* owner);
 
 // Withdraws one of owner's services. NotFound: owner publishes nothing by that name.
 // BadArg: null owner or name.

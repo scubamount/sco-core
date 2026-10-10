@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <memory>
+#include <new>
 #include <system_error>
 
 #ifdef _WIN32
@@ -73,9 +75,30 @@ static std::atomic<CallGuard> g_guard{ nullptr };
 
 void SetCallGuard(CallGuard guard) { g_guard.store(guard); }
 
-uint32_t Guarded(void (*thunk)(void*), void* ctx) {
+// What the guard on this thread reported about the last fault it caught (internal.h).
+static thread_local detail::FaultTrace t_trace;
+
+void detail::RecordFaultTrace(void* const* modules, uint32_t n) {
+    t_trace.n = n < kMaxTraceFrames ? n : kMaxTraceFrames;
+    for (uint32_t i = 0; i < t_trace.n; ++i) t_trace.modules[i] = modules[i];
+}
+
+// Guarded() that also hands back the fault trace. The trace is cleared before the call and after
+// it, so one a guard left behind (a fault in a call nobody asked about) never reaches a later,
+// unrelated fault; a guard that doesn't report leaves it empty.
+static uint32_t GuardedTraced(void (*thunk)(void*), void* ctx, detail::FaultTrace& out) {
+    t_trace.n = 0;
     const CallGuard g = g_guard.load();
-    return g ? g(thunk, ctx) : detail::DefaultGuard(thunk, ctx);
+    const uint32_t code = g ? g(thunk, ctx) : detail::DefaultGuard(thunk, ctx);
+    out.n = code ? t_trace.n : 0;
+    for (uint32_t i = 0; i < out.n; ++i) out.modules[i] = t_trace.modules[i];
+    t_trace.n = 0;
+    return code;
+}
+
+uint32_t Guarded(void (*thunk)(void*), void* ctx) {
+    detail::FaultTrace unused;
+    return GuardedTraced(thunk, ctx, unused);
 }
 
 // ---- helpers --------------------------------------------------------------------------------
@@ -169,10 +192,26 @@ static std::atomic<uint32_t> g_loadCounter{ 0 };
 
 // ---- load / unload --------------------------------------------------------------------------
 
-// Refuses p: closes its module (natives), forgets its exports, logs. Always false.
-static bool RefuseLoad(Plugin& p, std::string why, const ModuleOps* ops) {
+// True when a service table of p's was handed out by query_service: its code must stay mapped for
+// the session, because a caller may still hold the table. Ask after sco::Release(p.self) has
+// withdrawn p's services: from then on no new table can be handed out, so the answer is final.
+static bool KeepMapped(const Plugin& p) {
+    if (!p.self || !sco::ServiceTableHandedOut(p.self)) return false;
+    sco::Log("[plugin] %s: kept mapped: its service table was handed out", IdOf(p));
+    return true;
+}
+
+// Closes p's module (natives) unless KeepMapped; p.module stays set while the module does, so a
+// fault inside it is still attributed to p.
+static void CloseOrKeep(Plugin& p, const ModuleOps* ops) {
+    if (p.module && ops && KeepMapped(p)) return;
     if (p.module && ops) ops->close(p.module);
     p.module = nullptr;
+}
+
+// Refuses p: closes its module (natives), forgets its exports, logs. Always false.
+static bool RefuseLoad(Plugin& p, std::string why, const ModuleOps* ops) {
+    CloseOrKeep(p, ops);
     p.exports = {};
     p.state = State::Refused;
     p.reason = std::move(why);
@@ -293,13 +332,62 @@ void MarkCrashed(Plugin& p, const char* where, uint32_t code) {
     Crash(p, where ? where : "a callback", code);
 }
 
-bool CallPlugin(Plugin& p, const char* where, void (*thunk)(void*), void* ctx) {
-    if (p.state != State::Loaded || !thunk) return false;
-    if (const uint32_t code = Guarded(thunk, ctx)) { MarkCrashed(p, where, code); return false; }
-    return true;
+static std::vector<Plugin>* g_contained = nullptr;   // game thread only
+
+// The plugin whose code faulted when it is not the callout's owner: the first frame, innermost
+// first, that lies in a plugin's module. Null (blame the owner) when there is no list, no trace,
+// no plugin frame, or the first plugin frame is the owner's. Frames of host, game and built-in
+// code never name anyone: built-ins share the product's module.
+static Plugin* FindCulprit(const Plugin& owner, const detail::FaultTrace& trace) {
+    if (!g_contained) return nullptr;
+    for (uint32_t i = 0; i < trace.n; ++i)
+        for (Plugin& q : *g_contained)
+            if (q.module && q.module == trace.modules[i]) return &q == &owner ? nullptr : &q;
+    return nullptr;
 }
 
-static std::vector<Plugin>* g_contained = nullptr;   // game thread only
+// A provider faulted inside a service call made from `caller`'s callout. Marks it Crashed; one
+// that is not Loaded any more (crashed already, or unloaded with its module kept mapped) only gets
+// a log line. Game thread.
+static void BlameProviderNow(Plugin& culprit, const char* where, uint32_t code) {
+    if (culprit.state == State::Loaded) { MarkCrashed(culprit, where, code); return; }
+    sco::Log("[plugin] %s faulted again in %s (0x%08X); it is already %s", IdOf(culprit), where, code,
+             StateName(culprit.state));
+}
+
+struct Blame {
+    Plugin*  culprit;
+    uint32_t code;
+    char     where[96];
+};
+
+static void BlameTask(void* c) {
+    const std::unique_ptr<Blame> b(static_cast<Blame*>(c));
+    BlameProviderNow(*b->culprit, b->where, b->code);
+}
+
+// MarkCrashed is game-thread only (it releases the owner and edits the Plugin), so off the game
+// thread the verdict is queued as a task and applied there.
+static void BlameProvider(Plugin& culprit, const Plugin& caller, uint32_t code) {
+    Blame tmp{ &culprit, code, {} };
+    std::snprintf(tmp.where, sizeof(tmp.where), "a service call from %s", IdOf(caller));
+    if (sco::OnGameThread()) { BlameProviderNow(culprit, tmp.where, code); return; }
+    Blame* b = new (std::nothrow) Blame(tmp);
+    if (b && sco::Post(BlameTask, b, nullptr) == sco::Result::Ok) return;
+    delete b;
+    sco::Log("[plugin] %s faulted in %s (0x%08X); could not queue it, so it stays enabled", IdOf(culprit), tmp.where, code);
+}
+
+bool CallPlugin(Plugin& p, const char* where, void (*thunk)(void*), void* ctx) {
+    if (p.state != State::Loaded || !thunk) return false;
+    detail::FaultTrace trace;
+    if (const uint32_t code = GuardedTraced(thunk, ctx, trace)) {
+        if (Plugin* culprit = FindCulprit(p, trace)) BlameProvider(*culprit, p, code);   // p's callout was aborted; p is fine
+        else MarkCrashed(p, where, code);
+        return false;
+    }
+    return true;
+}
 
 static bool ContainedCallout(const void* owner, const char* where, TaskFn thunk, void* ctx) {
     Plugin* p = nullptr;
@@ -326,8 +414,7 @@ static void UnloadCode(Plugin& p, const ModuleOps* ops) {
     }
     if (p.state != State::Loaded) return;   // a nested fault in unload() marked it Crashed: keep that
     if (const Result r = ReleaseOwner(p); r != Result::Ok) { ReleaseFailed(p, r); return; }   // never unmap
-    if (p.module && ops) ops->close(p.module);
-    p.module = nullptr;
+    CloseOrKeep(p, ops);   // stays mapped when a service table of p's was handed out
     p.exports = {};
     p.state = State::Unloaded;
     sco::Log("[plugin] unloaded %s", IdOf(p));

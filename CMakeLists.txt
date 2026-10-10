@@ -686,6 +686,8 @@ if(SCO_BUILD_TESTS)
     list(APPEND _fakes "m${m}:${m}")
   endforeach()
   list(APPEND _fakes "m11:0")   # a second clean plugin
+  # Service blame and pin tests: four providers (mode 11) and a caller (mode 12).
+  list(APPEND _fakes "svc_provider:11" "svc_prov_b:11" "svc_prov_c:11" "svc_prov_d:11" "svc_caller:12")
   set(_fake_targets)
   foreach(fake IN LISTS _fakes)
     string(REPLACE ":" ";" fake "${fake}")

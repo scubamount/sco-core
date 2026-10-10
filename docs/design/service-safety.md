@@ -1,6 +1,6 @@
 # Design: service calls that fault, and providers that unload (M1)
 
-Status: proposal, 2026-10-10. No code yet. Audit item M1 (2026-10-10): `query_service` hands the caller the provider's own function table, so the host neither guards nor tracks calls into it.
+Status: Part 1 and Part 3 implemented (2026-10-10; no ABI change). Part 2 (`guard_call`) and `ServiceRef` are not built. As built: the Windows filter walks at most 32 frames and stops at the guard's own frame; a stack overflow is not walked (blamed on the owner); the faulting-module trace is per thread and read by `CallPlugin`; load, unload, query and script-load faults keep owner blame; the pin flag is per owner and set by `QueryService`, read after `Release` (when no new table can be handed out); the POSIX default guard doesn't contain faults at all, so POSIX has owner blame unless a test guard reports the module. The problem section below describes the code before this change. Audit item M1 (2026-10-10): `query_service` hands the caller the provider's own function table, so the host neither guards nor tracks calls into it.
 
 ## The problem, in today's code
 

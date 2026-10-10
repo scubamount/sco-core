@@ -4,8 +4,13 @@
 // Off Windows there is no SEH, so the crash tests install a guard that turns SIGSEGV/SIGBUS in
 // plugin code into a fault code with sigsetjmp/siglongjmp; the Windows run (tools/test-win.sh)
 // uses the real __try guard.
+// The service tests (TestServices) need to know which plugin's code faulted. On Windows the real
+// guard walks the faulting frames; off Windows the stand-in guard reports the module the test names
+// in g_faultModule, so the loader's blame logic is covered on both, and the walk itself only on
+// Windows.
 //   tools/test.sh
 #include "sco/plugins.h"
+#include "../src/plugins/internal.h"
 #include "sco/log.h"
 #include "sco/runtime.h"
 #include "sco/status.h"
@@ -359,6 +364,10 @@ static void TestContentIndex() {
 
 // ---- native loader --------------------------------------------------------------------------
 
+// The module the next fault is reported in (a stand-in for the frame walk of guard_win.cpp):
+// used by SignalGuard and ReportingGuard; the real Windows guard ignores it.
+static void* g_faultModule = nullptr;
+
 // Fault guard for the host build: SIGSEGV/SIGBUS inside thunk jumps back here.
 #ifndef _WIN32
 static sigjmp_buf g_jump;
@@ -386,6 +395,10 @@ static uint32_t SignalGuard(void (*thunk)(void*), void* ctx) {
     g_inGuard = 0;
     sigaction(SIGSEGV, &oldSegv, nullptr);
     sigaction(SIGBUS, &oldBus, nullptr);
+    if (code && g_faultModule) {
+        void* mods[1] = { g_faultModule };
+        P::detail::RecordFaultTrace(mods, 1);
+    }
     return code;
 }
 #endif
@@ -410,6 +423,33 @@ static void ApiLog(sco_plugin* self, sco_log_level, const char* message) {
     sco::Log("[%s] %s", p ? p->manifest.id.c_str() : "?", message);
 }
 
+static sco_result ApiProvideService(sco_plugin* self, const char* name, uint32_t version, const void* table) {
+    const P::Plugin* p = PluginOf(self);
+    if (!p) return SCO_BAD_ARG;
+    return static_cast<sco_result>(sco::ProvideService(self, p->manifest.id.c_str(), name, version, table));
+}
+static sco_result ApiQueryService(const char* name, uint32_t minVersion, const void** out) {
+    return static_cast<sco_result>(sco::QueryService(name, minVersion, out));
+}
+
+// Commands: the plugin's sco_command_fn runs behind a runtime CommandFn (arguments are not used).
+struct TestCmd { sco_command_fn fn; void* ctx; };
+static TestCmd g_cmds[16];
+static size_t g_nCmds = 0;
+static sco::Result CmdTrampoline(const sco::Arg* args, uint32_t nargs, void* ctx, char* reply, uint32_t replySize) {
+    const TestCmd* c = static_cast<const TestCmd*>(ctx);
+    return static_cast<sco::Result>(c->fn(reinterpret_cast<const sco_arg*>(args), nargs, c->ctx, reply, replySize));
+}
+static sco_result ApiRegisterCommand(sco_plugin* self, const sco_command* cmd) {
+    const P::Plugin* p = PluginOf(self);
+    if (!p || g_nCmds == sizeof(g_cmds) / sizeof(g_cmds[0])) return SCO_BAD_ARG;
+    g_cmds[g_nCmds] = { cmd->fn, cmd->ctx };
+    const sco::Command c{ cmd->name, cmd->title, cmd->help, cmd->capability, nullptr, 0, CmdTrampoline, &g_cmds[g_nCmds] };
+    const sco::Result r = sco::RegisterCommand(self, p->manifest.id.c_str(), c);
+    if (r == sco::Result::Ok) ++g_nCmds;
+    return static_cast<sco_result>(r);
+}
+
 static sco_api MakeApi() {
     sco_api api{};
     api.size = sizeof(api);
@@ -419,6 +459,9 @@ static sco_api MakeApi() {
     api.has = ApiHas;
     api.subscribe = ApiSubscribe;
     api.log = ApiLog;
+    api.register_command = ApiRegisterCommand;
+    api.provide_service = ApiProvideService;
+    api.query_service = ApiQueryService;
     return api;
 }
 
@@ -468,7 +511,7 @@ static void TestNative() {
     P::ContainCallouts(&list);   // the real crash containment path: runtime -> CallPlugin
     const sco_api api = MakeApi();
     auto get = [&](const char* id) -> P::Plugin& { return *const_cast<P::Plugin*>(Find(list, id)); };
-    CHECK(list.size() == 13);   // m0..m11 + text
+    CHECK(list.size() == 18);   // m0..m11, svc_provider, svc_prov_b/c/d, svc_caller, text
     for (const auto& p : list) CHECK(p.state == State::Ready);
 
     g_log.clear();
@@ -606,6 +649,162 @@ static void TestNative() {
     P::SetCallGuard(nullptr);
 }
 
+// ---- service blame and pin (docs/design/service-safety.md parts 1 and 3) ----------------------
+
+// fake_plugin.c's fake_service.
+struct FakeService {
+    uint32_t size;
+    int (*ok)();
+    int (*boom)();
+};
+
+static void DoneCapture(sco::Result r, const char*, void* ctx) { *static_cast<sco::Result*>(ctx) = r; }
+
+// Invokes a command on the game thread; its result, which done also got.
+static sco::Result RunCommand(const char* name) {
+    sco::Result done = sco::Result::Failed;
+    const sco::Result r = sco::Invoke(name, nullptr, 0, DoneCapture, &done);
+    CHECK(r == done);
+    return r;
+}
+
+// A guard that runs nothing and reports a fault in g_faultModule (the loader's off-thread path).
+static uint32_t ReportingGuard(void (*)(void*), void*) {
+    void* mods[1] = { g_faultModule };
+    P::detail::RecordFaultTrace(mods, 1);
+    return 0xC0000005u;
+}
+
+static sco::Result g_nestedResult = sco::Result::Failed;
+static void NestedBoom(void*) { g_nestedResult = RunCommand("svc_caller.boom"); }
+
+static void TestServices() {
+    const fs::path root = g_out / "plugins";
+    if (!fs::is_directory(root)) { std::printf("FAIL: %s missing (tools/test.sh builds it)\n", root.string().c_str()); ++g_fail; return; }
+#ifndef _WIN32
+    P::SetCallGuard(SignalGuard);
+#endif
+    P::Options on;
+    on.enabled = true;
+    const sco_api api = MakeApi();
+    const void* table = nullptr;
+    const uint32_t v1 = 1u << 16;
+
+    // Part 1, one callout deep: svc_caller's command calls svc_provider's service, which faults.
+    auto list = P::Discover(root, on);
+    g_list = &list;
+    P::ContainCallouts(&list);
+    auto get = [&](std::vector<P::Plugin>& l, const char* id) -> P::Plugin& { return *const_cast<P::Plugin*>(Find(l, id)); };
+    {
+        P::Plugin& prov = get(list, "svc_provider");
+        P::Plugin& caller = get(list, "svc_caller");
+        CHECK(P::LoadNative(prov, &api, NewOwner(), on, kRecOps));
+        CHECK(P::LoadNative(caller, &api, NewOwner(), on, kRecOps));
+        CHECK(!sco::ServiceTableHandedOut(prov.self));                         // nobody asked yet
+        CHECK(RunCommand("svc_caller.ok") == sco::Result::Ok);
+        CHECK(sco::ServiceTableHandedOut(prov.self));                          // the caller's query handed it out
+
+        g_faultModule = prov.module;
+        g_log.clear();
+        CHECK(RunCommand("svc_caller.boom") == sco::Result::Crashed);         // the command answers crashed
+        g_faultModule = nullptr;
+        CHECK(prov.state == State::Crashed);                                   // the provider is blamed ...
+        CHECK(prov.reason == "crashed in a service call from svc_caller (0xC0000005)");
+        CHECK(Logged("[plugin] svc_provider crashed in a service call from svc_caller (0xC0000005) and was disabled"));
+        CHECK(caller.state == State::Loaded);                                  // ... the caller is not
+        CHECK(prov.module != nullptr);                                         // its code stays mapped
+        CHECK(sco::QueryService("svc_provider.svc", v1, &table) == sco::Result::NotFound);   // services withdrawn
+        CHECK(RunCommand("svc_caller.ok") == sco::Result::NotFound);          // the caller keeps working
+        CHECK(caller.state == State::Loaded);
+
+        // The caller still holds the table of the crashed provider and calls it again: the fault is in
+        // the provider's code once more, and the provider (already Crashed) is still the one named.
+        g_faultModule = prov.module;
+        g_log.clear();
+        CHECK(RunCommand("svc_caller.cached") == sco::Result::Crashed);
+        g_faultModule = nullptr;
+        CHECK(caller.state == State::Loaded);
+        CHECK(Logged("[plugin] svc_provider faulted again in a service call from svc_caller (0xC0000005); it is already crashed"));
+
+        // A fault in the callout owner's own code is still the owner's.
+        g_faultModule = caller.module;
+        CHECK(RunCommand("svc_caller.self") == sco::Result::Crashed);
+        g_faultModule = nullptr;
+        CHECK(caller.state == State::Crashed && caller.reason == "crashed in svc_caller.self (0xC0000005)");
+    }
+    P::ContainCallouts(nullptr);
+
+    // Fresh entries over the same (still mapped) modules.
+    auto again = P::Discover(root, on);
+    g_list = &again;
+    P::ContainCallouts(&again);
+    P::Plugin& prov = get(again, "svc_provider");
+    P::Plugin& caller = get(again, "svc_caller");
+    P::Plugin& outer = get(again, "m11");   // a clean plugin whose callout runs the command
+    CHECK(P::LoadNative(prov, &api, NewOwner(), on, kRecOps));
+    CHECK(P::LoadNative(caller, &api, NewOwner(), on, kRecOps));
+    CHECK(P::LoadNative(outer, &api, NewOwner(), on, kRecOps));
+
+    // Part 1, nested: a callout of `outer` runs the caller's command, which faults in the provider.
+    // Only the innermost guard catches it; the outer callout carries on and completes.
+    g_faultModule = prov.module;
+    g_nestedResult = sco::Result::Failed;
+    CHECK(P::CallPlugin(outer, "outer", NestedBoom, nullptr));
+    g_faultModule = nullptr;
+    CHECK(g_nestedResult == sco::Result::Crashed);
+    CHECK(prov.state == State::Crashed && caller.state == State::Loaded && outer.state == State::Loaded);
+
+    // Off the game thread MarkCrashed can't run: the verdict is queued and applied on the game thread.
+    P::Plugin& offProv = get(again, "svc_prov_d");
+    CHECK(P::LoadNative(offProv, &api, NewOwner(), on, kRecOps));
+    g_faultModule = offProv.module;
+    P::SetCallGuard(ReportingGuard);
+    bool completed = true;
+    std::thread([&] { completed = P::CallPlugin(outer, "off", [](void*) {}, nullptr); }).join();
+    CHECK(!completed);
+    CHECK(offProv.state == State::Loaded && outer.state == State::Loaded);   // queued, not applied off thread
+    CHECK(sco::DrainTasks() >= 1);
+    CHECK(offProv.state == State::Crashed && offProv.reason == "crashed in a service call from m11 (0xC0000005)");
+    CHECK(outer.state == State::Loaded);
+    g_faultModule = nullptr;
+#ifndef _WIN32
+    P::SetCallGuard(SignalGuard);
+#else
+    P::SetCallGuard(nullptr);
+#endif
+
+    // Part 3: a provider whose table was handed out stays mapped when it unloads; one nobody asked
+    // for is closed as before. g_closed counts ModuleOps.close calls.
+    P::Plugin& pinned = get(again, "svc_prov_b");
+    P::Plugin& plain = get(again, "svc_prov_c");
+    CHECK(P::LoadNative(pinned, &api, NewOwner(), on, kRecOps));
+    CHECK(P::LoadNative(plain, &api, NewOwner(), on, kRecOps));
+    CHECK(sco::QueryService("svc_prov_b.svc", v1, &table) == sco::Result::Ok && table);
+    const auto* held = static_cast<const FakeService*>(table);
+    g_closed.clear();
+    g_log.clear();
+    P::UnloadNative(pinned, kRecOps);
+    CHECK(pinned.state == State::Unloaded);                                    // state changes as today
+    CHECK(g_closed.empty());                                                   // but close was skipped
+    CHECK(pinned.module != nullptr);
+    CHECK(Logged("[plugin] svc_prov_b: kept mapped: its service table was handed out"));
+    CHECK(Logged("[plugin] unloaded svc_prov_b"));
+    const int* unloads = static_cast<const int*>(P::PlatformModuleOps().symbol(pinned.module, "fake_unload_calls"));
+    CHECK(unloads && *unloads == 1);                                           // unload() ran once
+    CHECK(sco::QueryService("svc_prov_b.svc", v1, &table) == sco::Result::NotFound);   // withdrawn
+    CHECK(held->ok() == 7);                                                    // the held table still points at mapped code
+    g_log.clear();
+    P::UnloadNative(plain, kRecOps);
+    CHECK(plain.state == State::Unloaded && !plain.module);
+    CHECK(g_closed.size() == 1);                                               // closed: nothing was handed out
+    CHECK(!Logged("kept mapped"));
+
+    P::UnloadAll(again, kRecOps);
+    P::ContainCallouts(nullptr);
+    g_list = nullptr;
+    P::SetCallGuard(nullptr);
+}
+
 int main(int argc, char** argv) {
     if (argc < 3) { std::printf("usage: test_plugins <fixtures dir> <out dir>\n"); return 2; }
     g_fixtures = argv[1];
@@ -617,6 +816,7 @@ int main(int argc, char** argv) {
     TestDiscoverLimits();
     TestContentIndex();
     TestNative();
+    TestServices();
     std::printf("sco-core plugin tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }
