@@ -42,6 +42,7 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
 | [DataCore files and packs](datacore.md) | `sco-dcb info`, `records`, `lint`, `check`, `show` and `diff`: extracting `Game2.dcb`, the layout check, the `.toml` pack format, the `sco.datacore` service, exit codes |
 | [Design: multiplayer and cross-game bridges](design/multiplayer.md) | The scope change of 2026-10-09, what the fork's multiplayer code does, the `sco.net` and `sco.ipc` services, the `sco::game::net` rows, sc-offline's built-ins and the PR plan; in review |
 | [Design: game-file overrides and DataCore patches](design/vfs-datacore.md) | `sco::vfs`, `sco::game::pak`, the DataCore layout, a semantic patcher (with `AddRecord`), `.toml` overrides in data packs and the `sco.datacore` service; decisions of 2026-10-09 |
+| [Design: service calls that fault, and providers that unload](design/service-safety.md) | Audit item M1: blame by faulting address (no ABI change), an opt-in provider-side `guard_call` (1.2), pinning provider modules now and a counted `ServiceRef` once hot reload exists; proposal of 2026-10-10 |
 
 ## Working on sco-core
 
