@@ -675,14 +675,17 @@ Public License instead of this License.  But first, please read
 
 ------------------------------------------------------------------------------
 
-Interface exception: include/sc_ipc.h and include/sc_net.h
+Interface exception: include/sc_ipc.h, include/sc_net.h,
+include/sc_titanlink.h and include/sc_voxel_bridge.h
 
 Everything in sco-core is licensed under the GNU General Public License
-version 3 above, except two files: include/sc_ipc.h, the shared-memory wire
-format of sco.ipc bridges, and include/sc_net.h, the datagram wire format of
-sco.net sessions. Each carries the per-file tag "SPDX-License-Identifier: MIT"
-and the MIT license text in its header, so a program that isn't GPL (the
-other side of a bridge, such as a plugin for another game, or another
-program speaking sco.net) may include it and speak the protocol. The
-exception covers those two files only: include/sco_ipc.h, include/sco_net.h,
-the services and the rest of sco-core remain GPL-3.0.
+version 3 above, except four files: include/sc_ipc.h, the shared-memory wire
+format of sco.ipc bridges; include/sc_net.h, the datagram wire format of
+sco.net sessions; and include/sc_titanlink.h and include/sc_voxel_bridge.h,
+the channel layouts of the TitanLink and voxel-game bridges. Each carries the
+per-file tag "SPDX-License-Identifier: MIT" and the MIT license text in its
+header, so a program that isn't GPL (the other side of a bridge, such as a
+plugin for another game, or another program speaking sco.net) may include it
+and speak the protocol. The exception covers those four files only:
+include/sco_ipc.h, include/sco_net.h, the services and the rest of sco-core
+remain GPL-3.0.

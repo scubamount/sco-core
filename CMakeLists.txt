@@ -428,6 +428,30 @@ if(SCO_BUILD_TESTS)
   endforeach()
   add_test(NAME abi_net
            COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_net_targets})
+  # The MIT bridge layouts (tests/abi_titanlink.c, tests/abi_voxel_bridge.c: sc_titanlink.h and
+  # sc_voxel_bridge.h, every size, offset and constant), the same three ways.
+  foreach(_b IN ITEMS titanlink voxel_bridge)
+    set(_abi_b_cxx "${CMAKE_CURRENT_BINARY_DIR}/abi_${_b}.cpp")
+    file(CONFIGURE OUTPUT "${_abi_b_cxx}"
+         CONTENT "#include \"${CMAKE_CURRENT_SOURCE_DIR}/tests/abi_${_b}.c\"\n")
+    add_library(sco_abi_${_b}_c OBJECT tests/abi_${_b}.c)
+    add_library(sco_abi_${_b}_cxx OBJECT "${_abi_b_cxx}")
+    set(_abi_b_targets sco_abi_${_b}_c sco_abi_${_b}_cxx)
+    if(NOT MSVC)
+      add_library(sco_abi_${_b}_short_enums OBJECT tests/abi_${_b}.c)
+      target_compile_options(sco_abi_${_b}_short_enums PRIVATE -fshort-enums)
+      list(APPEND _abi_b_targets sco_abi_${_b}_short_enums)
+    endif()
+    foreach(t IN LISTS _abi_b_targets)
+      target_include_directories(${t} PRIVATE "${SCO_INCLUDE_DIR}")
+      sco_warnings(${t})
+      if(NOT MSVC)
+        target_compile_options(${t} PRIVATE -Wpedantic)
+      endif()
+    endforeach()
+    add_test(NAME abi_${_b}
+             COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" ${_abi_config} --target ${_abi_b_targets})
+  endforeach()
 
   add_executable(test_core tests/test_core.cpp)
   target_link_libraries(test_core PRIVATE sco_core)
