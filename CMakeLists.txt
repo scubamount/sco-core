@@ -245,7 +245,7 @@ endif()
 # game memory under SEH (__try), so Windows only; SCO_GAME_SERVICES tells sco_app they're there.
 if(SCO_GAME_SC AND WIN32)
   add_library(sco_game_services STATIC src/game/services/reads.cpp src/game/services/spatial.cpp
-                                       src/game/services/spawn.cpp
+                                       src/game/services/spawn.cpp src/game/services/missions.cpp
                                        src/game/services/actors.cpp)
   target_link_libraries(sco_game_services PUBLIC sco_game_sc sco_host sco_engine)
   target_compile_definitions(sco_game_services PUBLIC SCO_GAME_SERVICES=1)

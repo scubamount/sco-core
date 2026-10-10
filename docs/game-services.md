@@ -17,3 +17,11 @@ The Star Citizen game pack publishes its services under the reserved owner `game
 - `spawn.entities`' mover lets any plugin move the player's own vehicle once the product registers it (`sco::game::services::RegisterPlayerVehicle` / `UnregisterPlayerVehicle`, `sco/game/services.h`, game thread). Entities a plugin spawned through `spawn_as` stay movable by that plugin only, and are forgotten when it unloads or crashes.
 - `game.actors` reads your player through the `teleport.*` rows and `spawn.handle_to_id`, spawns through `spawn.entities`' spawner (`spawn.helpers` rows), and removes NPCs as sc-offline's Clear NPCs did (`npc.clear` rows: RemoveEntity, checked 1.5 s later, then the `npc.direct_remove` fallback, then a move far out of range). It logs `[game] game.actors: <plugin> spawned <class> as NPC <id>` and `[game] game.actors: <plugin> unloaded: removing the <n> NPCs it spawned`. `spawn_npc` refuses when it couldn't remove the NPC again (no `npc.clear` rows, or no release hook).
 - The implementations are in `src/game/services/` (library `sco_game_services`, Windows only: game reads run under SEH). Builds without them log `[app] game services not built` and go on.
+
+## Internal game-pack helpers
+
+Not services: no table, no `query_service`. Functions in `src/game/services/` (library `sco_game_services`, Windows only) that a product links and calls, because they read live game objects a signature row can't express. They run under SEH, answer 0 on a fault, and give a stable reason string. The game thread only.
+
+| Header | Function | What |
+|---|---|---|
+| [`sco/game/missions.h`](../include/sco/game/missions.h) | `sco::game::missions::ScriptLibrary(manager, &reason)` | The mission script library, from the live mission manager (slot `0x48` of its vtable; canary `48 8B 4B` at `+0x32` of that function; the field displacement is the byte at `+0x35`; all checked on every call). 0 with `kReasonNotFound` or `kReasonNotYet`. sc-offline's `missions` built-in calls it; the lookup used to be a raw scan there. |
