@@ -5,13 +5,15 @@ The Star Citizen game pack publishes its services under the reserved owner `game
 | Service | Version | Header | Since game pack | What |
 |---|---|---|---|---|
 | `teleport.spatial` | 1.0 | [`sc_spatial.h`](../include/sc_spatial.h) | 0.1.0 | Where you are, and positions between the game's zones |
+| `spawn.entities` | 1.2 | [`sc_spawn.h`](../include/sc_spawn.h) | unreleased (after 0.1.0) | Spawn entities near you, your entity and ship ids, and move what you spawned |
 
-`teleport.spatial` keeps its name and table for all of 1.x: sc-offline's `teleport` built-in published it before game pack 0.1.0, and a plugin can't tell the difference. New game services are named `game.<name>`.
+`teleport.spatial` and `spawn.entities` keep their names and tables for all of 1.x: sc-offline's `teleport` and `spawn` built-ins published them before the game pack did, and a plugin can't tell the difference. New game services are named `game.<name>`.
 
 ## For products
 
 - `sco::host::ProvideGameService(name, version, table)` publishes under the owner `game` (`sco/host.h`): `game.<name>`, or one of the product names a game pack took over (`kGameCompatNames`). The owner is never released; `sco::app::Stop` withdraws game services after every plugin has unloaded.
-- `sco::app::Platform::gameServices = true` starts them before any plugin loads. They read the game through the `teleport.*` rows, so resolve the rows first. A product that still publishes `teleport.spatial` itself must leave it off: the second provider of a name is refused.
+- `sco::app::Platform::gameServices = true` starts them before any plugin loads. They read the game through the `teleport.*` and `spawn.*` rows, so resolve the rows first. A product that still publishes `teleport.spatial` or `spawn.entities` itself must leave it off, or drop its own provider: the second provider of a name is refused.
+- `spawn.entities`' mover lets any plugin move the player's own vehicle once the product registers it (`sco::game::services::RegisterPlayerVehicle` / `UnregisterPlayerVehicle`, `sco/game/services.h`, game thread). Entities a plugin spawned through `spawn_as` stay movable by that plugin only, and are forgotten when it unloads or crashes.
 - The implementations are in `src/game/services/` (library `sco_game_services`, Windows only: game reads run under SEH). Builds without them log `[app] game services not built` and go on.
 
 ## Internal game-pack helpers

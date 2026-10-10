@@ -122,6 +122,13 @@ bool EntityRotation(uintptr_t entity, double rot[4]) {
     return true;
 }
 
+bool SetEntityLocalPose(uintptr_t entity, const double pos[3], const double rot[4]) {
+    if (!EntitySlotsOk(entity)) return false;
+    VCall<void>(entity, 0x2B0, pos, 0, false);
+    if (rot) VCall<void>(entity, 0x2C0, rot, 0, false);
+    return true;
+}
+
 void LocalToWorld(uintptr_t zone, const double local[3], double world[3]) {
     double buf[4] = {};
     const double* r = VCall<const double*>(zone, 0x198, buf, local);

@@ -19,6 +19,9 @@
 #include "sco/ui.h"
 #include "sco_api.h"
 #include "sco_lua.h"
+#ifdef SCO_GAME_SERVICES
+#include "sc_spawn.h"
+#endif
 #include <csetjmp>
 #include <csignal>
 #include <cstdio>
@@ -452,8 +455,9 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     CHECK(api->query_service(SCO_NET_NAME, SCO_NET_VERSION_1_0, &table) == SCO_NOT_FOUND);
 
 #ifdef SCO_GAME_SERVICES
-    // gameServices: the game pack publishes teleport.spatial under "game" before plugins load and
-    // withdraws it after. With no game image the teleport.* rows aren't OK, so it answers 0.
+    // gameServices: the game pack publishes teleport.spatial and spawn.entities under "game" before
+    // plugins load and withdraws them after. With no game image the teleport.* and spawn.* rows
+    // aren't OK, so teleport.spatial answers 0 and spawn.entities says the spawner isn't available.
     pf.gameServices = true;
     CHECK(sco::app::Start(pf));
     CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_OK && table);
@@ -463,8 +467,25 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
         CHECK(static_cast<const Spatial*>(table)->size >= sizeof(Spatial));
         CHECK(static_cast<const Spatial*>(table)->player_pose(pos, rot, &zone) == 0);
     }
+    CHECK(api->query_service(SC_SPAWN_SERVICE_NAME, SC_SPAWN_SERVICE_VERSION, &table) == SCO_OK && table);
+    if (table) {
+        const auto* sp = static_cast<const sc_spawn_service_v1*>(table);
+        const double offset[3] = {};
+        const double rot[4] = { 0, 0, 0, 1 };
+        uint64_t id = 7;
+        CHECK(sp->size == sizeof(sc_spawn_service_v1));
+        const char* err = sp->spawn_near_player("DRAK_Cutlass_Black", offset, &id);
+        CHECK(err && std::strcmp(err, "the spawner isn't available on this game build") == 0 && id == 0);
+        id = 7;
+        err = sp->spawn_as(reinterpret_cast<sco_plugin*>(&table), "DRAK_Cutlass_Black", offset, &id);
+        CHECK(err && std::strcmp(err, "the spawner isn't available on this game build") == 0 && id == 0);
+        CHECK(sp->class_exists("DRAK_Cutlass_Black") == 0);
+        CHECK(sp->local_player_id() == 0 && sp->player_ship_id() == 0 && sp->entity_alive(1) == 0);
+        CHECK(sp->set_entity_transform(reinterpret_cast<sco_plugin*>(&table), 1, 0, offset, rot) == 0);
+    }
     sco::app::Stop();
     CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_NOT_FOUND);
+    CHECK(api->query_service(SC_SPAWN_SERVICE_NAME, SC_SPAWN_SERVICE_VERSION, &table) == SCO_NOT_FOUND);
     pf.gameServices = false;
 #endif
     fs::remove_all(out / "app", ec);

@@ -1,14 +1,17 @@
-// teleport.spatial 1.0 (sc_spatial.h) from the game pack, and the game services' start and stop.
+// teleport.spatial 1.0 (sc_spatial.h) from the game pack, and the game services' start and stop
+// (spawn.entities 1.2 is in spawn.cpp).
 // Moved from sc-offline's teleport built-in (src/builtins/teleport_plugin.cpp): a tick
 // subscription feeds a sco::engine::ZoneTree with your zone chain, and the conversions read
 // through that tree. The tree holds ids and transforms only, never a game pointer, and is rebuilt
 // every tick; a zone queried that isn't in it yet is read on the spot.
 #include "sco/game/services.h"
+#include "spawn.h"
 #include "sco/engine/zone.h"
 #include "sco/game/reads.h"
 #include "sco/host.h"
 #include "sco/log.h"
 #include <sc_spatial.h>
+#include <sc_spawn.h>
 #include <cmath>
 #include <cstring>
 #include <windows.h>
@@ -226,19 +229,26 @@ Result Start() {
     if (!reads::Init()) Log("[game] teleport.* rows not OK: teleport.spatial answers 0 (see the [core] lines)");
     Result r = host::ProvideGameService(SC_SPATIAL_SERVICE_NAME, SC_SPATIAL_SERVICE_VERSION, &kSpatial);
     if (r != Result::Ok) return r;
-    r = Subscribe(host::GameOwner(), "tick", OnTick, nullptr);
+    r = StartSpawn();
     if (r != Result::Ok) {
         host::WithdrawGameService(SC_SPATIAL_SERVICE_NAME);
         return r;
     }
+    r = Subscribe(host::GameOwner(), "tick", OnTick, nullptr);
+    if (r != Result::Ok) {
+        StopSpawn();
+        host::WithdrawGameService(SC_SPATIAL_SERVICE_NAME);
+        return r;
+    }
     g_started = true;
-    Log("[game] game services published: %s 1.0", SC_SPATIAL_SERVICE_NAME);
+    Log("[game] game services published: %s 1.0, %s 1.2", SC_SPATIAL_SERVICE_NAME, SC_SPAWN_SERVICE_NAME);
     return Result::Ok;
 }
 
 void Stop() {
     if (!g_started) return;
     Unsubscribe(host::GameOwner(), "tick", OnTick);
+    StopSpawn();
     host::WithdrawGameService(SC_SPATIAL_SERVICE_NAME);
     g_zones.Clear();
     g_started = false;
