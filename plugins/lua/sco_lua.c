@@ -17,6 +17,7 @@
 #include "sco_datacore.h"
 #include "sco_storage.h"
 #include "sco_ui.h"
+#include "sc_entities.h"
 #include "sc_vehicles.h"
 #include <stddef.h>
 #include <stdint.h>
@@ -1255,6 +1256,64 @@ static int L_actors_local_player(lua_State* L) {
     return 2;
 }
 
+/* ---- sco.game.entities (the game pack's game.entities, read-only: alive, class_of, get_transform) ---- */
+
+static const sc_entities_v1* Entities(const Script* s) {
+    const void* t = NULL;
+    if (s->api->size <= offsetof(sco_api, query_service) || !s->api->query_service) return NULL;
+    if (s->api->query_service(SC_ENTITIES_NAME, SC_ENTITIES_VERSION_1_0, &t) != SCO_OK) return NULL;
+    return (const sc_entities_v1*)t;
+}
+
+/* nil, the result's name and the host's message (last_error without a plugin handle). */
+static int EntFail(lua_State* L, const sc_entities_v1* e, sco_result r) {
+    char msg[256];
+    uint32_t size = sizeof(msg);
+    lua_pushnil(L);
+    lua_pushstring(L, ResultName(r));
+    if (e && e->last_error(NULL, msg, &size) == SCO_OK && msg[0]) { lua_pushstring(L, msg); return 3; }
+    return 2;
+}
+
+/* alive(id): true when the entity is streamed in. */
+static int L_ent_alive(lua_State* L) {
+    const sc_entities_v1* e = Entities(Of(L));
+    const uint64_t id = (uint64_t)luaL_checkinteger(L, 1);
+    const int alive = e ? e->alive(id) : 0;
+    CheckBudget(L);
+    lua_pushboolean(L, alive);
+    return 1;
+}
+
+/* class_of(id): the entity's class name, or nil, err and the host's message. */
+static int L_ent_class_of(lua_State* L) {
+    const sc_entities_v1* e = Entities(Of(L));
+    const uint64_t id = (uint64_t)luaL_checkinteger(L, 1);
+    char name[256];
+    uint32_t size = sizeof(name);
+    const sco_result r = e ? e->class_of(id, name, &size) : SCO_UNAVAILABLE;
+    CheckBudget(L);
+    if (r != SCO_OK) return EntFail(L, e, r);
+    lua_pushstring(L, name);
+    return 1;
+}
+
+/* get_transform(id): x, y, z, qx, qy, qz, qw, zone_id (the entity's zone's local frame), or nil, err
+ * and the host's message. */
+static int L_ent_get_transform(lua_State* L) {
+    const sc_entities_v1* e = Entities(Of(L));
+    const uint64_t id = (uint64_t)luaL_checkinteger(L, 1);
+    double pos[3] = { 0, 0, 0 }, rot[4] = { 0, 0, 0, 0 };
+    uint64_t zone = 0;
+    const sco_result r = e ? e->get_transform(id, pos, rot, &zone) : SCO_UNAVAILABLE;
+    CheckBudget(L);
+    if (r != SCO_OK) return EntFail(L, e, r);
+    for (int i = 0; i < 3; ++i) lua_pushnumber(L, pos[i]);
+    for (int i = 0; i < 4; ++i) lua_pushnumber(L, rot[i]);
+    lua_pushinteger(L, (lua_Integer)(int64_t)zone);
+    return 8;
+}
+
 static const sco_ui_v1* UiTable(const Script* s) {
     const void* t = NULL;
     if (s->api->size <= offsetof(sco_api, query_service)) return NULL;
@@ -1516,8 +1575,8 @@ static int SetupBody(lua_State* L) {
         lua_setfield(L, -2, "datacore");
     }
     {                                                 /* sco.game: the game pack's services, read-only, each only when published */
-        const int actors = ActorsTable(s) != NULL, vehicles = Vehicles(s) != NULL;
-        if (actors || vehicles) {
+        const int actors = ActorsTable(s) != NULL, vehicles = Vehicles(s) != NULL, entities = Entities(s) != NULL;
+        if (actors || vehicles || entities) {
             lua_newtable(L);
             if (actors) {                             /* sco.game.actors */
                 static const luaL_Reg gafns[] = { { "local_player", L_actors_local_player }, { NULL, NULL } };
@@ -1530,6 +1589,13 @@ static int SetupBody(lua_State* L) {
                     { "seat_occupant", L_veh_seat_occupant }, { NULL, NULL } };
                 luaL_newlib(L, vehfns);
                 lua_setfield(L, -2, "vehicles");
+            }
+            if (entities) {                           /* sco.game.entities */
+                static const luaL_Reg entfns[] = {
+                    { "alive", L_ent_alive }, { "class_of", L_ent_class_of }, { "get_transform", L_ent_get_transform },
+                    { NULL, NULL } };
+                luaL_newlib(L, entfns);
+                lua_setfield(L, -2, "entities");
             }
             lua_setfield(L, -2, "game");
         }

@@ -8,6 +8,7 @@
 // the product.
 #include "spawn.h"
 #include "actors.h"
+#include "entities.h"
 #include "sco/game/actors.h"
 #include "sco/game/reads.h"
 #include "sco/game/services.h"
@@ -174,7 +175,7 @@ const char* PlayerZonePos(const double offset[3], uint64_t& zoneId, double pos[3
     return nullptr;
 }
 
-const char* SpawnInZone(const char* entityClass, uint64_t zoneId, const double pos[3], uint64_t& id) {
+const char* SpawnInZone(const char* entityClass, uint64_t zoneId, const double pos[3], const double* rot, uint64_t& id) {
     __try {
         const uintptr_t es = *g_sp.entitySystem;
         const uintptr_t cls = VCall<uintptr_t>(ClassRegistry(), actors::kRegistryFindClass, entityClass);
@@ -183,7 +184,8 @@ const char* SpawnInZone(const char* entityClass, uint64_t zoneId, const double p
         alignas(16) uint8_t params[actors::kSpawnParamsSize] = {};
         g_sp.ctor(params);
         g_sp.setClass(params, cls);
-        const struct { double rot[4]; double pos[3]; double scale; } where = { { 0, 0, 0, 1 }, { pos[0], pos[1], pos[2] }, 1.0 };
+        const struct { double rot[4]; double pos[3]; double scale; } where = {
+            { rot ? rot[0] : 0, rot ? rot[1] : 0, rot ? rot[2] : 0, rot ? rot[3] : 1 }, { pos[0], pos[1], pos[2] }, 1.0 };
         g_sp.setLocation(params, &where, zoneId);
         g_sp.setFlags(params, actors::kSpawnFlags);
 
@@ -209,7 +211,7 @@ const char* SpawnNearPlayer(const char* entityClass, const double offset[3], uin
     uint64_t zoneId = 0;
     double pos[3] = {};
     if (const char* err = PlayerZonePos(offset, zoneId, pos)) return err;
-    return SpawnInZone(entityClass, zoneId, pos, id);
+    return SpawnInZone(entityClass, zoneId, pos, nullptr, id);
 }
 
 // Moves (and with rot, turns) an entity within its zone, in local coordinates.
@@ -254,10 +256,12 @@ bool MayMove(const void* owner, uint64_t id) {
 
 // A plugin unloaded or crashed (sco::AddReleaseHook): its spawns are nobody's now, so a later
 // plugin given the same handle can't move them. The NPCs it spawned through game.actors leave
-// the world (decision 6): one hook for both services.
+// the world (decision 6), and so do the entities it spawned through game.entities, whose
+// watches end: one hook for all three services.
 void OnRelease(const void* owner) {
     ForgetOwner(owner);
     ReleaseActorsOwner(owner);
+    ReleaseEntitiesOwner(owner);
 }
 
 // ---- spawn.entities (sc_spawn.h) ---------------------------------------------------------------
@@ -366,10 +370,21 @@ void StopSpawn() {
     g_started = false;
 }
 
-const char* SpawnEntityInZone(const char* entityClass, uint64_t zoneId, const double pos[3], uint64_t& id) {
+const char* SpawnEntityInZone(const char* entityClass, uint64_t zoneId, const double pos[3], uint64_t& id,
+                              const double rot[4]) {
     id = 0;
     if (!Ready()) return "the spawner isn't available on this game build";
-    return SpawnInZone(entityClass, zoneId, pos, id);   // guards the game calls itself
+    return SpawnInZone(entityClass, zoneId, pos, rot, id);   // guards the game calls itself
+}
+
+MoveResult MoveEntity(uint64_t id, uint64_t zoneId, const double pos[3], const double rot[4]) {
+    if (!g_started) return MoveResult::Refused;
+    if (!EntityAlive(id)) return MoveResult::NotStreamedIn;
+    const uint64_t in = ZoneOfEntity(id);   // the zone the entity is in: MoveEntityLocal's frame
+    if (!in) return MoveResult::NoZone;
+    double localPos[3], localRot[4];
+    if (!PoseToZone(zoneId, in, pos, rot, localPos, localRot)) return MoveResult::ZoneConversion;
+    return MoveEntityLocal(id, localPos, localRot) ? MoveResult::Ok : MoveResult::Refused;
 }
 
 bool SpawnReleaseHooked() { return g_releaseHook; }

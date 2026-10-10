@@ -50,7 +50,7 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: C# SDK layout test against tests/abi_*.c
-        run: dotnet run -c Release --project sdk/csharp/Sco.Sdk.Tests -- tests/abi_v1.c tests/abi_storage.c tests/abi_ui.c tests/abi_datacore.c tests/abi_game_actors.c tests/abi_game_vehicles.c
+        run: dotnet run -c Release --project sdk/csharp/Sco.Sdk.Tests -- tests/abi_v1.c tests/abi_storage.c tests/abi_ui.c tests/abi_datacore.c tests/abi_game_actors.c tests/abi_game_vehicles.c tests/abi_game_entities.c
 
       - name: Package the SDK
         run: python3 sdk/package.py --out dist

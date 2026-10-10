@@ -33,6 +33,7 @@ The C++20 layer of the sco plugin SDK: header-only, over [`sco_api.h`](api-v1.md
 | [`scosdk/game/vehicles.hpp`](../include/scosdk/game/vehicles.hpp) | `sco::sdk::game::Vehicles`: the ship you're aboard, its seats, `Seat` / `Eject` / `PowerOn` for your own actors and ships (the game service `game.vehicles`, [`sc_vehicles.h`](../include/sc_vehicles.h); [API](api-v1.md#gamevehicles-10-game-pack)); not in `scosdk.hpp` |
 | [`scosdk/ui.hpp`](../include/scosdk/ui.hpp) | `Ui`: tabs, overlays, badges and hotkeys (the host service `sco.ui`, [`sco_ui.h`](../include/sco_ui.h)); not in `scosdk.hpp`, include it when you use UI |
 | [`scosdk/game/actors.hpp`](../include/scosdk/game/actors.hpp) | `sco::sdk::game::Actors`: `LocalPlayer`, `SpawnNpc`, `Despawn`, `LastError`, `LastReadError` (the game pack's service `game.actors`, [`sc_actors.h`](../include/sc_actors.h); [game services](game-services.md)); not in `scosdk.hpp` |
+| [`scosdk/game/entities.hpp`](../include/scosdk/game/entities.hpp) | `sco::sdk::game::Entities`: `Alive`, `ClassOf`, `GetTransform`, `SetTransform`, `Spawn`, `Despawn`, `Watch`, `Unwatch`, `QueryRadius`, `LastError`, `LastReadError` (the game service `game.entities`, [`sc_entities.h`](../include/sc_entities.h); [API](api-v1.md#gameentities-10-game-pack)); not in `scosdk.hpp` |
 | [`scosdk/scosdk.hpp`](../include/scosdk/scosdk.hpp) | All of the above |
 
 Put the SDK's `include/` folder on the include path; the headers find `sco_api.h` there.
