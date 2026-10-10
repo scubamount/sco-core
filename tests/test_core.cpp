@@ -7,6 +7,7 @@
 #include "sco/game/pak.h"
 #include "sco/game/signatures.h"
 #include "sco/game/system.h"
+#include "sco/game/world.h"
 #endif
 #include "sco/log.h"
 #include "sco/scan.h"
@@ -445,6 +446,34 @@ static void TestActorsRows() {
     CHECK(rows == 33);
 }
 
+static bool WorldRow(const char* id) {
+    size_t n = 0;
+    const sco::game::world::Capability* caps = sco::game::world::Capabilities(n);
+    for (size_t c = 0; c < n; ++c)
+        for (size_t j = 0; j < caps[c].count; ++j)
+            if (strcmp(caps[c].rows[j], id) == 0 && strncmp(id, "teleport.", 9) != 0) return true;
+    return false;
+}
+
+static void TestWorldRows() {
+    CHECK(sco::game::RegisterGameSignatures());
+    size_t n = 0;
+    const sco::game::world::Capability* caps = sco::game::world::Capabilities(n);
+    CHECK(caps && n == 10);
+    for (size_t c = 0; c < n; ++c)
+        for (size_t j = 0; j < caps[c].count; ++j) CHECK(sco::SigLookup(caps[c].rows[j]) != nullptr);
+    size_t rows = 0;
+    for (size_t i = 0; i < sco::SignatureCount(); ++i) {
+        const char* id = sco::SignatureDef(i)->id;
+        bool ours = false;
+        for (const char* p : { "build.", "missions.", "cvars.", "quantum." }) ours |= strncmp(id, p, strlen(p)) == 0;
+        if (!ours || strcmp(id, "quantum.send_effect_tag") == 0) continue;   // TestFeatureRows
+        ++rows;
+        CHECK(WorldRow(id));
+    }
+    CHECK(rows == 36);
+}
+
 static void TestFeatureRows() {
     CHECK(sco::game::RegisterGameSignatures());
     size_t n = 0;
@@ -457,7 +486,7 @@ static void TestFeatureRows() {
         const char* id = sco::SignatureDef(i)->id;
         bool ours = false;
         for (const char* p : { "spawn.", "npc.", "quantum.", "contracts.", "offline." }) ours |= strncmp(id, p, strlen(p)) == 0;
-        if (!ours || (ActorsRow(id) && strcmp(id, "npc.remove_entity_call") != 0)) continue;   // TestActorsRows
+        if (!ours || (ActorsRow(id) && strcmp(id, "npc.remove_entity_call") != 0) || WorldRow(id)) continue;   // TestActorsRows, TestWorldRows
         ++rows;
         reputation += strncmp(id, "contracts.reputation_check.", 27) == 0;
         orLoop += strncmp(id, "offline.or_loop_bound.", 22) == 0;
@@ -495,6 +524,7 @@ int main() {
     TestAsopRows();
     TestFeatureRows();
     TestActorsRows();
+    TestWorldRows();
 #endif
     std::printf("sco-core tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
