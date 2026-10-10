@@ -7,6 +7,7 @@
 #include "sco/host.h"
 #include "sco/ipc.h"
 #include "sco/log.h"
+#include "sco/net/session.h"
 #include "sco/runtime.h"
 #include "sco/signatures.h"
 #include "sco/storage.h"
@@ -59,6 +60,8 @@ bool Start(const Platform& platform) {
     if (ur != Result::Ok) Log("[app] ui not started: %s", ResultName(ur));
     const Result ir = ipc::Start();
     if (ir != Result::Ok) Log("[app] sco.ipc not started: %s", ResultName(ir));
+    const Result nr = net::Start();   // inert until the product calls net::Host or net::Join
+    if (nr != Result::Ok) Log("[app] sco.net not started: %s", ResultName(nr));
     for (size_t i = 0; pf.reservedChords && i < pf.nReservedChords; ++i) {
         const char* chord = pf.reservedChords[i];
         const Result rr = ui::ReserveChord(chord);
@@ -120,6 +123,7 @@ void Tick(uint32_t nowMs) {
     const Result r = GameThreadTick(nowMs);
     if (r != Result::Ok) Log("[app] tick: %s", ResultName(r));
     ipc::Tick();   // the owner heartbeat of every sco.ipc channel
+    net::Tick();   // sco.net messages and events received since the last tick
 }
 
 void Stop() {
@@ -128,6 +132,7 @@ void Stop() {
     if (r != Result::Ok) Log("[app] game.exit: %s", ResultName(r));
     plugins::UnloadAll(g_list, g_platform.moduleOps, g_platform.scripts);
     storage::Stop();
+    net::Stop();   // leaves any session
     ipc::Stop();
     ui::Stop();
     datacore::service::Stop();

@@ -9,6 +9,7 @@
 #include "sco/caps.h"
 #include "sco/host.h"
 #include "sco/log.h"
+#include "sco/net/session.h"
 #include "sco/plugins.h"
 #include "sco/runtime.h"
 #include "sco/scan.h"
@@ -413,6 +414,27 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
     CHECK(Logged("[app] hotkey 'not a chord' not reserved: BAD_ARG"));
     sco::app::Stop();
     CHECK(api->query_service("sco.ui", 0x00010000, &table) == SCO_NOT_FOUND && !sco::ui::Started());
+
+    // sco.net is always published with its capability, so a plugin that requires it loads; nothing
+    // listens until the product hosts or joins. Gone after Stop.
+    pf.scripts = &kLua;
+    fs::create_directories(root / "needsnet");
+    {
+        std::FILE* f = std::fopen((root / "needsnet" / "plugin.ini").string().c_str(), "wb");
+        std::fputs("id = needsnet\nname = Needs sco.net\nversion = 1.0.0\napi = 1.0\nkind = lua\nentry = main.lua\n"
+                   "requires = sco.net\n", f);
+        std::fclose(f);
+        f = std::fopen((root / "needsnet" / "main.lua").string().c_str(), "wb");
+        std::fputs("-- requires sco.net\n", f);
+        std::fclose(f);
+    }
+    CHECK(sco::app::Start(pf));
+    CHECK(sco::caps::Has("sco.net") && sco::net::Started() && sco::net::BoundPort() == 0);
+    CHECK(api->query_service(SCO_NET_NAME, SCO_NET_VERSION_1_0, &table) == SCO_OK && table == sco::net::Table());
+    CHECK(StateOf("needsnet") == State::Loaded);
+    sco::app::Stop();
+    CHECK(!sco::caps::Has("sco.net") && !sco::net::Started());
+    CHECK(api->query_service(SCO_NET_NAME, SCO_NET_VERSION_1_0, &table) == SCO_NOT_FOUND);
     fs::remove_all(out / "app", ec);
 }
 
