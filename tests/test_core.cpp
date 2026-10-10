@@ -4,6 +4,7 @@
 #include "sco/game/actors.h"
 #include "sco/game/asop.h"
 #include "sco/game/contracts.h"
+#include "sco/game/entities.h"
 #include "sco/game/features.h"
 #include "sco/game/pak.h"
 #include "sco/game/signatures.h"
@@ -559,6 +560,73 @@ static void TestContractsRows() {
     CHECK(rows == 83);
     CHECK(autoAccept == static_cast<size_t>(sco::game::contracts::kAutoAcceptCallers));
 }
+// game.entities (sco/game/entities.h): its rows are registered and listed by a group, and the watch
+// type filter, a pure function the host runs before calling a plugin, refuses and matches exactly
+// what docs/game-services.md says.
+static void TestEntitiesRows() {
+    CHECK(sco::game::RegisterGameSignatures());
+    size_t n = 0;
+    const sco::game::entities::Capability* caps = sco::game::entities::Capabilities(n);
+    CHECK(caps && n == 3);
+    for (size_t c = 0; c < n; ++c)
+        for (size_t j = 0; j < caps[c].count; ++j) CHECK(sco::SigLookup(caps[c].rows[j]) != nullptr);
+    size_t rows = 0;
+    for (size_t i = 0; i < sco::SignatureCount(); ++i) {
+        const char* id = sco::SignatureDef(i)->id;
+        if (strncmp(id, "entities.", 9) != 0) continue;
+        ++rows;
+        bool listed = false;
+        for (size_t c = 0; c < n && !listed; ++c)
+            for (size_t j = 0; j < caps[c].count && !listed; ++j) listed = strcmp(caps[c].rows[j], id) == 0;
+        CHECK(listed);
+    }
+    CHECK(rows == 6);
+    // Both hooks and the walk stay unconfirmed until the in-game run (docs/design/game-world-spikes.md).
+    CHECK(!sco::game::entities::kQueryRadiusConfirmed && !sco::game::entities::kWatchConfirmed);
+}
+
+static const char* Refused(const char* type) {
+    sco::game::entities::TypeFilter f;
+    return sco::game::entities::ParseType(type, f);
+}
+
+static bool Matches(const char* type, const char* cls) {
+    sco::game::entities::TypeFilter f;
+    return !sco::game::entities::ParseType(type, f) && sco::game::entities::MatchesType(f, cls);
+}
+
+static void TestEntityFilter() {
+    using namespace sco::game::entities;
+    // refused, each with a reason
+    CHECK(Refused(nullptr) && Refused("") && Refused("*"));
+    CHECK(Refused("**") && Refused("A**") && Refused("A*B") && Refused("*A") && Refused("*A*"));
+    CHECK(Refused("A B") && Refused("A\tB") && Refused("A?") && Refused("A\x01"));
+    CHECK(Refused("Caf\xC3\xA9") && Refused("\xC3\xA9*"));   // non-ASCII
+    CHECK(strstr(Refused("*"), "lone") && strstr(Refused(""), "empty"));
+    const std::string max(kMaxTypeLen, 'A');
+    CHECK(!Refused(max.c_str()));                       // 63: the longest
+    CHECK(Refused((max + "A").c_str()));                // 64: overlong
+    CHECK(Refused((max + "*").c_str()));                // 63 + '*' is 64 characters
+    CHECK(!Refused((max.substr(1) + "*").c_str()));     // 62 + '*' is 63
+    CHECK(Refused(std::string(100000, 'A').c_str()));   // far past the cap: still refused, not scanned whole
+    // accepted
+    CHECK(!Refused("AEGS_Avenger_Titan") && !Refused("AEGS_*") && !Refused("a-b.c:d"));
+    {
+        TypeFilter f;
+        CHECK(!ParseType("AEGS_*", f) && f.prefix && f.len == 5 && strcmp(f.text, "AEGS_") == 0);
+        CHECK(!ParseType("AEGS_Avenger", f) && !f.prefix && f.len == 12 && strcmp(f.text, "AEGS_Avenger") == 0);
+    }
+    // matching: exact is exact and case-sensitive; a prefix matches the prefix itself and anything longer
+    CHECK(Matches("AEGS_Avenger", "AEGS_Avenger"));
+    CHECK(!Matches("AEGS_Avenger", "AEGS_Avenger_Titan") && !Matches("AEGS_Avenger", "AEGS_Aveng"));
+    CHECK(!Matches("AEGS_Avenger", "aegs_avenger") && !Matches("AEGS_*", "aegs_avenger"));
+    CHECK(Matches("AEGS_*", "AEGS_Avenger_Titan") && Matches("AEGS_*", "AEGS_"));
+    CHECK(!Matches("AEGS_*", "AEGS") && !Matches("AEGS_*", "XAEGS_Avenger") && !Matches("AEGS_*", ""));
+    CHECK(!Matches("A*", nullptr) && !Matches("AEGS_Avenger", nullptr));
+    CHECK(!Matches("AEGS_*", "AEGS*"));   // '*' in a class name isn't a wildcard
+    // a filter that was never parsed matches nothing
+    CHECK(!MatchesType(TypeFilter{}, "AEGS_Avenger"));
+}
 #endif   // SCO_KERNEL_ONLY
 
 static void TestStatus() {
@@ -587,6 +655,8 @@ int main() {
     TestContractsRows();
     TestActorsRows();
     TestWorldRows();
+    TestEntitiesRows();
+    TestEntityFilter();
 #endif
     std::printf("sco-core tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

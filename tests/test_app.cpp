@@ -21,6 +21,7 @@
 #include "sco_lua.h"
 #ifdef SCO_GAME_SERVICES
 #include "sc_actors.h"
+#include "sc_entities.h"
 #include "sc_spawn.h"
 #include "sc_vehicles.h"
 #include <thread>
@@ -553,7 +554,68 @@ static void TestApp(const fs::path& sdk, const fs::path& out) {
         n = sizeof(buf);
         CHECK(ga->last_error(me, buf, &n) == SCO_BAD_ARG);   // released
     }
+    // game.entities: published with them. No game image, so none of its capabilities is ready:
+    // every function answers SCO_UNAVAILABLE and last_error says why; off the game thread
+    // SCO_WRONG_THREAD; a handle NewPlugin didn't return is SCO_BAD_ARG; alive says 0.
+    CHECK(api->query_service(SC_ENTITIES_NAME, SC_ENTITIES_VERSION_1_0, &table) == SCO_OK && table);
+    for (const char* cap : { "game.entities.transform", "game.entities.spawn", "game.entities.class_of",
+                             "game.entities.query_radius", "game.entities.watch" })
+        CHECK(!sco::caps::Has(cap));
+    if (table) {
+        const auto* ge = static_cast<const sc_entities_v1*>(table);
+        sco_plugin* me = sco::host::NewPlugin("entitiestest");
+        CHECK(me && ge->size == sizeof(sc_entities_v1));
+        const double pos[3] = { 1, 2, 3 };
+        const double rot[4] = { 0, 0, 0, 1 };
+        double outPos[3] = { 9, 9, 9 }, outRot[4] = { 9, 9, 9, 9 };
+        uint64_t id = 7, zone = 7, watchId = 7;
+        uint32_t found = 7, more = 7;
+        char buf[256];
+        uint32_t n = sizeof(buf);
+        CHECK(ge->alive(1) == 0);
+        CHECK(ge->class_of(1, buf, &n) == SCO_UNAVAILABLE && n == 0);
+        n = sizeof(buf);
+        CHECK(ge->last_error(nullptr, buf, &n) == SCO_OK && n == std::strlen(buf) + 1 &&
+              std::strstr(buf, "class_of: game.entities.class_of isn't available on this game build"));
+        CHECK(ge->get_transform(1, outPos, outRot, &zone) == SCO_UNAVAILABLE && zone == 0 && outPos[0] == 0 && outRot[3] == 0);
+        CHECK(ge->get_transform(1, nullptr, nullptr, nullptr) == SCO_BAD_ARG);
+        CHECK(ge->set_transform(me, 1, 2, pos, rot) == SCO_UNAVAILABLE);
+        CHECK(ge->spawn(me, "Human_NPC", 1, pos, rot, &id) == SCO_UNAVAILABLE && id == 0);
+        CHECK(ge->despawn(me, 1) == SCO_UNAVAILABLE);
+        CHECK(ge->watch(me, SC_ENTITY_STREAMED_IN, "AEGS_*", [](void*, uint32_t, uint64_t, const char*) {}, nullptr, &watchId) ==
+                  SCO_UNAVAILABLE &&
+              watchId == 0);
+        n = sizeof(buf);
+        CHECK(ge->last_error(me, buf, &n) == SCO_OK && std::strstr(buf, "watch: game.entities.watch isn't available"));
+        CHECK(ge->unwatch(me, 1) == SCO_NOT_FOUND);
+        CHECK(ge->query_radius(1, pos, 100.0, nullptr, &id, 1, &found, &more) == SCO_UNAVAILABLE && found == 0 && more == 0);
+        CHECK(ge->query_radius(1, nullptr, 100.0, nullptr, &id, 1, &found, &more) == SCO_BAD_ARG);
+        sco_plugin* stranger = reinterpret_cast<sco_plugin*>(&table);
+        CHECK(ge->spawn(stranger, "Human_NPC", 1, pos, rot, &id) == SCO_BAD_ARG);
+        CHECK(ge->set_transform(stranger, 1, 2, pos, rot) == SCO_BAD_ARG && ge->despawn(stranger, 1) == SCO_BAD_ARG);
+        CHECK(ge->watch(stranger, SC_ENTITY_STREAMED_IN, "AEGS_*", nullptr, nullptr, &watchId) == SCO_BAD_ARG);
+        sco_result off = SCO_OK;
+        int offAlive = 1;
+        std::thread([&] {
+            uint32_t size = sizeof(buf);
+            off = ge->class_of(1, buf, &size);
+            offAlive = ge->alive(1);
+        }).join();
+        CHECK(off == SCO_WRONG_THREAD && offAlive == 0);
+        n = 4;   // the size handshake: too small answers the size needed
+        CHECK(ge->last_error(me, buf, &n) == SCO_TOO_MANY && n > 4);
+        const uint32_t need = n;
+        CHECK(ge->last_error(me, buf, &n) == SCO_OK && n == need && std::strstr(buf, "unwatch: 1 is not a watch this plugin registered"));
+        CHECK(ge->last_error(me, buf, nullptr) == SCO_BAD_ARG);
+        CHECK(me && sco::Release(me) == sco::Result::Ok);   // through the release hook: nothing to remove
+        n = sizeof(buf);
+        CHECK(ge->last_error(me, buf, &n) == SCO_BAD_ARG);   // released
+    }
     sco::app::Stop();
+    CHECK(api->query_service(SC_ENTITIES_NAME, SC_ENTITIES_VERSION_1_0, &table) == SCO_NOT_FOUND);
+    for (const char* cap : { "game.entities.transform", "game.entities.spawn", "game.entities.class_of",
+                             "game.entities.query_radius", "game.entities.watch" })
+        CHECK(!sco::caps::Has(cap));
     CHECK(api->query_service(SC_VEHICLES_SERVICE_NAME, SC_VEHICLES_SERVICE_VERSION, &table) == SCO_NOT_FOUND);
     CHECK(api->query_service("teleport.spatial", 0x00010000, &table) == SCO_NOT_FOUND);
     CHECK(api->query_service(SC_SPAWN_SERVICE_NAME, SC_SPAWN_SERVICE_VERSION, &table) == SCO_NOT_FOUND);

@@ -66,8 +66,10 @@ bool g_started = false;
 bool g_canLocal = false, g_canSpawn = false, g_canDespawn = false;
 char g_whyLocal[128] = "", g_whySpawn[128] = "", g_whyDespawn[128] = "";
 
-// Game thread only. Reserved at start (SC_ACTORS_MAX_NPCS each): an NPC moves from g_npcs to
-// g_removals and spawning counts both, so neither ever grows past its reservation.
+// Game thread only. Reserved at start (g_npcs SC_ACTORS_MAX_NPCS, g_removals twice that): an NPC
+// moves from g_npcs to g_removals and spawning counts both, and game.entities' removals
+// (RemoveEntityLater) only join while g_removals is under SC_ACTORS_MAX_NPCS, so neither ever
+// grows past its reservation.
 struct Npc { const void* owner; uint64_t id; };
 enum class Stage : uint8_t { Waiting, Removed, Direct };
 struct Removal { uint64_t id; uint64_t at; Stage stage; };
@@ -418,7 +420,7 @@ Result StartActors() {
     if (g_started) return Result::Ok;
     Resolve();
     g_npcs.reserve(SC_ACTORS_MAX_NPCS);
-    g_removals.reserve(SC_ACTORS_MAX_NPCS);
+    g_removals.reserve(2 * SC_ACTORS_MAX_NPCS);
     {
         std::lock_guard<std::mutex> hold(g_errLock);
         g_errors.reserve(host::kMaxPlugins + 1);
@@ -462,6 +464,17 @@ void StopActors() {
     g_game = {};
     g_canLocal = g_canSpawn = g_canDespawn = false;
     g_started = false;
+}
+
+bool EntityRemovalReady() { return g_started && g_canDespawn; }
+
+void RemoveEntityLater(uint64_t id) {
+    if (!g_started) return;
+    if (g_removals.size() < SC_ACTORS_MAX_NPCS) {
+        StartRemoval(id);
+        return;
+    }
+    CallRemove(id);   // the queue is full: ask the game now, without the follow-up checks
 }
 
 bool NpcOwnedBy(const void* owner, uint64_t id) {

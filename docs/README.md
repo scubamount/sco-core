@@ -43,6 +43,7 @@ Start with the [README](../README.md) for what sco-core is. Pick your path below
   | [Features rows](game/features.md) | The rows moved out of sc-offline's five FindPattern scans, and their capabilities |
   | [Offline patches and startup rows](game/offline.md) | The 60 rows and 19 capabilities behind sc-offline's offline patches, boot and startup hooks |
   | [Actors rows](game/actors.md) | The 33 rows behind spawning, NPCs, ammo and the player loadout |
+  | [Entities rows](game/entities.md) | The 6 rows behind `game.entities`: the class name, the entity walk and the two streaming hooks |
 | [Checking a game build](sigcheck.md) | `sco-sigcheck`: output, exit codes, the patch-day routine |
 | [DataCore files and packs](datacore.md) | `sco-dcb info`, `records`, `lint`, `check`, `show` and `diff`: extracting `Game2.dcb`, the layout check, the `.toml` pack format, the `sco.datacore` service, exit codes |
 | [Design: multiplayer and cross-game bridges](design/multiplayer.md) | The scope change of 2026-10-09, what the fork's multiplayer code does, the `sco.net` and `sco.ipc` services, the `sco::game::net` rows, sc-offline's built-ins and the PR plan; in review |

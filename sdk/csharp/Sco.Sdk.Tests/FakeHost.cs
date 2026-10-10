@@ -56,6 +56,7 @@ namespace Sco.Sdk.Tests
         private static readonly nint Version = Marshal.StringToCoTaskMemUTF8("fake-host 1.0");   // static, never freed
         private static uint* _smallTable;   // a service table whose size covers only itself
         private static ScActorsV1* _actors;  // a stand-in game.actors
+        private static ScEntitiesV1* _entities;  // a stand-in game.entities
         private static void* _self;
         private static int _failures;
 
@@ -139,6 +140,7 @@ namespace Sco.Sdk.Tests
         {
             *o = null;
             if (S(name) == GameAbi.ActorsName) { *o = _actors; return ScoResult.Ok; }
+            if (S(name) == GameAbi.EntitiesName) { *o = _entities; return ScoResult.Ok; }
             if (S(name) != "other.small") return ScoResult.NotFound;
             *o = _smallTable;
             return ScoResult.Ok;
@@ -172,6 +174,83 @@ namespace Sco.Sdk.Tests
             if (cap < why.Length) return ScoResult.TooMany;
             for (int i = 0; i < why.Length; ++i) o[i] = why[i];
             return ScoResult.Ok;
+        }
+
+        private static ScoResult Bytes(string s, byte* o, uint* io)
+        {
+            byte[] b = System.Text.Encoding.UTF8.GetBytes(s + "\0");
+            uint cap = *io;
+            *io = (uint)b.Length;
+            if (cap < b.Length) return ScoResult.TooMany;
+            for (int i = 0; i < b.Length; ++i) o[i] = b[i];
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static int EntAlive(ulong id) => id == 5 ? 1 : 0;
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntClassOf(ulong id, byte* o, uint* io) => id == 5 ? Bytes("AEGS_Avenger_Titan", o, io) : ScoResult.NotFound;
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntGet(ulong id, double* pos, double* rot, ulong* zone)
+        {
+            if (id != 5) return ScoResult.NotFound;
+            pos[0] = 1; pos[1] = 2; pos[2] = 3;
+            rot[0] = 0; rot[1] = 0; rot[2] = 0; rot[3] = 1;
+            *zone = 9;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntSet(void* self, ulong id, ulong zone, double* pos, double* rot) =>
+            self == _self && id == 5 && zone == 9 && pos[2] == 3.0 && rot[3] == 1.0 ? ScoResult.Ok : ScoResult.Failed;
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntSpawn(void* self, byte* cls, ulong zone, double* pos, double* rot, ulong* id)
+        {
+            if (self != _self || S(cls) != "DRAK_Cutlass_Black" || zone != 9 || pos[2] != 3.0 || rot[3] != 1.0) return ScoResult.BadArg;
+            *id = 88;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntDespawn(void* self, ulong id) => self == _self && id == 88 ? ScoResult.Ok : ScoResult.NotFound;
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntWatch(void* self, uint what, byte* type, delegate* unmanaged[Cdecl]<void*, uint, ulong, byte*, void> fn, void* ctx, ulong* id)
+        {
+            string t = S(type);
+            if (self != _self || t.Length == 0 || t == "*" || what == 0) return ScoResult.BadArg;
+            *id = 3;
+            byte[] cls = System.Text.Encoding.UTF8.GetBytes("AEGS_Avenger_Titan\0");
+            fixed (byte* c = cls) fn(ctx, what, 42, c);   // the host would call this later, on the game thread
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntUnwatch(void* self, ulong id) => self == _self && id == 3 ? ScoResult.Ok : ScoResult.NotFound;
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntQuery(ulong zone, double* pos, double radius, byte* filter, ulong* ids, uint max, uint* count, uint* more)
+        {
+            if (zone != 9 || radius != 50.0 || S(filter) != "AEGS_*") return ScoResult.BadArg;
+            uint n = 0;
+            for (ulong v = 7; v <= 9; ++v)
+                if (n < max) ids[n++] = v; else ++*more;
+            *count = n;
+            return ScoResult.Ok;
+        }
+
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static ScoResult EntLastError(void* self, byte* o, uint* io) => Bytes(self == null ? "ent-read" : "ent-own", o, io);
+
+        private static int _watchHits;
+        private static ulong _watchId;
+        [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
+        private static void WatchFn(void* ctx, uint what, ulong id, byte* cls)
+        {
+            if (ctx == _self && what == GameAbi.EntityStreamedIn && id == 42 && S(cls) == "AEGS_Avenger_Titan") ++_watchHits;
         }
 
         [UnmanagedCallersOnly(CallConvs = new[] { typeof(CallConvCdecl) })]
@@ -288,6 +367,18 @@ namespace Sco.Sdk.Tests
             _actors->spawn_npc = &ActSpawn;
             _actors->despawn = &ActDespawn;
             _actors->last_error = &ActLastError;
+            _entities = (ScEntitiesV1*)NativeMemory.AllocZeroed((nuint)sizeof(ScEntitiesV1));
+            _entities->size = (uint)sizeof(ScEntitiesV1);
+            _entities->alive = &EntAlive;
+            _entities->class_of = &EntClassOf;
+            _entities->get_transform = &EntGet;
+            _entities->set_transform = &EntSet;
+            _entities->spawn = &EntSpawn;
+            _entities->despawn = &EntDespawn;
+            _entities->watch = &EntWatch;
+            _entities->unwatch = &EntUnwatch;
+            _entities->query_radius = &EntQuery;
+            _entities->last_error = &EntLastError;
 
             var p = new TestPlugin();
             Expect(PluginExports.LoadPlugin(p, api, self, "test") == ScoResult.Ok, "load");
@@ -331,6 +422,27 @@ namespace Sco.Sdk.Tests
             Expect(actors.SpawnNpc("Npc", 9, new double[] { 1, 2 }, out npc) == ScoResult.BadArg && npc == 0, "SpawnNpc wants 3 coordinates");
             Expect(actors.Despawn(77) == ScoResult.Ok && actors.Despawn(78) == ScoResult.NotFound, "Actors.Despawn");
             Expect(actors.LastError() == "not yours" && actors.LastReadError() == "read", "Actors.LastError, LastReadError");
+
+            var ent = new Entities();
+            Expect(ent.Open(p) == ScoResult.Ok && ent.IsOpen, "game.entities opens");
+            Expect(ent.Alive(5) && !ent.Alive(6), "Entities.Alive");
+            Expect(ent.ClassOf(5, out string entClass) == ScoResult.Ok && entClass == "AEGS_Avenger_Titan" && ent.ClassOf(6, out entClass) == ScoResult.NotFound && entClass == "",
+                   "Entities.ClassOf (size handshake)");
+            double[] ePos = new double[3], eRot = new double[4];
+            Expect(ent.GetTransform(5, ePos, eRot, out ulong eZone) == ScoResult.Ok && ePos[2] == 3.0 && eRot[3] == 1.0 && eZone == 9, "Entities.GetTransform");
+            Expect(ent.GetTransform(5, new double[2], eRot, out eZone) == ScoResult.BadArg && eZone == 0, "GetTransform wants 3 and 4 doubles");
+            Expect(ent.SetTransform(5, 9, ePos, eRot) == ScoResult.Ok && ent.SetTransform(6, 9, ePos, eRot) == ScoResult.Failed, "Entities.SetTransform");
+            Expect(ent.Spawn("DRAK_Cutlass_Black", 9, ePos, eRot, out ulong eId) == ScoResult.Ok && eId == 88, "Entities.Spawn");
+            Expect(ent.Spawn("DRAK_Cutlass_Black", 9, new double[] { 1, 2 }, eRot, out eId) == ScoResult.BadArg && eId == 0, "Spawn wants 3 and 4 doubles");
+            Expect(ent.Despawn(88) == ScoResult.Ok && ent.Despawn(89) == ScoResult.NotFound, "Entities.Despawn");
+            Expect(ent.Watch(GameAbi.EntityStreamedIn, "AEGS_*", &WatchFn, _self, out _watchId) == ScoResult.Ok && _watchId == 3 && _watchHits == 1,
+                   "Entities.Watch calls fn(ctx, what, id, class)");
+            Expect(ent.Watch(GameAbi.EntityStreamedIn, "*", &WatchFn, _self, out ulong badWatch) == ScoResult.BadArg && badWatch == 0, "Watch refuses a lone '*'");
+            Expect(ent.Unwatch(3) == ScoResult.Ok && ent.Unwatch(4) == ScoResult.NotFound, "Entities.Unwatch");
+            ulong[] ids = new ulong[2];
+            Expect(ent.QueryRadius(9, ePos, 50.0, "AEGS_*", ids, out uint eCount, out uint eMore) == ScoResult.Ok && eCount == 2 && eMore == 1 && ids[0] == 7 && ids[1] == 8,
+                   "Entities.QueryRadius (count, more)");
+            Expect(ent.LastError() == "ent-own" && ent.LastReadError() == "ent-read", "Entities.LastError, LastReadError");
 
             Cmd echo = Cmds[0];
             p.RunOnGameThread(() => ++ran);   // still queued at unload: must never run

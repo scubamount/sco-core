@@ -16,6 +16,7 @@
 #include "sco/ui.h"
 #include "../plugins/lua/sco_lua.h"
 #include "sc_actors.h"
+#include "sc_entities.h"
 #include <csignal>
 #include <cstddef>
 #include <cstdio>
@@ -612,6 +613,70 @@ end }
     CHECK(sco::host::WithdrawGameService(SC_ACTORS_NAME) == Result::Ok);
 }
 
+// ---- sco.game.entities (read-only over game.entities; a stand-in table) --------------------------
+
+static int FakeEntAlive(uint64_t id) { return id == 5; }
+static sco_result FakeEntClassOf(uint64_t id, char* out, uint32_t* io) {
+    static const char kName[] = "AEGS_Avenger_Titan";
+    if (id != 5) return SCO_NOT_FOUND;
+    const uint32_t cap = *io;
+    *io = sizeof(kName);
+    if (cap < sizeof(kName)) return SCO_TOO_MANY;
+    std::memcpy(out, kName, sizeof(kName));
+    return SCO_OK;
+}
+static sco_result FakeEntGet(uint64_t id, double* pos, double* rot, uint64_t* zone) {
+    if (id != 5) return SCO_NOT_FOUND;
+    pos[0] = 1; pos[1] = 2; pos[2] = 3;
+    rot[0] = rot[1] = rot[2] = 0; rot[3] = 1;
+    *zone = 0x8000000000000009ull;   // past INT64_MAX: comes back as a negative integer
+    return SCO_OK;
+}
+static sco_result FakeEntSet(sco_plugin*, uint64_t, uint64_t, const double*, const double*) { return SCO_FAILED; }
+static sco_result FakeEntSpawn(sco_plugin*, const char*, uint64_t, const double*, const double*, uint64_t*) { return SCO_FAILED; }
+static sco_result FakeEntDespawn(sco_plugin*, uint64_t) { return SCO_FAILED; }
+static sco_result FakeEntWatch(sco_plugin*, uint32_t, const char*, sc_entity_watch_fn, void*, uint64_t*) { return SCO_FAILED; }
+static sco_result FakeEntUnwatch(sco_plugin*, uint64_t) { return SCO_FAILED; }
+static sco_result FakeEntQuery(uint64_t, const double*, double, const char*, uint64_t*, uint32_t, uint32_t*, uint32_t*) { return SCO_FAILED; }
+static sco_result FakeEntLastError(sco_plugin* self, char* out, uint32_t* io) {
+    static const char kWhy[] = "class_of: 6 isn't streamed in";
+    if (!io || self) return SCO_BAD_ARG;
+    const uint32_t cap = *io;
+    *io = sizeof(kWhy);
+    if (cap < sizeof(kWhy)) return SCO_TOO_MANY;
+    std::memcpy(out, kWhy, sizeof(kWhy));
+    return SCO_OK;
+}
+
+static void TestGameEntities() {
+    static const sc_entities_v1 kFake = { sizeof(sc_entities_v1), 0, FakeEntAlive, FakeEntClassOf, FakeEntGet, FakeEntSet,
+                                          FakeEntSpawn, FakeEntDespawn, FakeEntWatch, FakeEntUnwatch, FakeEntQuery, FakeEntLastError };
+    CHECK(sco::host::ProvideGameService(SC_ENTITIES_NAME, SC_ENTITIES_VERSION_1_0, &kFake) == Result::Ok);
+    Write("gaent", R"(
+local e = assert(sco.game and sco.game.entities, "sco.game.entities")
+assert(e.spawn == nil and e.despawn == nil and e.set_transform == nil and e.watch == nil and e.unwatch == nil
+       and e.query_radius == nil and e.last_error == nil, "read-only")
+sco.register_command{ name = "gaent.ask", title = "Ask", fn = function()
+  local t = { tostring(e.alive(5)), tostring(e.alive(6)) }
+  t[#t + 1] = e.class_of(5)
+  local x, y, z, qx, qy, qz, qw, zone = e.get_transform(5)
+  t[#t + 1] = string.format("%g,%g,%g,%g,%d", x, y, z, qw, zone)
+  local n, err, msg = e.class_of(6)
+  t[#t + 1] = tostring(n) .. ":" .. err .. ":" .. tostring(msg)
+  return table.concat(t, " ")
+end }
+)");
+    Loaded l = Load("gaent");
+    CHECK(l.p && l.p->state == State::Loaded);
+    if (l.p && l.p->state != State::Loaded) std::printf("  gaent: %s\n", l.p->reason.c_str());
+    const Reply r = Invoke(g_caller, "gaent.ask");
+    const char* want = "true false AEGS_Avenger_Titan 1,2,3,1,-9223372036854775799 nil:not_found:class_of: 6 isn't streamed in";
+    CHECK(r.r == SCO_OK && r.text == want);
+    if (r.text != want) std::printf("  gaent.ask -> %s\n", r.text.c_str());
+    Unload(l);
+    CHECK(sco::host::WithdrawGameService(SC_ENTITIES_NAME) == Result::Ok);
+}
+
 // ---- sco.store (over the host service sco.storage) ---------------------------------------------
 
 // Opens and closes SCO_STORAGE_MAX_CURSORS cursors as `self`: true when none was refused, so the
@@ -823,6 +888,7 @@ int main(int argc, char** argv) {
     TestDataCore();
 #endif
     TestGameActors();
+    TestGameEntities();
     TestStore(argv[1]);
     std::printf("sco-lua tests: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
