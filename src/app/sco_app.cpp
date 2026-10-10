@@ -3,7 +3,6 @@
 #include "sco/app.h"
 #include "sco/caps.h"
 #include "sco/datacore_service.h"
-#include "sco/game/signatures.h"
 #include "sco/host.h"
 #include "sco/ipc.h"
 #include "sco/log.h"
@@ -37,7 +36,7 @@ bool Start(const Platform& platform) {
     const Platform& pf = g_platform;
 
     if (pf.image) {
-        if (!game::RegisterGameSignatures()) Log("[app] game signature tables did not all register");
+        if (pf.registerSignatures && !pf.registerSignatures()) Log("[app] the product's signature tables did not all register");
         ResolveAll(*pf.image);
     }
     if (pf.setCapabilities) pf.setCapabilities();
