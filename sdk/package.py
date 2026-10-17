@@ -59,6 +59,7 @@ FIXED_TIME = (2026, 1, 1, 0, 0, 0)
 ORIGINS = {"project-authored", "third-party", "generated", "interoperability-derived"}
 REQUIRED = ("id", "source", "destination", "profiles", "origin", "license")
 COMPONENT_KEYS = REQUIRED + ("public_header", "group", "note", "upstream")
+INCLUDE_RE = re.compile(r'^[ \t]*#[ \t]*include\s*([<"])([^>"]+)[>"]', re.M)
 
 
 class ManifestError(Exception):
@@ -259,7 +260,7 @@ def check_example_headers(m, profile, text, source):
     shipped = {destination(m, profile, c) for c in components}
     public = {destination(m, profile, c) for c in components if c.get("public_header")}
     example = next((destination(m, profile, c) for c in components if c["source"] == source), source)
-    for delimiter, header in re.findall(r'^[ \t]*#[ \t]*include\s*([<"])([^>"]+)[>"]', text, re.M):
+    for delimiter, header in INCLUDE_RE.findall(text):
         candidates = {"include/" + header, "third_party/imgui/" + header,
                       "sdk/third_party/imgui/" + header}
         if candidates & public:
