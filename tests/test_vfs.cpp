@@ -3,6 +3,7 @@
 // beside mount-table swaps (run under ThreadSanitizer). No game, no engine: fake BaseIo objects.
 //   tools/test.sh
 #include "sco/vfs.h"
+#include "../src/vfs/internal.h"
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -148,6 +149,86 @@ static Bytes Base(size_t n, uint32_t seed) {
         v = static_cast<uint8_t>(x >> 24);
     }
     return b;
+}
+
+// ---- CheckSplices ----------------------------------------------------------------------------
+
+static void TestCheckSplicesDirect() {
+    using sco::vfs::detail::CheckSplices;
+
+    // 1. Empty splices list -> OK
+    {
+        Result r = CheckSplices({}, 100);
+        CHECK(r.ok());
+    }
+
+    // 2. Valid single and multiple sorted, non-overlapping splices -> OK
+    {
+        const std::vector<Splice> sp = { S(0, 5), S(10, 2, B("abc")), S(20, 0, B("xy")) };
+        Result r = CheckSplices(sp, 100);
+        CHECK(r.ok());
+    }
+
+    // 3. Removes nothing and adds nothing -> Error
+    {
+        const std::vector<Splice> sp = { S(10, 0) };
+        Result r = CheckSplices(sp, 100);
+        CHECK(!r);
+        CHECK(r.error.find("removes nothing and adds nothing") != std::string::npos);
+    }
+    {
+        const std::vector<Splice> sp = { S(10, 0, std::make_shared<const Bytes>()) };
+        Result r = CheckSplices(sp, 100);
+        CHECK(!r);
+        CHECK(r.error.find("removes nothing and adds nothing") != std::string::npos);
+    }
+
+    // 4. Expected old bytes size mismatch -> Error
+    {
+        const std::vector<Splice> sp = { S(10, 5, nullptr, B("four")) };
+        Result r = CheckSplices(sp, 100);
+        CHECK(!r);
+        CHECK(r.error.find("expects 4 old bytes but removes 5") != std::string::npos);
+    }
+
+    // 5. Reaches past the end of the base -> Error
+    {
+        const std::vector<Splice> sp1 = { S(101, 0, B("a")) };
+        Result r1 = CheckSplices(sp1, 100);
+        CHECK(!r1);
+        CHECK(r1.error.find("reaches past the end of the base (100 bytes)") != std::string::npos);
+
+        const std::vector<Splice> sp2 = { S(90, 11) };
+        Result r2 = CheckSplices(sp2, 100);
+        CHECK(!r2);
+        CHECK(r2.error.find("reaches past the end of the base (100 bytes)") != std::string::npos);
+
+        const std::vector<Splice> sp3 = { S(10, ~0ull) };
+        Result r3 = CheckSplices(sp3, 100);
+        CHECK(!r3);
+        CHECK(r3.error.find("reaches past the end of the base") != std::string::npos);
+    }
+
+    // 6. Splices not sorted by offset -> Error
+    {
+        const std::vector<Splice> sp = { S(20, 2, B("a")), S(10, 2, B("b")) };
+        Result r = CheckSplices(sp, 100);
+        CHECK(!r);
+        CHECK(r.error.find("splice 1 (at 10): comes before splice 0 (at 20): splices must be sorted by offset") != std::string::npos);
+    }
+
+    // 7. Overlapping splices -> Error
+    {
+        const std::vector<Splice> sp1 = { S(10, 2, B("a")), S(10, 2, B("b")) };
+        Result r1 = CheckSplices(sp1, 100);
+        CHECK(!r1);
+        CHECK(r1.error.find("splice 1 (at 10): overlaps splice 0 (at 10, removes 2)") != std::string::npos);
+
+        const std::vector<Splice> sp2 = { S(10, 10), S(15, 2, B("b")) };
+        Result r2 = CheckSplices(sp2, 100);
+        CHECK(!r2);
+        CHECK(r2.error.find("splice 1 (at 15): overlaps splice 0 (at 10, removes 10)") != std::string::npos);
+    }
 }
 
 // ---- Compose ---------------------------------------------------------------------------------
@@ -815,6 +896,7 @@ static void TestReadersBesideSwaps() {
 }
 
 int main() {
+    TestCheckSplicesDirect();
     TestCompose();
     TestComposeRejects();
     TestReadEveryBoundary();
