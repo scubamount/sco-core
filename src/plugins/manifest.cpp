@@ -98,6 +98,90 @@ bool ParseManifest(std::string_view text, Manifest& out, std::string& error) {
     return false;
 }
 
+enum Key { kId, kName, kVersion, kAuthor, kApi, kKind, kEntry, kRequires, kCount };
+static constexpr const char* kKeys[kCount] = { "id", "name", "version", "author", "api", "kind", "entry", "requires" };
+enum class Section { Top, Settings, Other };   // after a [name] line, every line belongs to it
+
+static bool ParseSectionHeader(std::string_view line, size_t lineNo, Section& section, bool& seenSettings, std::string& error) {
+    if (line.back() != ']') return Fail(error, lineNo, "a [section] line ends with ]");
+    const std::string_view name = Trim(line.substr(1, line.size() - 2));
+    if (name == "settings") {
+        if (seenSettings) return Fail(error, lineNo, "duplicate section '[settings]'");
+        seenSettings = true;
+        section = Section::Settings;
+    } else {
+        section = Section::Other;   // a later minor's: skipped like an unknown key
+    }
+    return true;
+}
+
+static bool ParseTopLevelKey(int k, std::string_view value, size_t lineNo, Manifest& out, std::string& error) {
+    switch (k) {
+        case kId:
+            if (!ValidId(value)) return Fail(error, lineNo, "id must be 1-31 of [a-z0-9_]");
+            for (const char* r : kReservedIds)
+                if (value == r) return Fail(error, lineNo, "id is reserved");
+            out.id = value;
+            break;
+        case kName:
+            if (!ValidText(value, kMaxNameLen)) return Fail(error, lineNo, "name must be 1-63 printable characters");
+            out.name = value;
+            break;
+        case kVersion:
+            if (!ValidText(value, kMaxVersionLen)) return Fail(error, lineNo, "version must be 1-31 printable characters");
+            out.version = value;
+            break;
+        case kAuthor:
+            if (!ValidText(value, kMaxAuthorLen)) return Fail(error, lineNo, "author must be 1-63 printable characters");
+            out.author = value;
+            break;
+        case kApi:
+            if (!ParseApi(value, out.apiMajor, out.apiMinor)) return Fail(error, lineNo, "api must be <major>.<minor>");
+            break;
+        case kKind:
+            if (value == "native")    out.kind = Kind::Native;
+            else if (value == "lua")  out.kind = Kind::Lua;
+            else if (value == "data") out.kind = Kind::Data;
+            else return Fail(error, lineNo, "kind must be native, lua or data");
+            break;
+        case kEntry:
+            if (!ValidEntry(value)) return Fail(error, lineNo, "entry must be a file name in the plugin folder");
+            out.entry = value;
+            break;
+        case kRequires: {
+            std::string_view rest = value;
+            while (true) {
+                const size_t comma = rest.find(',');
+                const std::string_view cap = Trim(rest.substr(0, comma));
+                if (!ValidCapability(cap)) return Fail(error, lineNo, "requires must be a comma list of capability names");
+                for (const auto& have : out.requires_)
+                    if (have == cap) return Fail(error, lineNo, "requires lists a capability twice");
+                if (out.requires_.size() == kMaxRequires) return Fail(error, lineNo, "requires lists more than 16 capabilities");
+                out.requires_.emplace_back(cap);
+                if (comma == std::string_view::npos) break;
+                rest.remove_prefix(comma + 1);
+            }
+            break;
+        }
+    }
+    return true;
+}
+
+static bool ParseTopLevelLine(std::string_view line, size_t lineNo, bool seen[kCount], Manifest& out, std::string& error) {
+    const size_t eq = line.find('=');
+    if (eq == std::string_view::npos) return Fail(error, lineNo, "expected key = value");
+    const std::string_view key = Trim(line.substr(0, eq));
+    const std::string_view value = Trim(line.substr(eq + 1));
+
+    int k = -1;
+    for (int i = 0; i < kCount; ++i) if (key == kKeys[i]) k = i;
+    if (k < 0) return true;                                    // unknown key: a later minor's
+    if (seen[k]) return Fail(error, lineNo, (std::string("duplicate key '") + kKeys[k] + "'").c_str());
+    seen[k] = true;
+
+    return ParseTopLevelKey(k, value, lineNo, out, error);
+}
+
 static bool ParseInto(std::string_view text, Manifest& out, std::string& error) {
     error.clear();
     if (text.size() > kMaxManifestBytes) return Fail(error, 0, "too big");
@@ -107,10 +191,7 @@ static bool ParseInto(std::string_view text, Manifest& out, std::string& error) 
         return Fail(error, 0, "plugin.ini must be UTF-8");
     if (text.size() >= 3 && std::memcmp(text.data(), "\xEF\xBB\xBF", 3) == 0) text.remove_prefix(3);
 
-    enum Key { kId, kName, kVersion, kAuthor, kApi, kKind, kEntry, kRequires, kCount };
-    static constexpr const char* kKeys[kCount] = { "id", "name", "version", "author", "api", "kind", "entry", "requires" };
     bool seen[kCount] = {};
-    enum class Section { Top, Settings, Other };   // after a [name] line, every line belongs to it
     Section section = Section::Top;
     bool seenSettings = false;
 
@@ -126,15 +207,7 @@ static bool ParseInto(std::string_view text, Manifest& out, std::string& error) 
         if (section == Section::Settings) line = Trim(detail::StripSettingsComment(raw));   // quotes may hold ';'
         if (line.empty()) continue;
         if (line.front() == '[') {
-            if (line.back() != ']') return Fail(error, lineNo, "a [section] line ends with ]");
-            const std::string_view name = Trim(line.substr(1, line.size() - 2));
-            if (name == "settings") {
-                if (seenSettings) return Fail(error, lineNo, "duplicate section '[settings]'");
-                seenSettings = true;
-                section = Section::Settings;
-            } else {
-                section = Section::Other;   // a later minor's: skipped like an unknown key
-            }
+            if (!ParseSectionHeader(line, lineNo, section, seenSettings, error)) return false;
             continue;
         }
         if (section == Section::Settings) {
@@ -143,65 +216,8 @@ static bool ParseInto(std::string_view text, Manifest& out, std::string& error) 
             continue;
         }
         if (section == Section::Other) continue;
-        const size_t eq = line.find('=');
-        if (eq == std::string_view::npos) return Fail(error, lineNo, "expected key = value");
-        const std::string_view key = Trim(line.substr(0, eq));
-        const std::string_view value = Trim(line.substr(eq + 1));
 
-        int k = -1;
-        for (int i = 0; i < kCount; ++i) if (key == kKeys[i]) k = i;
-        if (k < 0) continue;                                    // unknown key: a later minor's
-        if (seen[k]) return Fail(error, lineNo, (std::string("duplicate key '") + kKeys[k] + "'").c_str());
-        seen[k] = true;
-
-        switch (k) {
-            case kId:
-                if (!ValidId(value)) return Fail(error, lineNo, "id must be 1-31 of [a-z0-9_]");
-                for (const char* r : kReservedIds)
-                    if (value == r) return Fail(error, lineNo, "id is reserved");
-                out.id = value;
-                break;
-            case kName:
-                if (!ValidText(value, kMaxNameLen)) return Fail(error, lineNo, "name must be 1-63 printable characters");
-                out.name = value;
-                break;
-            case kVersion:
-                if (!ValidText(value, kMaxVersionLen)) return Fail(error, lineNo, "version must be 1-31 printable characters");
-                out.version = value;
-                break;
-            case kAuthor:
-                if (!ValidText(value, kMaxAuthorLen)) return Fail(error, lineNo, "author must be 1-63 printable characters");
-                out.author = value;
-                break;
-            case kApi:
-                if (!ParseApi(value, out.apiMajor, out.apiMinor)) return Fail(error, lineNo, "api must be <major>.<minor>");
-                break;
-            case kKind:
-                if (value == "native")    out.kind = Kind::Native;
-                else if (value == "lua")  out.kind = Kind::Lua;
-                else if (value == "data") out.kind = Kind::Data;
-                else return Fail(error, lineNo, "kind must be native, lua or data");
-                break;
-            case kEntry:
-                if (!ValidEntry(value)) return Fail(error, lineNo, "entry must be a file name in the plugin folder");
-                out.entry = value;
-                break;
-            case kRequires: {
-                std::string_view rest = value;
-                while (true) {
-                    const size_t comma = rest.find(',');
-                    const std::string_view cap = Trim(rest.substr(0, comma));
-                    if (!ValidCapability(cap)) return Fail(error, lineNo, "requires must be a comma list of capability names");
-                    for (const auto& have : out.requires_)
-                        if (have == cap) return Fail(error, lineNo, "requires lists a capability twice");
-                    if (out.requires_.size() == kMaxRequires) return Fail(error, lineNo, "requires lists more than 16 capabilities");
-                    out.requires_.emplace_back(cap);
-                    if (comma == std::string_view::npos) break;
-                    rest.remove_prefix(comma + 1);
-                }
-                break;
-            }
-        }
+        if (!ParseTopLevelLine(line, lineNo, seen, out, error)) return false;
     }
 
     for (int k : { kId, kName, kVersion, kApi, kKind })
