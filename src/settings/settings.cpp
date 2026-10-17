@@ -125,8 +125,18 @@ size_t FindSetting(const Record& r, const std::string& name) {
     return r.decls.size();
 }
 
-// Under g_lock: finds self's setting `name`, which must have one of the types in mask.
-Result Find(sco_plugin* self, const char* name, unsigned mask, const char* want, const Record*& rec, size_t& idx) {
+struct FindSpec {
+    unsigned    mask = 0;
+    const char* want = nullptr;
+};
+
+struct FoundSetting {
+    const Record* rec = nullptr;
+    size_t        idx = 0;
+};
+
+// Under g_lock: finds self's setting `name`, which must have one of the types in spec.mask.
+Result Find(sco_plugin* self, const char* name, FindSpec spec, FoundSetting& out) {
     if (!host::PluginId(self)) return Result::BadArg;
     if (!g_started) return Result::Unavailable;
     if (detail::Released(self)) return Result::BadArg;
@@ -138,10 +148,10 @@ Result Find(sco_plugin* self, const char* name, unsigned mask, const char* want,
     const size_t i = r ? FindSetting(*r, n) : 0;   // an empty n (null or too long) matches nothing
     if (!r || i == r->decls.size())
         return Refuse(self, Result::NotFound, "this plugin declares no setting '" + (n.empty() ? std::string("?") : n) + "'");
-    if (!(mask & Bit(r->decls[i].type)))
-        return Refuse(self, Result::BadArg, "setting '" + n + "' is " + plugins::SettingTypeName(r->decls[i].type) + ", not " + want);
-    rec = r;
-    idx = i;
+    if (!(spec.mask & Bit(r->decls[i].type)))
+        return Refuse(self, Result::BadArg, "setting '" + n + "' is " + plugins::SettingTypeName(r->decls[i].type) + ", not " + spec.want);
+    out.rec = r;
+    out.idx = i;
     return Result::Ok;
 }
 
@@ -149,10 +159,9 @@ sco_result GetBool(sco_plugin* self, const char* name, int32_t* out) {
     return Guard([&] {
         if (!out) return Result::BadArg;
         std::lock_guard<std::mutex> hold(g_lock);
-        const Record* r = nullptr;
-        size_t i = 0;
-        if (const Result f = Find(self, name, Bit(SettingType::Bool), "a bool", r, i); f != Result::Ok) return f;
-        *out = r->values[i].b ? 1 : 0;
+        FoundSetting found;
+        if (const Result f = Find(self, name, { Bit(SettingType::Bool), "a bool" }, found); f != Result::Ok) return f;
+        *out = found.rec->values[found.idx].b ? 1 : 0;
         return Result::Ok;
     });
 }
@@ -161,10 +170,9 @@ sco_result GetInt(sco_plugin* self, const char* name, int64_t* out) {
     return Guard([&] {
         if (!out) return Result::BadArg;
         std::lock_guard<std::mutex> hold(g_lock);
-        const Record* r = nullptr;
-        size_t i = 0;
-        if (const Result f = Find(self, name, Bit(SettingType::Int), "an int", r, i); f != Result::Ok) return f;
-        *out = r->values[i].i;
+        FoundSetting found;
+        if (const Result f = Find(self, name, { Bit(SettingType::Int), "an int" }, found); f != Result::Ok) return f;
+        *out = found.rec->values[found.idx].i;
         return Result::Ok;
     });
 }
@@ -173,10 +181,9 @@ sco_result GetFloat(sco_plugin* self, const char* name, double* out) {
     return Guard([&] {
         if (!out) return Result::BadArg;
         std::lock_guard<std::mutex> hold(g_lock);
-        const Record* r = nullptr;
-        size_t i = 0;
-        if (const Result f = Find(self, name, Bit(SettingType::Float), "a float", r, i); f != Result::Ok) return f;
-        *out = r->values[i].f;
+        FoundSetting found;
+        if (const Result f = Find(self, name, { Bit(SettingType::Float), "a float" }, found); f != Result::Ok) return f;
+        *out = found.rec->values[found.idx].f;
         return Result::Ok;
     });
 }
@@ -199,12 +206,11 @@ sco_result GetString(sco_plugin* self, const char* name, char* out, uint32_t* io
         std::string value;
         {
             std::lock_guard<std::mutex> hold(g_lock);
-            const Record* r = nullptr;
-            size_t i = 0;
-            if (const Result f = Find(self, name, Bit(SettingType::String) | Bit(SettingType::Enum), "a string or an enum", r, i);
+            FoundSetting found;
+            if (const Result f = Find(self, name, { Bit(SettingType::String) | Bit(SettingType::Enum), "a string or an enum" }, found);
                 f != Result::Ok)
                 return f;
-            value = r->values[i].s;
+            value = found.rec->values[found.idx].s;
         }
         return CopyOut(value, out, io, capacity);
     });
