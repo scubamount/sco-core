@@ -1828,7 +1828,7 @@ int main(int argc, char** argv) {
     printf("%s\n", dir);
     snprintf(path, sizeof path, "%s/plugin.ini", dir);
     if (read_manifest(path, &m)) {
-        strcpy(plugin_id, m.id);
+        snprintf(plugin_id, sizeof plugin_id, "%s", m.id);
         printf("  ini     id=%s kind=%s api=%s%s%s\n", m.id, m.kind, m.api, m.entry[0] ? " entry=" : "", m.entry);
         if (strcmp(folder, m.id)) fail("id '%s' does not match folder '%s'", m.id, folder);
         for (i = 0; i < m.nrequires; ++i)
