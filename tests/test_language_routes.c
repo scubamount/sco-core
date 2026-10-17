@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#define MEMBER(t, type, member) ((t) && (t)->size >= offsetof(type, member) + sizeof((t)->member) && (t)->member)
+#define MEMBER(t, type, member) ((t) != NULL && (t)->size >= offsetof(type, member) + sizeof((t)->member) && (t)->member != NULL)
 static int passed, failed;
 #define CHECK(x) do { if (x) ++passed; else { ++failed; printf("FAIL C line %d: %s\n", __LINE__, #x); } } while (0)
 

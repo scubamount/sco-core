@@ -65,8 +65,7 @@ struct Out {
 };
 
 Out Run(Tree& t, uintptr_t root, uint32_t capacity = SC_INVENTORY_MAX_PORTS) {
-    Out o;
-    memset(&o, 0xCD, sizeof(o));
+    Out o{};
     o.ok = Walk(AccessOf(t), root, capacity, o.ports, o.r);
     return o;
 }

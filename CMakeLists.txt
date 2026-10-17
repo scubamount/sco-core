@@ -1594,6 +1594,11 @@ if(SCO_BUILD_TESTS)
                     "test_plugins' frozen-plugin test will report it missing")
   endif()
 
+  add_executable(test_manifest tests/test_manifest.cpp)
+  target_link_libraries(test_manifest PRIVATE sco_plugins)
+  sco_project_target(test_manifest)
+  add_test(NAME test_manifest COMMAND test_manifest)
+
   add_executable(test_plugins tests/test_plugins.cpp)
   target_link_libraries(test_plugins PRIVATE sco_plugins)
   add_dependencies(test_plugins ${_fake_targets})

@@ -514,6 +514,10 @@ mkdir -p "$FROZEN" "$OUT/frozen_v11_include"
 printf 'id = v11\nname = Frozen 1.1\nversion = 1.1.0\napi = 1.1\nkind = native\nentry = v11.so\n' > "$FROZEN/plugin.ini"
 "$CC" -std=c11 -O1 -Wall -Wextra -Werror -I "$OUT/frozen_v11_include" "${SHARED[@]}" \
   "$ROOT/tests/fixtures/plugins/native/frozen_v11_plugin.c" -o "$FROZEN/v11.so"
+"$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_manifest.cpp" $(obj asan "${PLUGINS[@]}") \
+  -ldl -o "$OUT/test_manifest"
+"$OUT/test_manifest"
+
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_plugins.cpp" $(obj asan "${PLUGINS[@]}" "${RUNTIME[@]}") \
   -ldl -o "$OUT/test_plugins"
 "$OUT/test_plugins" "$ROOT/tests/fixtures/plugins" "$OUT"

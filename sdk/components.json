@@ -5351,6 +5351,16 @@
       "license": "GPL-3.0-only"
     },
     {
+      "id": "source.tests.test_manifest.cpp",
+      "source": "tests/test_manifest.cpp",
+      "destination": "tests/test_manifest.cpp",
+      "profiles": [
+        "core-source"
+      ],
+      "origin": "project-authored",
+      "license": "GPL-3.0-only"
+    },
+    {
       "id": "source.tests.test_plugins.cpp",
       "source": "tests/test_plugins.cpp",
       "destination": "tests/test_plugins.cpp",
