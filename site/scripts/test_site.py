@@ -75,19 +75,22 @@ def check_leaks(root, forbidden=FORBIDDEN, file_limit=GZIP_FILE_LIMIT, total_lim
 def check_markdown_links(content, public):
     files = snapshot(content)
     routes = {gen.route(p[:-3]) for p in files if p.endswith('.md')}
+    md_link_re = re.compile(r'(?<!!)\[[^\]\n]*\]\(([^\s)]+)\)')
+    html_link_re = re.compile(r'<a href="([^"]+)"')
+    source_root_re = re.compile(re.escape(gen.SOURCE_ROOT) + r'[0-9a-f]{40}/')
     for name, data in files.items():
         if not name.endswith('.md'):
             continue
         text = data.decode()
-        targets = re.findall(r'(?<!!)\[[^\]\n]*\]\(([^\s)]+)\)', text)
-        targets += [html.unescape(href) for href in re.findall(r'<a href="([^"]+)"', text)]
+        targets = md_link_re.findall(text)
+        targets += [html.unescape(href) for href in html_link_re.findall(text)]
         for target in targets:
             url = urlsplit(target)
             if target.startswith('#'):
                 continue
             if url.scheme:
                 if target.startswith(gen.SOURCE_ROOT):
-                    if not re.match(re.escape(gen.SOURCE_ROOT) + r'[0-9a-f]{40}/', target):
+                    if not source_root_re.match(target):
                         raise AssertionError('Unpinned source link: ' + target)
                 continue
             if url.path not in routes and url.path not in DOWNLOADS:
