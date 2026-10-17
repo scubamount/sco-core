@@ -1691,7 +1691,8 @@ static void check_native(const char* dir, const manifest* m, const char* invoke_
         /* LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR needs a full path, as the host passes. */
         char full[MAX_PATH];
         if (GetFullPathNameA(path, sizeof full, full, NULL) - 1u >= sizeof full - 1u) { fail("%s: path too long", path); return; }
-        strcpy(path, full);
+        strncpy(path, full, sizeof path - 1);
+        path[sizeof path - 1] = '\0';
     }
     mod = LoadLibraryExA(path, NULL, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!mod) { fail("%s: can't load (error %lu)", path, (unsigned long)GetLastError()); return; }
