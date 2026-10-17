@@ -133,6 +133,100 @@ sco_plugin* NewSelf(const plugins::Plugin& p) {
     return self;
 }
 
+Result ValidateReloadTarget(const std::string& name, plugins::Plugin*& target, std::string& w) {
+    target = nullptr;
+    for (auto& q : g_list) if (q.folder == name) { target = &q; break; }
+    if (!target) { w = "no plugin '" + name + "'"; return Result::NotFound; }
+    if (target->manifest.kind == plugins::Kind::Builtin) { w = name + " is built in and cannot be reloaded"; return Result::BadArg; }
+    if (!target->manifestOk || target->manifest.kind == plugins::Kind::Data) { w = name + " has no code to reload"; return Result::BadArg; }
+    if (target->state == plugins::State::Faulted) { w = name + " is faulted; restart the game (no recovery guaranteed)"; return Result::Failed; }
+    if (target->state != plugins::State::Loaded) { w = name + " is not loaded (" + plugins::StateName(target->state) + ")"; return Result::Failed; }
+    return Result::Ok;
+}
+
+Result BuildReloadGroup(plugins::Plugin* target, std::vector<plugins::Plugin*>& group, std::string& w) {
+    group = { target };
+    for (size_t i = 0; i < group.size(); ++i)
+        for (auto& q : g_list)
+            if (q.state == plugins::State::Loaded &&
+                std::find(q.after.begin(), q.after.end(), group[i]->folder) != q.after.end() &&
+                std::find(group.begin(), group.end(), &q) == group.end()) group.push_back(&q);
+
+    // Stable topological order over this group, independent of previous reloads' loadOrder.
+    std::vector<plugins::Plugin*> ordered;
+    ordered.reserve(group.size());
+    while (ordered.size() < group.size()) {
+        plugins::Plugin* next = nullptr;
+        for (auto& q : g_list) {
+            if (std::find(group.begin(), group.end(), &q) == group.end() ||
+                std::find(ordered.begin(), ordered.end(), &q) != ordered.end()) continue;
+            bool ready = true;
+            for (const auto* provider : group)
+                if (std::find(q.after.begin(), q.after.end(), provider->folder) != q.after.end() &&
+                    std::find(ordered.begin(), ordered.end(), provider) == ordered.end()) ready = false;
+            if (ready) { next = &q; break; }
+        }
+        if (!next) { w = "requires cycle in reload group"; return Result::Failed; }
+        ordered.push_back(next);
+    }
+    group = std::move(ordered);
+    for (const auto* q : group) {
+        if (q->manifest.kind == plugins::Kind::Builtin || q->manifest.kind == plugins::Kind::Data) {
+            w = q->folder + " cannot join a reload cascade"; return Result::Failed;
+        }
+        if (q->running) { w = "busy: a callout of " + q->folder + " is running"; return Result::Failed; }
+        if (!plugins::CanUnload(*q, w)) return Result::Failed;
+        if (const std::string unmet = plugins::UnmetRequires(*q, g_list); !unmet.empty()) {
+            w = unmet; return Result::Failed;
+        }
+    }
+    return Result::Ok;
+}
+
+void ReloadPluginInstance(plugins::Plugin& q, fs::path& copy, Result& overallResult, std::string& w, size_t groupSize) {
+    if (q.state != plugins::State::Unloaded) return;
+    std::error_code ec;
+    if (q.module) { q.pinned.push_back(q.module); q.module = nullptr; }
+    if (!q.reloadCopy.empty()) fs::remove(q.reloadCopy, ec);
+    q.reloadCopy.clear();
+    q.exports = {};
+    q.state = plugins::State::Ready;
+    q.reason.clear();
+    std::string error = plugins::UnmetRequires(q, g_list);
+    bool ok = false;
+    if (!error.empty()) {
+        q.state = plugins::State::Refused;
+        q.reason = error;
+        Log("[plugin] refused %s: %s", q.folder.c_str(), error.c_str());
+    } else if (sco_plugin* self = NewSelf(q)) {
+        q.reloadCopy = std::move(copy);
+        copy.clear();
+        ok = q.manifest.kind == plugins::Kind::Native
+            ? plugins::LoadNative(q, g_api, self, g_opts, g_platform.moduleOps)
+            : g_platform.scripts && plugins::LoadScript(q, g_api, self, *g_platform.scripts);
+        if (!ok) {
+            error = q.state == plugins::State::Ready ? "no script runtime" : q.reason;
+            if (q.state == plugins::State::Ready) {
+                q.state = plugins::State::Refused;
+                q.reason = error;
+            }
+        }
+    } else {
+        q.state = plugins::State::Unloaded;
+        error = "no plugin handles left (" + std::to_string(host::kMaxPlugins) + " per process, every load counts)";
+        q.reason = error;
+    }
+    if (ok) Log("[app] reloaded %s", q.folder.c_str());
+    else {
+        if (overallResult == Result::Ok) w = groupSize == 1 ? error : q.folder + ": " + error;
+        overallResult = Result::Failed;
+        if (!q.module && !q.reloadCopy.empty()) {
+            fs::remove(q.reloadCopy, ec);
+            q.reloadCopy.clear();
+        }
+    }
+}
+
 }  // namespace
 
 bool Start(const Platform& platform) {
@@ -378,50 +472,14 @@ Result Reload(std::string_view id, std::string* why) {
     if (!OnGameThread()) { w = "reload runs on the game thread only"; return Result::WrongThread; }
     const std::string name(id);
     if (g_reloading) { w = "busy: another reload is running"; return Result::Failed; }
-    plugins::Plugin* p = nullptr;
-    for (auto& q : g_list) if (q.folder == name) { p = &q; break; }
-    if (!p) { w = "no plugin '" + name + "'"; return Result::NotFound; }
-    if (p->manifest.kind == plugins::Kind::Builtin) { w = name + " is built in and cannot be reloaded"; return Result::BadArg; }
-    if (!p->manifestOk || p->manifest.kind == plugins::Kind::Data) { w = name + " has no code to reload"; return Result::BadArg; }
-    if (p->state == plugins::State::Faulted) { w = name + " is faulted; restart the game (no recovery guaranteed)"; return Result::Failed; }
-    if (p->state != plugins::State::Loaded) { w = name + " is not loaded (" + plugins::StateName(p->state) + ")"; return Result::Failed; }
-    // Discover resolved requires to provider ids in `after`; do not reinterpret capabilities
-    // or host services as plugin dependencies. Only loaded dependents join the cascade.
-    std::vector<plugins::Plugin*> group{ p };
-    for (size_t i = 0; i < group.size(); ++i)
-        for (auto& q : g_list)
-            if (q.state == plugins::State::Loaded &&
-                std::find(q.after.begin(), q.after.end(), group[i]->folder) != q.after.end() &&
-                std::find(group.begin(), group.end(), &q) == group.end()) group.push_back(&q);
 
-    // Stable topological order over this group, independent of previous reloads' loadOrder.
-    std::vector<plugins::Plugin*> ordered;
-    ordered.reserve(group.size());
-    while (ordered.size() < group.size()) {
-        plugins::Plugin* next = nullptr;
-        for (auto& q : g_list) {
-            if (std::find(group.begin(), group.end(), &q) == group.end() ||
-                std::find(ordered.begin(), ordered.end(), &q) != ordered.end()) continue;
-            bool ready = true;
-            for (const auto* provider : group)
-                if (std::find(q.after.begin(), q.after.end(), provider->folder) != q.after.end() &&
-                    std::find(ordered.begin(), ordered.end(), provider) == ordered.end()) ready = false;
-            if (ready) { next = &q; break; }
-        }
-        if (!next) { w = "requires cycle in reload group"; return Result::Failed; }
-        ordered.push_back(next);
-    }
-    group = std::move(ordered);
-    for (const auto* q : group) {
-        if (q->manifest.kind == plugins::Kind::Builtin || q->manifest.kind == plugins::Kind::Data) {
-            w = q->folder + " cannot join a reload cascade"; return Result::Failed;
-        }
-        if (q->running) { w = "busy: a callout of " + q->folder + " is running"; return Result::Failed; }
-        if (!plugins::CanUnload(*q, w)) return Result::Failed;
-        if (const std::string unmet = plugins::UnmetRequires(*q, g_list); !unmet.empty()) {
-            w = unmet; return Result::Failed;
-        }
-    }
+    plugins::Plugin* target = nullptr;
+    const Result targetRes = ValidateReloadTarget(name, target, w);
+    if (targetRes != Result::Ok) return targetRes;
+
+    std::vector<plugins::Plugin*> group;
+    const Result groupRes = BuildReloadGroup(target, group, w);
+    if (groupRes != Result::Ok) return groupRes;
 
     std::vector<fs::path> copies(group.size());
     // The atomic loader gate reserves every owner before any copy or teardown. Roll back on
@@ -458,48 +516,7 @@ Result Reload(std::string_view id, std::string* why) {
     plugins::CancelUnload(group);
     scope.reserved = false;
     for (size_t i = 0; i < group.size(); ++i) {
-        plugins::Plugin& q = *group[i];
-        if (q.state != plugins::State::Unloaded) continue;
-        std::error_code ec;
-        if (q.module) { q.pinned.push_back(q.module); q.module = nullptr; }
-        if (!q.reloadCopy.empty()) fs::remove(q.reloadCopy, ec);
-        q.reloadCopy.clear();
-        q.exports = {};
-        q.state = plugins::State::Ready;
-        q.reason.clear();
-        std::string error = plugins::UnmetRequires(q, g_list);
-        bool ok = false;
-        if (!error.empty()) {
-            q.state = plugins::State::Refused;
-            q.reason = error;
-            Log("[plugin] refused %s: %s", q.folder.c_str(), error.c_str());
-        } else if (sco_plugin* self = NewSelf(q)) {
-            q.reloadCopy = std::move(copies[i]);
-            copies[i].clear();
-            ok = q.manifest.kind == plugins::Kind::Native
-                ? plugins::LoadNative(q, g_api, self, g_opts, g_platform.moduleOps)
-                : g_platform.scripts && plugins::LoadScript(q, g_api, self, *g_platform.scripts);
-            if (!ok) {
-                error = q.state == plugins::State::Ready ? "no script runtime" : q.reason;
-                if (q.state == plugins::State::Ready) {
-                    q.state = plugins::State::Refused;
-                    q.reason = error;
-                }
-            }
-        } else {
-            q.state = plugins::State::Unloaded;
-            error = "no plugin handles left (" + std::to_string(host::kMaxPlugins) + " per process, every load counts)";
-            q.reason = error;
-        }
-        if (ok) Log("[app] reloaded %s", q.folder.c_str());
-        else {
-            if (result == Result::Ok) w = group.size() == 1 ? error : q.folder + ": " + error;
-            result = Result::Failed;
-            if (!q.module && !q.reloadCopy.empty()) {
-                fs::remove(q.reloadCopy, ec);
-                q.reloadCopy.clear();
-            }
-        }
+        ReloadPluginInstance(*group[i], copies[i], result, w, group.size());
     }
     if (result != Result::Ok) Log("[app] reload %s failed: %s", name.c_str(), w.c_str());
     return result;
