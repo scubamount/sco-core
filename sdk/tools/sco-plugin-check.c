@@ -716,9 +716,11 @@ static int widget_dispatching;
 static uint32_t widget_callback_logs, widget_callback_invokes;
 
 static int copy_str(char* dst, size_t cap, const char* src) {
+    if (!dst || cap == 0) return 0;
     if (!src) { dst[0] = 0; return 1; }
     if (strlen(src) >= cap) return 0;
-    strcpy(dst, src);
+    strncpy(dst, src, cap - 1);
+    dst[cap - 1] = 0;
     return 1;
 }
 
