@@ -1254,7 +1254,8 @@ static sco_result subscribe(sco_plugin* self, const char* event, sco_event_fn fn
         }
     for (i = 0; i < MAX_SUBS; ++i)
         if (!subs[i].live) {
-            strcpy(subs[i].event, event);
+            strncpy(subs[i].event, event, sizeof(subs[i].event) - 1);
+            subs[i].event[sizeof(subs[i].event) - 1] = '\0';
             subs[i].fn = fn;
             subs[i].ctx = ctx;
             subs[i].live = 1;
