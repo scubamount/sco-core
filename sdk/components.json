@@ -778,6 +778,17 @@
       "public_header": false
     },
     {
+      "id": "source.tests.test_diagnostics_audit.cpp",
+      "source": "tests/test_diagnostics_audit.cpp",
+      "destination": "tests/test_diagnostics_audit.cpp",
+      "profiles": [
+        "core-source"
+      ],
+      "origin": "project-authored",
+      "license": "GPL-3.0-only",
+      "public_header": false
+    },
+    {
       "id": "source.tests.test_diagnostics_platform.cpp",
       "source": "tests/test_diagnostics_platform.cpp",
       "destination": "tests/test_diagnostics_platform.cpp",

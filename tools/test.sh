@@ -339,6 +339,10 @@ HOST_TSAN=($(obj tsan "${HOST_IMPL[@]}" "${RUNTIME[@]}" "$ROOT/src/sco_signature
 
 "$CXX" "${FLAGS[@]}" -fsanitize=address,undefined "$ROOT/tests/test_host.cpp" "${HOST_ASAN[@]}" -o "$OUT/test_host"
 "$OUT/test_host"
+
+"$CXX" "${FLAGS[@]}" -I "$ROOT/src" -fsanitize=address,undefined "$ROOT/tests/test_diagnostics_audit.cpp" \
+  $(obj asan "$ROOT/src/ipc/diagnostics_audit.cpp") -o "$OUT/test_diagnostics_audit"
+"$OUT/test_diagnostics_audit"
 "$CXX" "${FLAGS[@]}" -fsanitize=thread "$ROOT/tests/test_host.cpp" "${HOST_TSAN[@]}" -o "$OUT/test_host_tsan"
 
 # The death hook's one-owner rule (game.actors.died for every death, game.player.died only for your
