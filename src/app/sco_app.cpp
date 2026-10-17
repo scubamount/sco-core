@@ -133,29 +133,15 @@ sco_plugin* NewSelf(const plugins::Plugin& p) {
     return self;
 }
 
-}  // namespace
-
-bool Start(const Platform& platform) {
-    if (g_started) {
-        Log("[app] start refused: already started");
-        return false;
-    }
-    SetGameThread();
-    sco::detail::SetRuntimeStopping(false);
-    g_diagnostics.Reset();
-    diagnostics::ResetServiceDiagnosticHistory();
-    g_lastDiagnosticTick.reset(); g_gameServicesPublished = false;
-    g_platform = platform;
-    const Platform& pf = g_platform;
-
+void InitPlatformAndSignatures(const Platform& pf) {
     if (pf.image) {
         if (pf.registerSignatures && !pf.registerSignatures()) Log("[app] the product's signature tables did not all register");
         ResolveAll(*pf.image);
     }
     if (pf.setCapabilities) pf.setCapabilities();
+}
 
-    const char* version = pf.hostVersion ? pf.hostVersion : "sco-core host";
-    const sco_api* api = host::BuildApi({ version });
+Result StartSubsystems(const Platform& pf) {
     if (!pf.dataRoot.empty()) {   // before any plugin loads, built-ins included
         storage::Options so;
         so.dataRoot = pf.dataRoot;
@@ -213,7 +199,10 @@ bool Start(const Platform& platform) {
         const Result rr = ui::ReserveChord(chord);
         if (rr != Result::Ok) Log("[app] hotkey '%s' not reserved: %s", chord ? chord : "(null)", ResultName(rr));
     }
+    return cr;
+}
 
+plugins::Options DiscoverPlugins(const Platform& pf, const sco_api* api) {
     plugins::Options opts;
     opts.enabled = pf.pluginsEnabled;
     opts.has = HasCap;
@@ -239,8 +228,10 @@ bool Start(const Platform& platform) {
     g_list = std::move(list);
     g_index.Clear();
     plugins::ContainCallouts(&g_list);
-    g_started = true;
+    return opts;
+}
 
+bool PrepareDataPacks(Result cr) {
     // Packs are indexed and snapshotted before ANY consumer load callback.
     // A startup pack cannot depend on code that has not run. Refuse that
     // dependency explicitly instead of exposing content from a failed provider.
@@ -269,7 +260,10 @@ bool Start(const Platform& platform) {
         Stop();
         return false;
     }
+    return true;
+}
 
+void LoadPlugins(const Platform& pf, const sco_api* api, const plugins::Options& opts) {
     // Built-ins first: they are the product's features, and register before any plugin can.
     for (auto& p : g_list)
         if (p.state == plugins::State::Ready && p.manifest.kind == plugins::Kind::Builtin)
@@ -300,19 +294,50 @@ bool Start(const Platform& platform) {
         }
     }
     RegisterReloadCommand();
+}
 
+void FinalizeStartup(const Platform& pf) {
     if (pf.image) LogSignatureReport(false);
     plugins::LogReport(g_list, pf.pluginsEnabled);
 
     const Result r = Dispatch("game.ready", nullptr);
     if (r != Result::Ok) Log("[app] game.ready: %s", ResultName(r));
-    const auto diagnosticNow=DiagnosticNow();
-    if(diagnostics::Authorized(pf.runtimeInspection))
-        g_diagnosticCapture.Start(diagnosticNow,pf.runtimeInspection.freeFormConsent);
+    const auto diagnosticNow = DiagnosticNow();
+    if (diagnostics::Authorized(pf.runtimeInspection))
+        g_diagnosticCapture.Start(diagnosticNow, pf.runtimeInspection.freeFormConsent);
     diagnostics::SetLogCapture(&g_diagnosticCapture);
     g_diagnosticStates.clear();
     CopyDiagnostics(diagnosticNow);
     g_diagnosticWorker.Start(pf.runtimeInspection);
+}
+
+}  // namespace
+
+bool Start(const Platform& platform) {
+    if (g_started) {
+        Log("[app] start refused: already started");
+        return false;
+    }
+    SetGameThread();
+    sco::detail::SetRuntimeStopping(false);
+    g_diagnostics.Reset();
+    diagnostics::ResetServiceDiagnosticHistory();
+    g_lastDiagnosticTick.reset(); g_gameServicesPublished = false;
+    g_platform = platform;
+    const Platform& pf = g_platform;
+
+    InitPlatformAndSignatures(pf);
+    const char* version = pf.hostVersion ? pf.hostVersion : "sco-core host";
+    const sco_api* api = host::BuildApi({ version });
+
+    const Result cr = StartSubsystems(pf);
+    const plugins::Options opts = DiscoverPlugins(pf, api);
+    g_started = true;
+
+    if (!PrepareDataPacks(cr)) return false;
+
+    LoadPlugins(pf, api, opts);
+    FinalizeStartup(pf);
     return true;
 }
 
