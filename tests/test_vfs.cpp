@@ -209,6 +209,88 @@ static void TestComposeRejects() {
     CHECK(Compose(100, std::vector<Splice>{ S(0, 1, B({ 1 })) }, ok, 100).ok() && ok.size == 100);
 }
 
+static void TestComposeEdgeCases() {
+    // 1. Splice with non-null empty bytes (s.bytes != nullptr but s.bytes->empty() == true) and s.removed > 0
+    auto emptyBytes = std::make_shared<const Bytes>();
+    Composed c1;
+    Result r1 = Compose(20, std::vector<Splice>{ S(5, 5, emptyBytes) }, c1);
+    CHECK(r1.ok());
+    CHECK(c1.baseSize == 20 && c1.size == 15);
+    CHECK(c1.segments.size() == 2);
+    CHECK(c1.segments[0].kind == Segment::Base && c1.segments[0].start == 0 && c1.segments[0].len == 5 && c1.segments[0].from == 0);
+    CHECK(c1.segments[1].kind == Segment::Base && c1.segments[1].start == 5 && c1.segments[1].len == 10 && c1.segments[1].from == 10);
+    CHECK(c1.buffers.empty());
+
+    // 2. Splice at exact end of base (s.at == baseSize) adding bytes
+    Composed c2;
+    auto tailBytes = B({ 0x10, 0x20 });
+    Result r2 = Compose(10, std::vector<Splice>{ S(10, 0, tailBytes) }, c2);
+    CHECK(r2.ok());
+    CHECK(c2.baseSize == 10 && c2.size == 12);
+    CHECK(c2.segments.size() == 2);
+    CHECK(c2.segments[0].kind == Segment::Base && c2.segments[0].start == 0 && c2.segments[0].len == 10 && c2.segments[0].from == 0);
+    CHECK(c2.segments[1].kind == Segment::Buffer && c2.segments[1].start == 10 && c2.segments[1].len == 2 && c2.segments[1].src == tailBytes->data());
+    CHECK(c2.buffers.size() == 1 && c2.buffers[0] == tailBytes);
+
+    // 3. Splice at 0 removing entire base and adding buffer
+    Composed c3;
+    auto repBytes = B({ 0xAA, 0xBB });
+    Result r3 = Compose(10, std::vector<Splice>{ S(0, 10, repBytes) }, c3);
+    CHECK(r3.ok());
+    CHECK(c3.baseSize == 10 && c3.size == 2);
+    CHECK(c3.segments.size() == 1);
+    CHECK(c3.segments[0].kind == Segment::Buffer && c3.segments[0].start == 0 && c3.segments[0].len == 2 && c3.segments[0].src == repBytes->data());
+
+    // 4. Multiple splices with gaps and zero-length removes/adds
+    // Base size = 50. Splice 0 at 0: add 2 bytes. Splice 1 at 20: remove 10 bytes. Splice 2 at 40: remove 5 bytes, add 3 bytes.
+    Composed c4;
+    auto b0 = B({ 1, 2 });
+    auto b2 = B({ 3, 4, 5 });
+    Result r4 = Compose(50, std::vector<Splice>{ S(0, 0, b0), S(20, 10), S(40, 5, b2) }, c4);
+    CHECK(r4.ok());
+    CHECK(c4.baseSize == 50 && c4.size == 40);
+    CHECK(c4.segments.size() == 5);
+    CHECK(c4.segments[0].kind == Segment::Buffer && c4.segments[0].start == 0 && c4.segments[0].len == 2);
+    CHECK(c4.segments[1].kind == Segment::Base && c4.segments[1].start == 2 && c4.segments[1].len == 20 && c4.segments[1].from == 0);
+    CHECK(c4.segments[2].kind == Segment::Base && c4.segments[2].start == 22 && c4.segments[2].len == 10 && c4.segments[2].from == 30);
+    CHECK(c4.segments[3].kind == Segment::Buffer && c4.segments[3].start == 32 && c4.segments[3].len == 3 && c4.segments[3].src == b2->data());
+    CHECK(c4.segments[4].kind == Segment::Base && c4.segments[4].start == 35 && c4.segments[4].len == 5 && c4.segments[4].from == 45);
+    CHECK(Tiles(c4));
+
+    // 5. Check old bytes size matching check (both pass when matched, fail when mismatched)
+    Composed c5;
+    auto oldBytesMismatch = B({ 1, 2, 3 }); // size 3
+    Splice sOldMismatch{ 10, 2, nullptr, oldBytesMismatch }; // removed = 2 != old->size() (3)
+    Result r5 = Compose(50, std::vector<Splice>{ sOldMismatch }, c5);
+    CHECK(!r5.ok());
+    CHECK(r5.error.find("expects 3 old bytes but removes 2") != std::string::npos);
+
+    auto oldBytesMatch = B({ 1, 2 }); // size 2
+    Splice sOldMatch{ 10, 2, nullptr, oldBytesMatch }; // removed = 2 == old->size() (2)
+    Composed c5ok;
+    Result r5ok = Compose(50, std::vector<Splice>{ sOldMatch }, c5ok);
+    CHECK(r5ok.ok());
+
+    // 6. Overlap checking: splice 1 starts inside removed region of splice 0
+    Composed c6;
+    Result r6 = Compose(50, std::vector<Splice>{ S(10, 10), S(15, 2) }, c6);
+    CHECK(!r6.ok());
+    CHECK(r6.error.find("overlaps splice 0 (at 10, removes 10)") != std::string::npos);
+
+    // 7. Limit check overflow conditions
+    Composed c7a;
+    // kept = 10, added = 5 > maxSize (4)
+    Result r7a = Compose(20, std::vector<Splice>{ S(0, 10, B({ 1, 2, 3, 4, 5 })) }, c7a, 4);
+    CHECK(!r7a.ok());
+    CHECK(r7a.error.find("virtual size is over the limit of 4 bytes") != std::string::npos);
+
+    Composed c7b;
+    // kept = 10, added = 5, maxSize = 12 -> kept (10) > maxSize (12) - added (5) = 7
+    Result r7b = Compose(20, std::vector<Splice>{ S(0, 10, B({ 1, 2, 3, 4, 5 })) }, c7b, 12);
+    CHECK(!r7b.ok());
+    CHECK(r7b.error.find("virtual size is over the limit of 12 bytes") != std::string::npos);
+}
+
 // ---- Reader ----------------------------------------------------------------------------------
 
 // Every (start, length) pair over a small file holding every segment kind, each from a fresh
@@ -817,6 +899,7 @@ static void TestReadersBesideSwaps() {
 int main() {
     TestCompose();
     TestComposeRejects();
+    TestComposeEdgeCases();
     TestReadEveryBoundary();
     TestSeek();
     TestBaseSeeks();
