@@ -833,6 +833,16 @@
       "license": "GPL-3.0-only"
     },
     {
+      "id": "source.tests.test_settings_ini.cpp",
+      "source": "tests/test_settings_ini.cpp",
+      "destination": "tests/test_settings_ini.cpp",
+      "profiles": [
+        "core-source"
+      ],
+      "origin": "project-authored",
+      "license": "GPL-3.0-only"
+    },
+    {
       "id": "g13.tests.abi_private_session.c",
       "source": "tests/abi_private_session.c",
       "destination": "tests/abi_private_session.c",

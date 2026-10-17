@@ -1280,6 +1280,12 @@ if(SCO_BUILD_TESTS)
   sco_project_target(test_storage)
   add_test(NAME test_storage COMMAND test_storage "${SCO_TEST_OUT}")
 
+  # Unit tests for settings ini parsing and format logic (settings_ini.cpp).
+  add_executable(test_settings_ini tests/test_settings_ini.cpp)
+  target_link_libraries(test_settings_ini PRIVATE sco_plugins)
+  sco_project_target(test_settings_ini)
+  add_test(NAME test_settings_ini COMMAND test_settings_ini)
+
   # sco.settings: the declarations' values, the service over the real host table and storage,
   # persistence across a restart, settings.changed. Host build, no game.
   add_executable(test_settings tests/test_settings.cpp)

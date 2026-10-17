@@ -29,7 +29,10 @@ static sco_result Read(void*, uint32_t i, uint32_t* out) {
 static sco_result Write(void*, uint32_t i, uint32_t value) {
     ++writes;
     if (cleanup_during_write) { auto* owner = cleanup_during_write; cleanup_during_write = nullptr; C::ReleaseCvarsOwner(owner); }
-    if (!ignore_write) values[i] = value; return write_result;
+    if (!ignore_write) {
+        values[i] = value;
+    }
+    return write_result;
 }
 int main(int argc, char** argv) {
     sco::SetGameThread(); auto* self = sco::host::NewPlugin("cvars_writer");
