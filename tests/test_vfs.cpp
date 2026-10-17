@@ -525,6 +525,40 @@ static void TestExpectedOldBytes() {
     CHECK(Info(t3->Mounts(), "badold")->state == MountState::Inert && Info(t3->Mounts(), "other")->state == MountState::Applied);
 }
 
+struct ThrowingBase : sco::vfs::BaseIo {
+    bool throwStd = false;
+    bool throwUnknown = false;
+
+    bool Seek(uint64_t) override {
+        if (throwStd) throw std::runtime_error("IO seek error");
+        if (throwUnknown) throw 42;
+        return true;
+    }
+    size_t Read(void*, size_t) override {
+        if (throwStd) throw std::runtime_error("IO read error");
+        if (throwUnknown) throw 42;
+        return 0;
+    }
+};
+
+static void TestEntryExceptions() {
+    auto t1 = Table::Build({ SpliceMount("file.dat", 0, "m1", { S(0, 0, B("a")) }) });
+    ThrowingBase stdBase;
+    stdBase.throwStd = true;
+    CHECK(t1->Open("file.dat", stdBase, 100) == nullptr);
+    const auto info1 = t1->Mounts();
+    CHECK(Info(info1, "m1")->state == MountState::Inert);
+    CHECK(Info(info1, "m1")->reason == "composition failed: IO seek error");
+
+    auto t2 = Table::Build({ SpliceMount("file2.dat", 0, "m2", { S(0, 0, B("b")) }) });
+    ThrowingBase unkBase;
+    unkBase.throwUnknown = true;
+    CHECK(t2->Open("file2.dat", unkBase, 100) == nullptr);
+    const auto info2 = t2->Mounts();
+    CHECK(Info(info2, "m2")->state == MountState::Inert);
+    CHECK(Info(info2, "m2")->reason == "composition failed");
+}
+
 // One composition per path and base identity; a different base composes again.
 static void TestCache() {
     const Bytes base = Base(300, 6);
@@ -825,6 +859,7 @@ int main() {
     TestLargeFiles();
     TestPaths();
     TestExpectedOldBytes();
+    TestEntryExceptions();
     TestCache();
     TestMerge();
     TestLimits();
